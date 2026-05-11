@@ -1,0 +1,114 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "impreza-cli"
+description = "Official command-line interface for the Impreza Host public REST API"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Impreza Host", email = "support@imprezahost.com" },
+]
+keywords = ["impreza", "hosting", "cli", "offshore", "crypto"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Utilities",
+]
+dynamic = ["version"]
+dependencies = [
+    "impreza-sdk",
+    # Typer 0.13+ no longer ships an `[all]` extra; Rich, click,
+    # shellingham etc. are direct deps already bundled.
+    "typer>=0.12",
+    "rich>=13.7",
+    # Reading TOML on 3.10. The stdlib's `tomllib` lands in 3.11; both
+    # back to the same surface in our `config` module via a small
+    # try/except shim.
+    "tomli>=2.0; python_version < '3.11'",
+    # Writing TOML — neither tomli nor tomllib provide a writer. tomli-w
+    # is the standard companion and stays small (no deps).
+    "tomli-w>=1.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    # PyYAML is required to test the --output yaml render path. Listed
+    # under [test] (not [dev]) because the CI pipeline needs it but
+    # workstation linting does not.
+    "pyyaml>=6.0",
+    "types-PyYAML>=6.0",
+]
+dev = [
+    "ruff>=0.5",
+    "mypy>=1.8",
+]
+yaml = [
+    # Optional runtime dependency for `impreza ... --output yaml`.
+    # Users who never use YAML output don't pay the install cost; users
+    # who need it install with `pip install impreza-cli[yaml]`. The
+    # output module raises a clear ImportError if `--output yaml` is
+    # selected without this extra.
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+impreza = "impreza_cli.main:app"
+
+[project.urls]
+Homepage = "https://imprezahost.com"
+Documentation = "https://docs.imprezahost.com"
+Repository = "https://github.com/imprezahost/impreza-devkit"
+Changelog = "https://github.com/imprezahost/impreza-devkit/blob/master/CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+include = ["impreza_cli*"]
+
+[tool.setuptools_scm]
+root = ".."
+fallback_version = "0.0.0"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "C4", "SIM"]
+# N818: keep readable exception names (ContextNotFound vs
+#       ContextNotFoundError); same call we made in the SDK.
+# B008: Typer's documented pattern *requires* `typer.Option(...)` /
+#       `typer.Argument(...)` at function-default position so it can
+#       introspect the call. Disabling per-line would scatter
+#       `# noqa: B008` across every CLI command — disable globally
+#       instead and keep the command modules clean.
+ignore = ["N818", "B008"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+
+# The SDK is installed via PEP 660 editable mode during dev. setuptools'
+# editable shim (``__editable__.impreza_sdk.pth``) hides the source
+# layout from mypy's auto-discovery, so it can't pick up the package
+# even though `import impreza` works at runtime. Tell mypy to trust
+# the SDK's types — when the CLI ships from PyPI alongside a wheel-
+# installed SDK this won't be needed (the wheel includes py.typed
+# in the right location), but during the in-tree dev cycle this gets
+# `mypy --strict` clean without polluting source files with
+# `# type: ignore` everywhere.
+[[tool.mypy.overrides]]
+module = ["impreza", "impreza.*"]
+ignore_missing_imports = true
