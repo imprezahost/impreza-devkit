@@ -1,0 +1,968 @@
+asyncapi: 3.0.0
+
+info:
+  title: Impreza Host Webhook API
+  version: 0.3.1
+  description: |
+    Event-driven companion to the [REST API](./openapi.yaml). Customers
+    subscribe to events via `POST /v1/webhooks`; the server then delivers
+    matching events as signed `POST` requests to the subscription URL.
+
+    This spec documents the **delivery side** — the wire format, headers,
+    and payload shapes the server emits. The subscription management
+    endpoints (`/v1/webhooks/...` CRUD) live in `openapi.yaml`.
+
+    ## Event envelope
+
+    Every webhook delivery is a JSON document with this top-level shape:
+
+    ```json
+    {
+      "id":         "evt_99f1c261888e604a5a18efa6",
+      "type":       "topup.paid",
+      "created_at": "2026-05-09T15:42:00Z",
+      "data":       { /* event-specific */ }
+    }
+    ```
+
+    ## Signature verification
+
+    Every request carries a `X-Impreza-Signature` header containing the
+    hex-encoded HMAC-SHA256 of the raw request body, keyed by the
+    subscription's secret (returned **once** on `POST /v1/webhooks`).
+
+    Verify with the SDK helper:
+
+    ```python
+    from impreza.webhooks import verify_signature, WebhookSignatureMismatch
+
+    try:
+        event = verify_signature(
+            body=request.body,
+            signature=request.headers["X-Impreza-Signature"],
+            secret="whsec_a1b2c3...",
+        )
+    except WebhookSignatureMismatch:
+        return Response(status_code=401)
+    ```
+
+    See [`sdk-python/README.md`](../sdk-python/README.md) for full
+    receiver examples (Flask, FastAPI, Django).
+
+    ## Wildcards
+
+    Subscriptions support three wildcard patterns:
+
+    | Pattern    | Matches                                         |
+    |------------|-------------------------------------------------|
+    | `*`        | Every event the server emits (catch-all).       |
+    | `vps.*`    | Every event whose type starts with `vps.`.      |
+    | `domain.*` | Every event whose type starts with `domain.`.   |
+
+    ## Event firing status
+
+    The 16 event types below are the **public contract** — subscribers
+    can register for any of them today. As of `0.3.1`, only
+    `webhook.test` is fired automatically (delivered on subscription
+    create as a delivery probe). The business events (`topup.paid`,
+    `invoice.paid`, `vps.power_state_changed`, etc.) are wired
+    progressively; subscribers for those events receive nothing until
+    the corresponding hook lands server-side. The wire shape documented
+    below is the shape that will be emitted once wired — no contract
+    change is anticipated.
+
+  license:
+    name: MIT
+    url: https://github.com/imprezahost/impreza-devkit/blob/master/LICENSE
+  contact:
+    name: Impreza Host
+    url: https://imprezahost.com
+    email: support@imprezahost.com
+
+defaultContentType: application/json
+
+servers:
+  subscriber:
+    host: '{subscriber_host}'
+    pathname: '{subscriber_path}'
+    protocol: https
+    description: |
+      The customer-controlled HTTPS endpoint registered on a webhook
+      subscription. The Impreza Host server delivers events as
+      `POST` requests to this URL.
+    variables:
+      subscriber_host:
+        description: Customer's hostname (no scheme).
+        examples:
+          - 'example.com'
+          - 'hooks.example.org'
+      subscriber_path:
+        description: Path prefix on the customer side that receives deliveries.
+        default: /webhooks/impreza
+    bindings:
+      http:
+        method: POST
+
+channels:
+  webhookTest:
+    address: 'webhook.test'
+    description: Subscription probe — delivered once on subscription create.
+    messages:
+      WebhookTest:
+        $ref: '#/components/messages/WebhookTest'
+
+  topupPaid:
+    address: 'topup.paid'
+    description: Crypto top-up confirmed by the payment gateway.
+    messages:
+      TopupPaid:
+        $ref: '#/components/messages/TopupPaid'
+
+  invoiceCreated:
+    address: 'invoice.created'
+    description: A new invoice was generated on the customer's account.
+    messages:
+      InvoiceCreated:
+        $ref: '#/components/messages/InvoiceCreated'
+
+  invoicePaid:
+    address: 'invoice.paid'
+    description: An existing invoice was paid in full.
+    messages:
+      InvoicePaid:
+        $ref: '#/components/messages/InvoicePaid'
+
+  orderCreated:
+    address: 'order.created'
+    description: A new product order was submitted (provisioning may still be pending).
+    messages:
+      OrderCreated:
+        $ref: '#/components/messages/OrderCreated'
+
+  serviceActivated:
+    address: 'service.activated'
+    description: A service finished provisioning and is now usable.
+    messages:
+      ServiceActivated:
+        $ref: '#/components/messages/ServiceActivated'
+
+  serviceSuspended:
+    address: 'service.suspended'
+    description: A service entered the suspended billing state (overdue invoice or abuse hold).
+    messages:
+      ServiceSuspended:
+        $ref: '#/components/messages/ServiceSuspended'
+
+  serviceCancelled:
+    address: 'service.cancelled'
+    description: A service was terminated (cancellation request approved + executed).
+    messages:
+      ServiceCancelled:
+        $ref: '#/components/messages/ServiceCancelled'
+
+  domainRegistered:
+    address: 'domain.registered'
+    description: A new domain registration completed at the registrar.
+    messages:
+      DomainRegistered:
+        $ref: '#/components/messages/DomainRegistered'
+
+  domainTransferred:
+    address: 'domain.transferred'
+    description: A domain transfer-in completed at the registrar.
+    messages:
+      DomainTransferred:
+        $ref: '#/components/messages/DomainTransferred'
+
+  domainExpiringSoon:
+    address: 'domain.expiring_soon'
+    description: A domain is approaching its expiration date (typically 30/14/7 days out).
+    messages:
+      DomainExpiringSoon:
+        $ref: '#/components/messages/DomainExpiringSoon'
+
+  domainExpired:
+    address: 'domain.expired'
+    description: A domain has expired without renewal.
+    messages:
+      DomainExpired:
+        $ref: '#/components/messages/DomainExpired'
+
+  vpsPowerStateChanged:
+    address: 'vps.power_state_changed'
+    description: A VPS power state transitioned (running ↔ stopped ↔ rebooted ↔ shut down).
+    messages:
+      VpsPowerStateChanged:
+        $ref: '#/components/messages/VpsPowerStateChanged'
+
+  vpsBackupCompleted:
+    address: 'vps.backup_completed'
+    description: A Proxmox VPS backup operation finished successfully.
+    messages:
+      VpsBackupCompleted:
+        $ref: '#/components/messages/VpsBackupCompleted'
+
+  vpsSnapshotCreated:
+    address: 'vps.snapshot_created'
+    description: A Proxmox VPS snapshot was created.
+    messages:
+      VpsSnapshotCreated:
+        $ref: '#/components/messages/VpsSnapshotCreated'
+
+  vpsReinstallCompleted:
+    address: 'vps.reinstall_completed'
+    description: A VPS finished reinstalling its OS template.
+    messages:
+      VpsReinstallCompleted:
+        $ref: '#/components/messages/VpsReinstallCompleted'
+
+operations:
+  receiveWebhookTest:
+    action: receive
+    channel:
+      $ref: '#/channels/webhookTest'
+    summary: Subscription probe
+    description: |
+      Delivered automatically the first time a subscription is created
+      (via `POST /v1/webhooks`). Use it to confirm your receiver is
+      reachable and your HMAC verification is correctly implemented.
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/webhookTest/messages/WebhookTest'
+
+  receiveTopupPaid:
+    action: receive
+    channel:
+      $ref: '#/channels/topupPaid'
+    summary: Crypto top-up settled
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/topupPaid/messages/TopupPaid'
+
+  receiveInvoiceCreated:
+    action: receive
+    channel:
+      $ref: '#/channels/invoiceCreated'
+    summary: New invoice generated
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/invoiceCreated/messages/InvoiceCreated'
+
+  receiveInvoicePaid:
+    action: receive
+    channel:
+      $ref: '#/channels/invoicePaid'
+    summary: Invoice paid
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/invoicePaid/messages/InvoicePaid'
+
+  receiveOrderCreated:
+    action: receive
+    channel:
+      $ref: '#/channels/orderCreated'
+    summary: New order submitted
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/orderCreated/messages/OrderCreated'
+
+  receiveServiceActivated:
+    action: receive
+    channel:
+      $ref: '#/channels/serviceActivated'
+    summary: Service activated (provisioned)
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/serviceActivated/messages/ServiceActivated'
+
+  receiveServiceSuspended:
+    action: receive
+    channel:
+      $ref: '#/channels/serviceSuspended'
+    summary: Service suspended
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/serviceSuspended/messages/ServiceSuspended'
+
+  receiveServiceCancelled:
+    action: receive
+    channel:
+      $ref: '#/channels/serviceCancelled'
+    summary: Service terminated
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/serviceCancelled/messages/ServiceCancelled'
+
+  receiveDomainRegistered:
+    action: receive
+    channel:
+      $ref: '#/channels/domainRegistered'
+    summary: Domain registration completed
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/domainRegistered/messages/DomainRegistered'
+
+  receiveDomainTransferred:
+    action: receive
+    channel:
+      $ref: '#/channels/domainTransferred'
+    summary: Domain transfer-in completed
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/domainTransferred/messages/DomainTransferred'
+
+  receiveDomainExpiringSoon:
+    action: receive
+    channel:
+      $ref: '#/channels/domainExpiringSoon'
+    summary: Domain approaching expiration
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/domainExpiringSoon/messages/DomainExpiringSoon'
+
+  receiveDomainExpired:
+    action: receive
+    channel:
+      $ref: '#/channels/domainExpired'
+    summary: Domain expired
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/domainExpired/messages/DomainExpired'
+
+  receiveVpsPowerStateChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/vpsPowerStateChanged'
+    summary: VPS power state transition
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/vpsPowerStateChanged/messages/VpsPowerStateChanged'
+
+  receiveVpsBackupCompleted:
+    action: receive
+    channel:
+      $ref: '#/channels/vpsBackupCompleted'
+    summary: VPS backup completed (Proxmox)
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/vpsBackupCompleted/messages/VpsBackupCompleted'
+
+  receiveVpsSnapshotCreated:
+    action: receive
+    channel:
+      $ref: '#/channels/vpsSnapshotCreated'
+    summary: VPS snapshot created (Proxmox)
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/vpsSnapshotCreated/messages/VpsSnapshotCreated'
+
+  receiveVpsReinstallCompleted:
+    action: receive
+    channel:
+      $ref: '#/channels/vpsReinstallCompleted'
+    summary: VPS reinstall completed
+    security:
+      - $ref: '#/components/securitySchemes/HmacSignature'
+    messages:
+      - $ref: '#/channels/vpsReinstallCompleted/messages/VpsReinstallCompleted'
+
+components:
+  messages:
+    WebhookTest:
+      name: WebhookTest
+      title: Subscription delivery probe
+      summary: Confirms the subscriber URL is reachable + HMAC is verifiable.
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/WebhookTestEvent'
+
+    TopupPaid:
+      name: TopupPaid
+      title: Crypto top-up settled
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/TopupPaidEvent'
+
+    InvoiceCreated:
+      name: InvoiceCreated
+      title: New invoice generated
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/InvoiceCreatedEvent'
+
+    InvoicePaid:
+      name: InvoicePaid
+      title: Invoice paid in full
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/InvoicePaidEvent'
+
+    OrderCreated:
+      name: OrderCreated
+      title: New product order submitted
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/OrderCreatedEvent'
+
+    ServiceActivated:
+      name: ServiceActivated
+      title: Service finished provisioning
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/ServiceActivatedEvent'
+
+    ServiceSuspended:
+      name: ServiceSuspended
+      title: Service entered suspended billing state
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/ServiceSuspendedEvent'
+
+    ServiceCancelled:
+      name: ServiceCancelled
+      title: Service terminated
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/ServiceCancelledEvent'
+
+    DomainRegistered:
+      name: DomainRegistered
+      title: Domain registration completed
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/DomainRegisteredEvent'
+
+    DomainTransferred:
+      name: DomainTransferred
+      title: Domain transfer-in completed
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/DomainTransferredEvent'
+
+    DomainExpiringSoon:
+      name: DomainExpiringSoon
+      title: Domain approaching expiration
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/DomainExpiringSoonEvent'
+
+    DomainExpired:
+      name: DomainExpired
+      title: Domain expired
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/DomainExpiredEvent'
+
+    VpsPowerStateChanged:
+      name: VpsPowerStateChanged
+      title: VPS power state transition
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/VpsPowerStateChangedEvent'
+
+    VpsBackupCompleted:
+      name: VpsBackupCompleted
+      title: VPS backup completed (Proxmox)
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/VpsBackupCompletedEvent'
+
+    VpsSnapshotCreated:
+      name: VpsSnapshotCreated
+      title: VPS snapshot created (Proxmox)
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/VpsSnapshotCreatedEvent'
+
+    VpsReinstallCompleted:
+      name: VpsReinstallCompleted
+      title: VPS reinstall completed
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/StandardHeaders'
+      payload:
+        $ref: '#/components/schemas/VpsReinstallCompletedEvent'
+
+  schemas:
+    StandardHeaders:
+      type: object
+      required: [X-Impreza-Signature, Content-Type]
+      properties:
+        X-Impreza-Signature:
+          type: string
+          description: |
+            Hex-encoded HMAC-SHA256 of the raw request body, keyed by the
+            subscription's secret. Verify with
+            `impreza.webhooks.verify_signature()`.
+          example: 7c4a8d09ca3762af61e59520943dc26494f8941b
+        X-Impreza-Event-Id:
+          type: string
+          description: Mirror of the `id` field in the body. Use it for idempotent processing.
+          example: evt_99f1c261888e604a5a18efa6
+        X-Impreza-Event-Type:
+          type: string
+          description: Mirror of the `type` field in the body — lets receivers route before parsing JSON.
+          example: topup.paid
+        Content-Type:
+          type: string
+          enum: [application/json]
+        User-Agent:
+          type: string
+          description: Always `Impreza-Webhooks/<version>`.
+          example: Impreza-Webhooks/0.3.1
+
+    EventEnvelope:
+      type: object
+      description: Common envelope around every webhook delivery.
+      required: [id, type, created_at, data]
+      properties:
+        id:
+          type: string
+          pattern: '^evt_[a-f0-9]+$'
+          description: Unique event ID. Use for idempotent processing.
+          example: evt_99f1c261888e604a5a18efa6
+        type:
+          type: string
+          description: Dotted event type name (matches subscription `events`).
+          example: topup.paid
+        created_at:
+          type: string
+          format: date-time
+          description: Server-side event timestamp (RFC 3339, always UTC).
+          example: '2026-05-09T15:42:00Z'
+        data:
+          type: object
+          description: Event-specific payload. Shape varies per `type`.
+
+    WebhookTestEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: webhook.test
+            data:
+              type: object
+              required: [webhook_id, message]
+              properties:
+                webhook_id:
+                  type: integer
+                  description: ID of the subscription this probe was emitted for.
+                  example: 42
+                message:
+                  type: string
+                  example: 'Webhook subscription created. This is a delivery probe.'
+
+    TopupPaidEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: topup.paid
+            data:
+              type: object
+              required: [invoice_id, amount, currency, method]
+              properties:
+                invoice_id:
+                  type: integer
+                  example: 500
+                amount:
+                  type: number
+                  example: 50.00
+                currency:
+                  type: string
+                  example: USD
+                method:
+                  type: string
+                  description: Payment method id (`xmr`, `btc`, etc.).
+                  example: xmr
+                paid_at:
+                  type: string
+                  format: date-time
+
+    InvoiceCreatedEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: invoice.created
+            data:
+              type: object
+              required: [invoice_id, amount, currency, status]
+              properties:
+                invoice_id:
+                  type: integer
+                  example: 1287
+                amount:
+                  type: number
+                  example: 17.00
+                currency:
+                  type: string
+                  example: USD
+                status:
+                  type: string
+                  enum: [Unpaid, Draft]
+                due_date:
+                  type: string
+                  format: date
+
+    InvoicePaidEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: invoice.paid
+            data:
+              type: object
+              required: [invoice_id, amount, currency, paid_at]
+              properties:
+                invoice_id:
+                  type: integer
+                amount:
+                  type: number
+                currency:
+                  type: string
+                paid_at:
+                  type: string
+                  format: date-time
+                gateway:
+                  type: string
+                  description: Payment gateway that settled it (`btcpayinline`, `credit`, etc.).
+
+    OrderCreatedEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: order.created
+            data:
+              type: object
+              required: [order_id, invoice_id, status]
+              properties:
+                order_id:
+                  type: integer
+                order_number:
+                  type: string
+                  description: Customer-facing reference (10-digit number).
+                  example: '1234567890'
+                invoice_id:
+                  type: integer
+                amount:
+                  type: number
+                status:
+                  type: string
+                  enum: [Pending, Active, Fraud, Cancelled]
+                products:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      product_id:
+                        type: integer
+                      name:
+                        type: string
+
+    ServiceActivatedEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: service.activated
+            data:
+              type: object
+              required: [service_id, product_id, product_name]
+              properties:
+                service_id:
+                  type: integer
+                product_id:
+                  type: integer
+                product_name:
+                  type: string
+                domain:
+                  type: string
+                  description: Bound domain or hostname, if applicable.
+                next_due_date:
+                  type: string
+                  format: date
+
+    ServiceSuspendedEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: service.suspended
+            data:
+              type: object
+              required: [service_id, reason]
+              properties:
+                service_id:
+                  type: integer
+                reason:
+                  type: string
+                  description: |
+                    `overdue` for billing-state suspensions (auto-clears on
+                    invoice payment); `abuse` for staff-applied holds; other
+                    values for custom workflows.
+                  example: overdue
+
+    ServiceCancelledEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: service.cancelled
+            data:
+              type: object
+              required: [service_id, cancel_type]
+              properties:
+                service_id:
+                  type: integer
+                cancel_type:
+                  type: string
+                  enum: [Immediate, 'End of Billing Period']
+                cancelled_at:
+                  type: string
+                  format: date-time
+                reason:
+                  type: string
+                  description: Customer-supplied reason from the cancel request.
+
+    DomainRegisteredEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: domain.registered
+            data:
+              type: object
+              required: [domain, period_years, expires_at]
+              properties:
+                domain:
+                  type: string
+                  example: example.com
+                period_years:
+                  type: integer
+                  minimum: 1
+                expires_at:
+                  type: string
+                  format: date
+                nameservers:
+                  type: array
+                  items:
+                    type: string
+
+    DomainTransferredEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: domain.transferred
+            data:
+              type: object
+              required: [domain, expires_at]
+              properties:
+                domain:
+                  type: string
+                expires_at:
+                  type: string
+                  format: date
+
+    DomainExpiringSoonEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: domain.expiring_soon
+            data:
+              type: object
+              required: [domain, expires_at, days_until_expiry]
+              properties:
+                domain:
+                  type: string
+                expires_at:
+                  type: string
+                  format: date
+                days_until_expiry:
+                  type: integer
+                  description: Typically emitted at 30, 14, and 7 days out.
+                  enum: [30, 14, 7]
+
+    DomainExpiredEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: domain.expired
+            data:
+              type: object
+              required: [domain, expired_at]
+              properties:
+                domain:
+                  type: string
+                expired_at:
+                  type: string
+                  format: date
+
+    VpsPowerStateChangedEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: vps.power_state_changed
+            data:
+              type: object
+              required: [service_id, backend, old_state, new_state]
+              properties:
+                service_id:
+                  type: integer
+                backend:
+                  type: string
+                  enum: [proxmox, cloud]
+                old_state:
+                  type: string
+                  enum: [running, stopped, shut_down, rebooting, unknown]
+                new_state:
+                  type: string
+                  enum: [running, stopped, shut_down, rebooting, unknown]
+                changed_at:
+                  type: string
+                  format: date-time
+
+    VpsBackupCompletedEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: vps.backup_completed
+            data:
+              type: object
+              required: [service_id, backup_id]
+              properties:
+                service_id:
+                  type: integer
+                backup_id:
+                  type: integer
+                size_bytes:
+                  type: integer
+                completed_at:
+                  type: string
+                  format: date-time
+
+    VpsSnapshotCreatedEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: vps.snapshot_created
+            data:
+              type: object
+              required: [service_id, snapshot_name]
+              properties:
+                service_id:
+                  type: integer
+                snapshot_name:
+                  type: string
+                  example: pre-update
+                description:
+                  type: string
+                created_at:
+                  type: string
+                  format: date-time
+
+    VpsReinstallCompletedEvent:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            type:
+              const: vps.reinstall_completed
+            data:
+              type: object
+              required: [service_id, template]
+              properties:
+                service_id:
+                  type: integer
+                template:
+                  type: string
+                  description: OS template identifier the VPS was reinstalled with.
+                  example: debian-12
+                backend:
+                  type: string
+                  enum: [proxmox, cloud]
+                completed_at:
+                  type: string
+                  format: date-time
+
+  securitySchemes:
+    HmacSignature:
+      type: httpApiKey
+      name: X-Impreza-Signature
+      in: header
+      description: |
+        Hex-encoded HMAC-SHA256 of the raw request body, keyed by the
+        subscription's secret (returned once on `POST /v1/webhooks` —
+        store it securely; the server doesn't return it again, but
+        `POST /v1/webhooks/{id}/rotate-secret` issues a new one).
+
+        Constant-time comparison is critical. The SDK helper
+        `impreza.webhooks.verify_signature()` handles this correctly
+        and raises `WebhookSignatureMismatch` on failure.

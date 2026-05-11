@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "impreza-sdk"
+description = "Official Python SDK for the Impreza Host public REST API"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Impreza Host", email = "support@imprezahost.com" },
+]
+keywords = ["impreza", "hosting", "domains", "vps", "api", "offshore", "crypto"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dynamic = ["version"]
+dependencies = [
+    "httpx[socks]>=0.27",
+    "pydantic>=2.5",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "respx>=0.20",
+    "pytest-asyncio>=0.23",
+]
+dev = [
+    "ruff>=0.5",
+    "mypy>=1.8",
+    "pre-commit>=3.6",
+]
+
+[project.urls]
+Homepage = "https://imprezahost.com"
+Documentation = "https://docs.imprezahost.com"
+# Source code lives in private GitLab during the alpha/beta cycle and
+# flips public via a one-way GitLab → GitHub push mirror at the 1.0
+# launch (see DEVKIT_CLI_PLAN.md §3 / §7). The GitHub URL is the
+# advertised one because that's where the source will be when this
+# package leaves alpha; the GitLab URL is for current-day Impreza
+# staff. PyPI metadata supports both — listing the public-facing one
+# only.
+Repository = "https://github.com/imprezahost/impreza-devkit"
+Issues = "https://github.com/imprezahost/impreza-devkit/issues"
+Changelog = "https://github.com/imprezahost/impreza-devkit/blob/master/CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+include = ["impreza*"]
+
+[tool.setuptools_scm]
+root = ".."
+fallback_version = "0.0.0"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "C4", "SIM"]
+# N818 (exception names should end with "Error") is intentionally ignored —
+# our public exception API uses readable names (RateLimitExceeded, ResourceNotFound,
+# IpNotWhitelisted, etc.) that read naturally in `except` blocks.
+ignore = ["N818"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
