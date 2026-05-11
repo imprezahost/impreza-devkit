@@ -1,0 +1,3115 @@
+openapi: 3.1.0
+info:
+  title: Impreza Host Public API
+  description: |
+    Official REST API for Impreza Host clients. Manage domains, hosting, VPS, email services, and place orders programmatically.
+
+    ## Companion event API
+
+    Push notifications are documented separately in
+    [`asyncapi.yaml`](./asyncapi.yaml) (AsyncAPI 3.0). Subscribe via
+    `POST /v1/webhooks` here; receive events on your URL as documented
+    there.
+
+    ## Authentication
+
+    All requests require two headers:
+    - `X-API-Key` — Your API key (starts with `imp_`)
+    - `X-API-Secret` — Your API secret (shown once when generated)
+
+    Generate keys in your [Impreza Account → API Management](https://portal.imprezahost.com/imprezaapi.php).
+
+    ## IP Whitelist
+
+    Your request IP must be whitelisted before making API calls. Add IPs in the API Management page.
+
+    ## Rate Limiting
+
+    Default: **60 requests per minute** per API key. Response headers:
+    - `X-RateLimit-Limit` — Max requests per minute
+    - `X-RateLimit-Remaining` — Remaining requests in current window
+    - `X-RateLimit-Reset` — Unix timestamp when the window resets
+
+    ## Destructive Operations
+
+    Irreversible actions (reinstall, terminate, rollback) require `"confirm": true` in the request body.
+
+    ## Errors
+
+    All errors follow a consistent format:
+    ```json
+    {
+      "success": false,
+      "error": {
+        "code": "ERROR_CODE",
+        "message": "Human-readable description"
+      },
+      "meta": { "request_id": "req_abc123", "timestamp": "2026-03-30T14:00:00Z" }
+    }
+    ```
+  version: 1.0.0
+  contact:
+    name: Impreza Host Support
+    url: https://imprezahost.com
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.imprezahost.com/v1
+    description: Production
+
+security:
+  - ApiKey: []
+    ApiSecret: []
+
+tags:
+  - name: Account
+    description: Client account information and services
+  - name: Products
+    description: Product catalog with pricing (VPS, hosting, domains)
+  - name: Orders
+    description: Create orders and upgrades (paid from balance)
+  - name: Invoices
+    description: List, view, and pay invoices from account balance
+  - name: Services
+    description: Service management (cancellation)
+  - name: Domains
+    description: Domain pricing, registration, transfer, DNS, nameservers, locks
+  - name: Hosting
+    description: cPanel/WHM hosting management
+  - name: Titan Email
+    description: Titan Email service management
+  - name: Google Workspace
+    description: Google Workspace management
+  - name: VPS Proxmox
+    description: Proxmox VPS management (31+ operations)
+  - name: VPS Cloud
+    description: Cloud VPS management (27+ operations)
+  - name: Webhooks
+    description: Subscribe to events delivered as HMAC-signed POSTs
+
+components:
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Your API key (e.g. `imp_a1b2c3d4...`)
+    ApiSecret:
+      type: apiKey
+      in: header
+      name: X-API-Secret
+      description: Your API secret
+
+  schemas:
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: INVALID_REQUEST
+            message:
+              type: string
+              example: "Field 'hostname' is required."
+            details:
+              type: object
+        meta:
+          $ref: '#/components/schemas/Meta'
+
+    Meta:
+      type: object
+      properties:
+        request_id:
+          type: string
+          example: req_a1b2c3d4e5f6g7h8
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-03-30T14:05:00Z"
+
+    AccountInfo:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1234
+        first_name:
+          type: string
+          example: John
+        last_name:
+          type: string
+          example: Doe
+        company:
+          type: string
+          example: ACME Corp
+        email:
+          type: string
+          example: john@example.com
+        balance:
+          type: number
+          format: float
+          example: 150.00
+        currency:
+          type: string
+          example: USD
+        registered_at:
+          type: string
+          example: "2024-01-15"
+
+    Service:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 567
+        domain:
+          type: string
+          example: example.com
+        status:
+          type: string
+          enum: [Active, Suspended, Terminated, Pending, Cancelled]
+          example: Active
+        product:
+          type: string
+          example: VPS Plan 2
+        product_group:
+          type: string
+          example: VPS Hosting
+        billing_cycle:
+          type: string
+          example: monthly
+        amount:
+          type: number
+          example: 15.00
+        dedicated_ip:
+          type: string
+          example: 185.100.86.42
+        registered_at:
+          type: string
+          example: "2024-06-01"
+        next_due:
+          type: string
+          example: "2026-04-01"
+        vps_backend:
+          type: [string, "null"]
+          enum: [proxmox, cloud, null]
+          description: |
+            Stable backend identifier for VPS services, exposed so SDKs can
+            smart-dispatch between `/vps/proxmox/...` and `/vps/cloud/...`
+            without parsing the human-readable `product_group`. `null` for
+            non-VPS services or when the underlying server module is not
+            recognized.
+          example: proxmox
+
+    Order:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 890
+        order_number:
+          type: string
+          example: "4829174"
+        date:
+          type: string
+          example: "2026-03-30"
+        amount:
+          type: number
+          example: 15.00
+        invoice_id:
+          type: integer
+          example: 2345
+        status:
+          type: string
+          example: Active
+        payment_method:
+          type: string
+          example: mailin
+
+    DnsRecord:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [A, AAAA, CNAME, MX, TXT, NS, SRV]
+          example: A
+        host:
+          type: string
+          example: "@"
+        value:
+          type: string
+          example: "185.100.86.42"
+        ttl:
+          type: integer
+          example: 14400
+        priority:
+          type: [integer, "null"]
+          example: null
+
+    VpsStatus:
+      type: object
+      properties:
+        power_state:
+          type: string
+          example: running
+        cpu_usage:
+          type: number
+          example: 12.5
+        memory_used:
+          type: integer
+          example: 1073741824
+        memory_total:
+          type: integer
+          example: 4294967296
+        uptime:
+          type: integer
+          description: Uptime in seconds
+          example: 864000
+
+  responses:
+    Unauthorized:
+      description: Invalid or missing API credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: UNAUTHORIZED
+              message: Invalid API key.
+            meta:
+              request_id: req_abc123
+              timestamp: "2026-03-30T14:05:00Z"
+
+    Forbidden:
+      description: IP not whitelisted or resource not owned
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+            example: 60
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: RATE_LIMITED
+              message: "Rate limit exceeded. Maximum 60 requests per minute."
+
+    UpstreamError:
+      description: Error from upstream provider API
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+    BadRequest:
+      description: Validation failed on the request body or query parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: INVALID_REQUEST
+              message: "Field 'amount' must be a positive number."
+
+    Conflict:
+      description: Request would violate a unique constraint or state precondition
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: CONFLICT
+              message: "Resource is in a state that does not allow this operation."
+
+    InternalError:
+      description: Unexpected server-side error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: INTERNAL_ERROR
+              message: "An unexpected error occurred. Please retry; if it persists, contact support."
+
+    InsufficientCredit:
+      description: Action requires more account balance than available
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: INSUFFICIENT_CREDIT
+              message: "Insufficient account balance. Top up with `impreza account topup`."
+
+paths:
+  # ═══════════════════════════════════════════════════════
+  # ACCOUNT
+  # ═══════════════════════════════════════════════════════
+
+  /account:
+    get:
+      tags: [Account]
+      summary: Get account information
+      description: Returns client profile, balance, and currency.
+      responses:
+        '200':
+          description: Account info
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/AccountInfo'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /account/services:
+    get:
+      tags: [Account]
+      summary: List all services
+      description: Returns all services (hosting, VPS, domains) for the authenticated client.
+      parameters:
+        - name: status
+          in: query
+          description: Filter by status
+          schema:
+            type: string
+            enum: [Active, Suspended, Terminated, Pending, Cancelled]
+      responses:
+        '200':
+          description: Service list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          services:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Service'
+                          total:
+                            type: integer
+
+  /account/services/{id}:
+    get:
+      tags: [Account]
+      summary: Get service details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Service details including server info and nameservers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /account/topup:
+    post:
+      tags: [Account]
+      summary: Create a crypto top-up invoice
+      description: |
+        Generates an `AddFunds` invoice routed to the `btcpayinline`
+        gateway. Open `payment_url` to complete payment with Bitcoin (BTC),
+        Monero (XMR), TRX, or USDT-TRC20. Once the gateway confirms payment,
+        the client account balance is credited automatically.
+
+        Use `GET /account/topup/{invoice_id}` to poll status.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount:
+                  type: number
+                  format: float
+                  minimum: 1
+                  maximum: 10000
+                  description: Amount in the client's account currency.
+                  example: 50.00
+                method:
+                  type: string
+                  enum: [btc, xmr, trx, usdt, usdt_trc20]
+                  description: |
+                    Optional preferred payment method. Forwarded to the gateway
+                    as a hint; the gateway may still display alternatives if the
+                    preferred method is unavailable.
+                  example: xmr
+      responses:
+        '201':
+          description: Top-up invoice created successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          invoice_id:
+                            type: integer
+                            example: 12345
+                          amount:
+                            type: number
+                            format: float
+                            example: 50.00
+                          currency:
+                            type: string
+                            example: USD
+                          method:
+                            type: [string, "null"]
+                            example: xmr
+                          status:
+                            type: string
+                            enum: [pending, paid, cancelled, refunded]
+                            example: pending
+                          payment_url:
+                            type: string
+                            format: uri
+                            example: https://portal.imprezahost.com/viewinvoice.php?id=12345&method=xmr
+                          expires_at:
+                            type: string
+                            format: date-time
+                            example: '2026-05-08T16:30:00Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /account/topup/{invoice_id}:
+    get:
+      tags: [Account]
+      summary: Get top-up invoice status
+      description: |
+        Poll this endpoint to check if a top-up invoice has been paid.
+        Returns 404 if the invoice is not an `AddFunds` invoice or does
+        not belong to the authenticated client.
+      parameters:
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Top-up invoice status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          invoice_id:
+                            type: integer
+                            example: 12345
+                          amount:
+                            type: number
+                            format: float
+                            example: 50.00
+                          currency:
+                            type: string
+                            example: USD
+                          method:
+                            type: [string, "null"]
+                            example: xmr
+                          status:
+                            type: string
+                            enum: [pending, paid, cancelled, refunded]
+                            example: paid
+                          paid_at:
+                            type: [string, "null"]
+                            format: date-time
+                            example: '2026-05-08T15:42:00Z'
+                          balance_after:
+                            type: number
+                            format: float
+                            description: Present only when status is `paid`.
+                            example: 95.32
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /account/api-keys/self:
+    get:
+      tags: [Account]
+      summary: Identity and IP whitelist of the API key making this request
+      description: |
+        Returns metadata about the API key that authenticated this call. The
+        full `api_key` value is never returned — only the public `prefix`
+        (the first 12 chars). The `request_ip` is the IP that the server
+        observed for this call (useful when debugging why a different IP than
+        expected is being whitelisted).
+
+        Used by clients implementing `impreza key whoami`.
+      responses:
+        '200':
+          description: Key identity
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  id: 42
+                  client_id: 123
+                  prefix: 'imp_a1b2c3d4'
+                  label: 'CI server'
+                  status: 'active'
+                  last_used_at: '2026-05-08T15:42:00Z'
+                  created_at: '2026-04-01T10:00:00Z'
+                  rate_limit_per_minute: 60
+                  request_ip: '203.0.113.50'
+                  ip_whitelist:
+                    - id: 1
+                      ip_address: '203.0.113.50'
+                      label: 'CI'
+                      created_at: '2026-04-01T10:01:00Z'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ═══════════════════════════════════════════════════════
+  # PRODUCTS
+  # ═══════════════════════════════════════════════════════
+
+  /products:
+    get:
+      tags: [Products]
+      summary: List all available products
+      description: |
+        Returns all available products grouped by category with pricing per billing cycle.
+        Prices are shown in the authenticated client's currency.
+      parameters:
+        - name: group
+          in: query
+          description: Filter by product group name (e.g. "VPS", "Hosting")
+          schema:
+            type: string
+        - name: type
+          in: query
+          description: Filter by product type
+          schema:
+            type: string
+            enum: [hostingaccount, reselleraccount, server, other]
+      responses:
+        '200':
+          description: Product catalog
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  products:
+                    - id: 15
+                      name: "VPS Plan 2"
+                      description: "4 vCPU, 8GB RAM, 100GB SSD"
+                      type: server
+                      group: "VPS Hosting"
+                      group_id: 3
+                      currency: USD
+                      pricing:
+                        monthly: { price: 15.00, setup_fee: 0.00 }
+                        quarterly: { price: 40.00, setup_fee: 0.00 }
+                        annually: { price: 144.00, setup_fee: 0.00 }
+                  total: 12
+                  currency: USD
+
+  /products/groups:
+    get:
+      tags: [Products]
+      summary: List product groups
+      description: Returns all product groups with the number of available products in each.
+      responses:
+        '200':
+          description: Product groups
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  groups:
+                    - { id: 1, name: "Shared Hosting", product_count: 4 }
+                    - { id: 3, name: "VPS Hosting", product_count: 6 }
+                    - { id: 5, name: "Dedicated Servers", product_count: 3 }
+                  total: 3
+
+  /products/{id}:
+    get:
+      tags: [Products]
+      summary: Get product details
+      description: |
+        Returns a single product with full pricing per billing cycle, setup fees,
+        custom fields, and configurable options (e.g. OS template) required for ordering.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Product details with pricing, custom fields, and configurable options
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  id: 15
+                  name: "VPS Plan 2"
+                  description: "4 vCPU, 8GB RAM, 100GB SSD"
+                  type: server
+                  group: "VPS Hosting"
+                  group_id: 3
+                  currency: USD
+                  pricing:
+                    monthly: { price: 15.00, setup_fee: 0.00 }
+                    annually: { price: 144.00, setup_fee: 0.00 }
+                  custom_fields:
+                    - { id: 1, name: "Hostname", type: "text", required: true }
+                  config_options:
+                    - id: 5
+                      name: "Operating System"
+                      type: 1
+                      options:
+                        - { id: 10, name: "Ubuntu 22.04", pricing: { monthly: 0.00 } }
+                        - { id: 11, name: "Debian 12", pricing: { monthly: 0.00 } }
+                        - { id: 12, name: "Windows Server 2022", pricing: { monthly: 5.00 } }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ═══════════════════════════════════════════════════════
+  # ORDERS
+  # ═══════════════════════════════════════════════════════
+
+  /orders:
+    get:
+      tags: [Orders]
+      summary: List orders
+      responses:
+        '200':
+          description: Order list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          orders:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Order'
+                          total:
+                            type: integer
+
+    post:
+      tags: [Orders]
+      summary: Create a new order
+      description: |
+        Creates a new order and pays from account credit balance.
+        If the balance is insufficient, returns `409 INSUFFICIENT_BALANCE`.
+
+        Use `GET /products/{id}` to discover available `config_options` (e.g. OS template,
+        number of email accounts) and `custom_fields` for the product before placing an order.
+
+        ### Examples
+
+        **VPS with OS template:**
+        ```json
+        {
+          "product_id": 15,
+          "billing_cycle": "monthly",
+          "hostname": "my-vps",
+          "config_options": { "5": "10" }
+        }
+        ```
+
+        **Titan Email with 5 accounts:**
+        ```json
+        {
+          "product_id": 20,
+          "billing_cycle": "annually",
+          "domain": "example.com",
+          "config_options": { "8": "5" }
+        }
+        ```
+
+        **Google Workspace with 3 seats:**
+        ```json
+        {
+          "product_id": 25,
+          "billing_cycle": "annually",
+          "domain": "example.com",
+          "config_options": { "12": "3" }
+        }
+        ```
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [product_id, billing_cycle]
+              properties:
+                product_id:
+                  type: integer
+                  description: Product ID from Impreza Account
+                  example: 15
+                billing_cycle:
+                  type: string
+                  enum: [monthly, quarterly, semiannually, annually, biennially, triennially]
+                  example: monthly
+                domain:
+                  type: string
+                  description: Domain for the service (if applicable)
+                  example: myserver.com
+                hostname:
+                  type: string
+                  description: Hostname for VPS services
+                  example: my-vps
+                config_options:
+                  type: object
+                  description: |
+                    Configurable options (e.g. OS template). Object keys are option IDs,
+                    values are the selected sub-option IDs. Get available options from `GET /products/{id}`.
+                  example: { "5": "10" }
+                custom_fields:
+                  type: object
+                  description: |
+                    Custom field values. Object keys are field IDs, values are the field values.
+                    Get available fields from `GET /products/{id}`.
+                  example: { "1": "myserver.example.com" }
+      responses:
+        '201':
+          description: Order created successfully
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  order_id: 890
+                  invoice_id: 2345
+                  product: "VPS Plan 2"
+                  amount: 15.00
+                  status: Active
+                  message: "Order created and paid from account balance."
+        '400':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Insufficient balance
+          content:
+            application/json:
+              example:
+                success: false
+                error:
+                  code: INSUFFICIENT_BALANCE
+                  message: "Insufficient balance. Required: $15.00, Available: $3.50"
+
+  /orders/{id}:
+    get:
+      tags: [Orders]
+      summary: Get order details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Order details with items
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /orders/{id}/upgrade:
+    post:
+      tags: [Orders]
+      summary: Upgrade a service
+      description: Creates an upgrade order paid from account credit balance.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [service_id, new_product_id, billing_cycle]
+              properties:
+                service_id:
+                  type: integer
+                  example: 567
+                new_product_id:
+                  type: integer
+                  example: 25
+                billing_cycle:
+                  type: string
+                  example: monthly
+      responses:
+        '201':
+          description: Upgrade created
+        '409':
+          description: Insufficient balance
+
+  # ═══════════════════════════════════════════════════════
+  # INVOICES
+  # ═══════════════════════════════════════════════════════
+
+  /invoices:
+    get:
+      tags: [Invoices]
+      summary: List invoices
+      description: |
+        Returns all invoices for the authenticated client.
+        Use `?status=Unpaid` to filter only unpaid invoices (e.g. pending renewals).
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [Paid, Unpaid, Cancelled, Refunded]
+          description: Filter by invoice status
+      responses:
+        '200':
+          description: Invoice list
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  invoices:
+                    - id: 2345
+                      invoice_num: "2345"
+                      date: "2026-03-01"
+                      due_date: "2026-03-15"
+                      date_paid: null
+                      subtotal: 17.00
+                      credit: 0.00
+                      tax: 0.00
+                      total: 17.00
+                      status: Unpaid
+                      payment_method: banktransfer
+                  total: 1
+
+  /invoices/{id}:
+    get:
+      tags: [Invoices]
+      summary: Get invoice details
+      description: Returns invoice details including line items and transaction history.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Invoice details with items and transactions
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  id: 2345
+                  invoice_num: "2345"
+                  date: "2026-03-01"
+                  due_date: "2026-03-15"
+                  total: 17.00
+                  status: Unpaid
+                  items:
+                    - id: 1
+                      type: Hosting
+                      description: "VPS Plan 2 - Monthly (03/15/2026 - 04/14/2026)"
+                      amount: 17.00
+                      taxed: false
+                  transactions: []
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /invoices/{id}/pay:
+    post:
+      tags: [Invoices]
+      summary: Pay invoice from balance
+      description: |
+        Pays an unpaid invoice using the client's account credit balance.
+        This is the recommended way to handle renewals — the system generates
+        renewal invoices automatically, and the client pays them via this endpoint.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Invoice paid successfully
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  invoice_id: 2345
+                  amount: 17.00
+                  currency: USD
+                  message: "Invoice paid from account balance."
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Already paid or insufficient balance
+          content:
+            application/json:
+              examples:
+                already_paid:
+                  value:
+                    success: false
+                    error:
+                      code: ALREADY_PAID
+                      message: "This invoice is already paid."
+                insufficient_balance:
+                  value:
+                    success: false
+                    error:
+                      code: INSUFFICIENT_BALANCE
+                      message: "Insufficient balance. Required: USD 17.00, Available: USD 5.00"
+
+  # ═══════════════════════════════════════════════════════
+  # SERVICES
+  # ═══════════════════════════════════════════════════════
+
+  /services/{id}/cancel:
+    post:
+      tags: [Services]
+      summary: Request service cancellation
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: ["Immediate", "End of Billing Period"]
+                  example: "End of Billing Period"
+                reason:
+                  type: string
+                  example: "No longer needed"
+      responses:
+        '200':
+          description: Cancellation submitted
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  service_id: 567
+                  cancel_type: "End of Billing Period"
+                  message: "Cancellation request submitted successfully."
+
+  # ═══════════════════════════════════════════════════════
+  # WEBHOOKS
+  # ═══════════════════════════════════════════════════════
+
+  /webhooks:
+    get:
+      tags: [Webhooks]
+      summary: List webhook subscriptions
+      description: Returns every webhook subscription owned by the authenticated client.
+      responses:
+        '200':
+          description: List of subscriptions
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  webhooks:
+                    - id: 1
+                      url: https://example.com/hooks/impreza
+                      events: [vps.power_state_changed, invoice.paid]
+                      description: production handler
+                      is_active: true
+                      last_delivery_at: '2026-05-08T15:42:00Z'
+                      last_delivery_status: 200
+                      created_at: '2026-05-01T10:00:00Z'
+                  total: 1
+    post:
+      tags: [Webhooks]
+      summary: Create a webhook subscription
+      description: |
+        Creates a subscription that receives `application/json` `POST` requests
+        for the chosen event types. Each delivery includes:
+
+        - `X-Impreza-Signature: sha256=<hex>` — HMAC-SHA256 of the raw body
+          using the subscription's `secret`.
+        - `X-Impreza-Event` — concrete event type
+        - `X-Impreza-Event-Id` — unique event identifier (`evt_...`)
+        - `X-Impreza-Delivery-Attempt` — delivery attempt counter
+
+        The `secret` is returned **once** in the response. Store it securely;
+        it cannot be retrieved later. Use `POST /webhooks/{id}/rotate-secret`
+        to generate a new one.
+
+        Subscriptions support wildcards: `vps.*` matches every VPS event,
+        `*` matches everything.
+
+        On creation, a `webhook.test` probe event is enqueued for delivery
+        so you can verify your endpoint works.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, events]
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  maxLength: 500
+                  example: https://example.com/hooks/impreza
+                events:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                  example: [vps.*, invoice.paid, topup.paid]
+                description:
+                  type: string
+                  maxLength: 200
+                  example: production handler
+      responses:
+        '201':
+          description: Subscription created — secret returned ONCE
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  id: 1
+                  url: https://example.com/hooks/impreza
+                  events: [vps.*, invoice.paid, topup.paid]
+                  description: production handler
+                  is_active: true
+                  last_delivery_at: null
+                  last_delivery_status: null
+                  created_at: '2026-05-08T16:00:00Z'
+                  secret: a8f3...bcd9
+                  secret_warning: 'Save this secret — it cannot be retrieved later. Rotate via POST /webhooks/{id}/rotate-secret.'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Subscription limit reached
+          content:
+            application/json:
+              example:
+                success: false
+                error: { code: LIMIT_REACHED, message: 'Maximum of 10 webhook subscriptions per client.' }
+
+  /webhooks/event-types:
+    get:
+      tags: [Webhooks]
+      summary: List supported event types
+      responses:
+        '200':
+          description: Event catalog with wildcard help
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  event_types:
+                    - webhook.test
+                    - topup.paid
+                    - invoice.created
+                    - invoice.paid
+                    - order.created
+                    - service.activated
+                    - service.suspended
+                    - service.cancelled
+                    - domain.registered
+                    - domain.transferred
+                    - domain.expiring_soon
+                    - domain.expired
+                    - vps.power_state_changed
+                    - vps.backup_completed
+                    - vps.snapshot_created
+                    - vps.reinstall_completed
+                  wildcards:
+                    "*": Receive every event (catch-all).
+                    "vps.*": Receive every event whose type starts with vps.
+                    "domain.*": Receive every event whose type starts with domain.
+
+  /webhooks/{id}:
+    get:
+      tags: [Webhooks]
+      summary: Get a webhook subscription
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Subscription details
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Webhooks]
+      summary: Update a webhook subscription
+      description: Any subset of fields may be supplied; missing fields are unchanged.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  maxLength: 500
+                events:
+                  type: array
+                  items:
+                    type: string
+                description:
+                  type: string
+                  maxLength: 200
+                is_active:
+                  type: boolean
+      responses:
+        '200':
+          description: Subscription updated
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Webhooks]
+      summary: Delete a webhook subscription
+      description: |
+        Removes the subscription and discards any pending (undelivered)
+        deliveries in the queue. Already delivered events keep their history.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Subscription deleted
+          content:
+            application/json:
+              example:
+                success: true
+                data: { id: 1, deleted: true }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhooks/{id}/rotate-secret:
+    post:
+      tags: [Webhooks]
+      summary: Rotate the HMAC secret
+      description: |
+        Generates a fresh signing secret. The previous one becomes invalid
+        immediately. New secret is returned ONCE.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: New secret returned
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  id: 1
+                  secret: f1a2...e90b
+                  secret_warning: 'Save this secret — it cannot be retrieved later. The previous secret is now invalid.'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhooks/{id}/deliveries:
+    get:
+      tags: [Webhooks]
+      summary: List recent delivery attempts
+      description: Returns the last 100 delivery attempts for this subscription.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Delivery history
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  deliveries:
+                    - id: 42
+                      event_type: vps.power_state_changed
+                      event_id: evt_a1b2c3
+                      attempts: 1
+                      next_attempt_at: '2026-05-08T16:01:00Z'
+                      last_attempted_at: '2026-05-08T16:00:30Z'
+                      last_response_code: 200
+                      last_error: null
+                      delivered: true
+                      delivered_at: '2026-05-08T16:00:30Z'
+                      created_at: '2026-05-08T16:00:00Z'
+                  total: 1
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ═══════════════════════════════════════════════════════
+  # DOMAINS
+  # ═══════════════════════════════════════════════════════
+
+  /domains/pricing:
+    get:
+      tags: [Domains]
+      summary: List TLD pricing
+      description: |
+        Returns all available TLDs with registration and renewal prices per year.
+        Prices are shown in the authenticated client's currency.
+      parameters:
+        - name: tld
+          in: query
+          description: "Filter by TLD (comma-separated, e.g. `.com,.net,.io`)"
+          schema:
+            type: string
+      responses:
+        '200':
+          description: TLD pricing list
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  tlds:
+                    - tld: ".com"
+                      register: { "1": 12.99, "2": 25.98, "3": 38.97 }
+                      renew: { "1": 14.99, "2": 29.98 }
+                      currency: USD
+                      min_years: 1
+                      cheapest: 12.99
+                    - tld: ".net"
+                      register: { "1": 14.99 }
+                      renew: { "1": 16.99 }
+                      currency: USD
+                      min_years: 1
+                      cheapest: 14.99
+                  total: 45
+                  currency: USD
+
+  /domains/register:
+    post:
+      tags: [Domains]
+      summary: Register a new domain
+      description: |
+        Checks domain availability, verifies pricing and client balance,
+        then creates a registration order and deducts from credit balance.
+        Free DNS management is automatically activated upon successful registration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain, years]
+              properties:
+                domain:
+                  type: string
+                  example: "mynewdomain.com"
+                years:
+                  type: integer
+                  minimum: 1
+                  maximum: 10
+                  example: 1
+                nameservers:
+                  type: array
+                  items:
+                    type: string
+                  example: ["ns1.imprezahost.com", "ns2.imprezahost.com"]
+      responses:
+        '201':
+          description: Domain registered
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  order_id: 1234
+                  invoice_id: 5678
+                  domain: "mynewdomain.com"
+                  years: 1
+                  amount: 12.99
+                  currency: USD
+                  status: Registered
+                  message: "Domain registration order created and paid from account balance."
+        '409':
+          description: Domain not available or insufficient balance
+          content:
+            application/json:
+              examples:
+                unavailable:
+                  value:
+                    success: false
+                    error:
+                      code: DOMAIN_UNAVAILABLE
+                      message: "Domain mynewdomain.com is not available for registration."
+                no_balance:
+                  value:
+                    success: false
+                    error:
+                      code: INSUFFICIENT_BALANCE
+                      message: "Insufficient balance. Required: USD 12.99, Available: USD 0.00"
+
+  /domains/transfer:
+    post:
+      tags: [Domains]
+      summary: Transfer a domain
+      description: |
+        Transfer a domain from another registrar. Requires the EPP/auth code.
+        Creates an order and deducts from credit balance.
+        Free DNS management is automatically activated upon successful transfer.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain, epp_code]
+              properties:
+                domain:
+                  type: string
+                  example: "existing-domain.com"
+                epp_code:
+                  type: string
+                  description: EPP/Authorization code from current registrar
+                  example: "abc123xyz"
+                years:
+                  type: integer
+                  minimum: 1
+                  default: 1
+      responses:
+        '201':
+          description: Transfer order created
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  order_id: 1235
+                  invoice_id: 5679
+                  domain: "existing-domain.com"
+                  years: 1
+                  amount: 12.99
+                  currency: USD
+                  message: "Domain transfer order created and paid from account balance."
+        '409':
+          description: Insufficient balance
+
+  /domains/check:
+    get:
+      tags: [Domains]
+      summary: Check domain availability
+      description: Check availability of up to 10 domains at once.
+      parameters:
+        - name: domains
+          in: query
+          required: true
+          description: Comma-separated list of domains
+          schema:
+            type: string
+          example: "example.com,example.net,example.io"
+      responses:
+        '200':
+          description: Availability results
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  availability:
+                    example.com: false
+                    example.net: true
+                    example.io: true
+
+  /domains/{domain}:
+    get:
+      tags: [Domains]
+      summary: Get domain details
+      description: Full domain info including status, expiry, nameservers, lock status, EPP code, WHOIS privacy.
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+          example: example.com
+      responses:
+        '200':
+          description: Full domain details
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /domains/{domain}/raa-verify:
+    post:
+      tags: [Domains]
+      summary: Resend RAA verification email
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Verification email resent
+
+  /domains/{domain}/nameservers:
+    put:
+      tags: [Domains]
+      summary: Update nameservers
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nameservers]
+              properties:
+                nameservers:
+                  type: array
+                  items:
+                    type: string
+                  minItems: 2
+                  example: ["ns1.imprezahost.com", "ns2.imprezahost.com"]
+      responses:
+        '200':
+          description: Nameservers updated
+
+  /domains/{domain}/lock:
+    post:
+      tags: [Domains]
+      summary: Enable transfer lock
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Transfer lock enabled
+
+    delete:
+      tags: [Domains]
+      summary: Disable transfer lock
+      description: Disables transfer lock and returns the EPP/auth code.
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Transfer lock disabled
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  epp_code: "abc123xyz"
+
+  /domains/{domain}/dns/activate:
+    post:
+      tags: [Domains]
+      summary: Activate DNS management
+      description: Must be done before adding/editing DNS records.
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: DNS management activated
+
+  /domains/{domain}/dns:
+    get:
+      tags: [Domains]
+      summary: List all DNS records
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: DNS records
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - properties:
+                      data:
+                        type: object
+                        properties:
+                          records:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/DnsRecord'
+
+    post:
+      tags: [Domains]
+      summary: Add a DNS record
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, host, value]
+              properties:
+                type:
+                  type: string
+                  enum: [A, AAAA, CNAME, MX, TXT, NS, SRV]
+                host:
+                  type: string
+                  example: "@"
+                value:
+                  type: string
+                  example: "185.100.86.42"
+                ttl:
+                  type: integer
+                  default: 14400
+                priority:
+                  type: integer
+                  description: Required for MX records
+      responses:
+        '201':
+          description: Record created
+
+    put:
+      tags: [Domains]
+      summary: Update a DNS record
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, host, old_value, new_value]
+              properties:
+                type:
+                  type: string
+                  enum: [A, AAAA, CNAME, MX, TXT, NS, SRV]
+                host:
+                  type: string
+                old_value:
+                  type: string
+                new_value:
+                  type: string
+                ttl:
+                  type: integer
+                  default: 14400
+                priority:
+                  type: integer
+      responses:
+        '200':
+          description: Record updated
+
+    delete:
+      tags: [Domains]
+      summary: Delete a DNS record
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, host, value]
+              properties:
+                type:
+                  type: string
+                host:
+                  type: string
+                value:
+                  type: string
+      responses:
+        '200':
+          description: Record deleted
+
+  /domains/{domain}/gdpr-auth:
+    post:
+      tags: [Domains]
+      summary: Resend GDPR authorization email
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: GDPR auth email resent
+
+  /domains/{domain}/transfer-approval:
+    post:
+      tags: [Domains]
+      summary: Resend transfer approval email
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Transfer approval email resent
+
+  /domains/{domain}/id-protection:
+    post:
+      tags: [Domains]
+      summary: Purchase ID Protection
+      description: |
+        Activates ID Protection (WHOIS Privacy) for a registered domain.
+        Creates an invoice and pays from account credit balance.
+        Price is based on the TLD addon pricing configured in the system.
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '201':
+          description: ID Protection activated
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  domain: example.com
+                  domain_id: 456
+                  invoice_id: 7890
+                  amount: 2.99
+                  currency: USD
+                  message: "ID Protection activated and paid from account balance."
+        '409':
+          description: Already active or insufficient balance
+          content:
+            application/json:
+              examples:
+                already_active:
+                  value:
+                    success: false
+                    error:
+                      code: ALREADY_ACTIVE
+                      message: "ID Protection is already active for this domain."
+                insufficient_balance:
+                  value:
+                    success: false
+                    error:
+                      code: INSUFFICIENT_BALANCE
+                      message: "Insufficient balance. Required: USD 2.99, Available: USD 0.50"
+
+  # ═══════════════════════════════════════════════════════
+  # HOSTING
+  # ═══════════════════════════════════════════════════════
+
+  /hosting/{serviceId}:
+    get:
+      tags: [Hosting]
+      summary: Get hosting account info
+      description: Returns cPanel account summary (IP, plan, disk, bandwidth, status).
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Hosting account info
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /hosting/{serviceId}/nameservers:
+    get:
+      tags: [Hosting]
+      summary: Get server nameservers
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Nameservers
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  nameservers: ["ns1.imprezahost.com", "ns2.imprezahost.com"]
+
+  /hosting/{serviceId}/autossl:
+    post:
+      tags: [Hosting]
+      summary: Trigger AutoSSL check
+      description: Initiates free SSL certificate installation via AutoSSL.
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: AutoSSL check initiated
+
+  # ═══════════════════════════════════════════════════════
+  # TITAN EMAIL
+  # To order Titan Email, use POST /orders with the Titan product ID,
+  # the domain, and config_options for the number of email accounts.
+  # ═══════════════════════════════════════════════════════
+
+  /email/titan/{domain}:
+    get:
+      tags: [Titan Email]
+      summary: Get Titan Email details
+      description: Returns order details including accounts used/available, plan, expiry.
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Titan Email details
+
+  /email/titan/{domain}/dns:
+    get:
+      tags: [Titan Email]
+      summary: Get required DNS records
+      description: Returns MX, SPF, DKIM, and autodiscover records needed for Titan Email.
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Required DNS records
+
+  /email/titan/{domain}/sso:
+    get:
+      tags: [Titan Email]
+      summary: Get SSO URL
+      description: Returns a single-use SSO URL to the Titan Email management panel (valid 48h).
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: SSO URL
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  sso_url: "https://titan.email/sso/..."
+                  iframe_url: "https://titan.email/iframe/..."
+
+  # ═══════════════════════════════════════════════════════
+  # GOOGLE WORKSPACE
+  # To order Google Workspace, use POST /orders with the Google Workspace
+  # product ID, the domain, and config_options for the number of seats.
+  # ═══════════════════════════════════════════════════════
+
+  /email/google/{domain}:
+    get:
+      tags: [Google Workspace]
+      summary: Get Google Workspace details
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Workspace details
+
+  /email/google/dns:
+    get:
+      tags: [Google Workspace]
+      summary: Get required DNS records
+      description: Returns MX records needed for Google Workspace.
+      responses:
+        '200':
+          description: Required MX records
+
+  /email/google/{domain}/admin:
+    post:
+      tags: [Google Workspace]
+      summary: Setup admin account
+      description: Creates the initial admin user for a new Google Workspace order.
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email_address, first_name, last_name, alternate_email, name, company, zip]
+              properties:
+                email_address:
+                  type: string
+                  example: admin@example.com
+                first_name:
+                  type: string
+                last_name:
+                  type: string
+                alternate_email:
+                  type: string
+                name:
+                  type: string
+                company:
+                  type: string
+                zip:
+                  type: string
+      responses:
+        '201':
+          description: Admin account created
+
+  # ═══════════════════════════════════════════════════════
+  # VPS PROXMOX
+  # ═══════════════════════════════════════════════════════
+
+  /vps/proxmox/{serviceId}:
+    get:
+      tags: [VPS Proxmox]
+      summary: Get VM info
+      description: Returns hostname, OS, cores, RAM, disk, IPs, location.
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: VM information
+  /vps/proxmox/{serviceId}/cancel:
+    post:
+      tags: [VPS Proxmox]
+      summary: Request service cancellation
+      description: |
+        Submits a cancellation request via Impreza Account. The VM is **not** destroyed immediately —
+        cancellation is processed by Impreza Account according to the chosen type.
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [Immediate, End of Billing Period]
+                  example: End of Billing Period
+                reason:
+                  type: string
+                  description: Optional cancellation reason
+                  example: No longer needed
+      responses:
+        '200':
+          description: Cancellation request submitted
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  service_id: 123
+                  cancel_type: "End of Billing Period"
+                  message: "Cancellation request submitted successfully."
+
+  /vps/proxmox/{serviceId}/status:
+    get:
+      tags: [VPS Proxmox]
+      summary: Get VM status
+      description: Power state, CPU%, memory, uptime.
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: VM status
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/VpsStatus'
+
+  /vps/proxmox/{serviceId}/resources:
+    get:
+      tags: [VPS Proxmox]
+      summary: Get resource usage
+      description: CPU, memory, disk I/O, network statistics.
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Resource usage
+
+  /vps/proxmox/{serviceId}/config:
+    get:
+      tags: [VPS Proxmox]
+      summary: Get VM configuration
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Full Proxmox config
+
+  /vps/proxmox/{serviceId}/pending:
+    get:
+      tags: [VPS Proxmox]
+      summary: Get pending changes
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Config changes awaiting reboot
+
+  /vps/proxmox/{serviceId}/ips:
+    get:
+      tags: [VPS Proxmox]
+      summary: List assigned IPs
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: IP list
+
+  /vps/proxmox/{serviceId}/backups:
+    get:
+      tags: [VPS Proxmox]
+      summary: List backups
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Backup list
+    post:
+      tags: [VPS Proxmox]
+      summary: Create backup
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '201':
+          description: Backup created
+
+  /vps/proxmox/{serviceId}/backups/{id}/restore:
+    post:
+      tags: [VPS Proxmox]
+      summary: Restore backup
+      description: Async operation — VM is stopped during restore.
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Restore initiated
+
+  /vps/proxmox/{serviceId}/backups/{id}:
+    delete:
+      tags: [VPS Proxmox]
+      summary: Delete backup
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Backup deleted
+
+  /vps/proxmox/{serviceId}/backup-schedules:
+    get:
+      tags: [VPS Proxmox]
+      summary: List backup schedules
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Schedule list
+    post:
+      tags: [VPS Proxmox]
+      summary: Create backup schedule
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dow:
+                  type: string
+                  description: Day of week (mon,tue,wed...)
+                hour:
+                  type: integer
+                minute:
+                  type: integer
+                mode:
+                  type: string
+                  enum: [snapshot, suspend, stop]
+                compress:
+                  type: string
+                  enum: [none, lzo, gzip, zstd]
+      responses:
+        '201':
+          description: Schedule created
+
+  /vps/proxmox/{serviceId}/backup-schedules/{id}:
+    delete:
+      tags: [VPS Proxmox]
+      summary: Delete backup schedule
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Schedule deleted
+
+  /vps/proxmox/{serviceId}/templates:
+    get:
+      tags: [VPS Proxmox]
+      summary: List available OS templates
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Template list
+
+  /vps/proxmox/{serviceId}/snapshots:
+    get:
+      tags: [VPS Proxmox]
+      summary: List snapshots
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Snapshot list
+    post:
+      tags: [VPS Proxmox]
+      summary: Create snapshot
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  example: before-upgrade
+                description:
+                  type: string
+      responses:
+        '201':
+          description: Snapshot created
+
+  /vps/proxmox/{serviceId}/snapshots/{name}:
+    delete:
+      tags: [VPS Proxmox]
+      summary: Delete snapshot
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Snapshot deleted
+
+  /vps/proxmox/{serviceId}/snapshots/{name}/rollback:
+    post:
+      tags: [VPS Proxmox]
+      summary: Rollback to snapshot
+      description: "**VM is stopped during rollback.** Requires `confirm: true`."
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                confirm:
+                  type: boolean
+      responses:
+        '200':
+          description: Rollback initiated
+
+  /vps/proxmox/{serviceId}/available-ips:
+    get:
+      tags: [VPS Proxmox]
+      summary: Get available IPs
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Available IP count
+
+  /vps/proxmox/{serviceId}/locations:
+    get:
+      tags: [VPS Proxmox]
+      summary: Get migration locations
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Available locations
+
+  /vps/proxmox/{serviceId}/console:
+    get:
+      tags: [VPS Proxmox]
+      summary: Get noVNC console URL
+      description: Returns a browser console URL valid for approximately 2 hours.
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Console URL
+
+  /vps/proxmox/{serviceId}/console/ssh:
+    post:
+      tags: [VPS Proxmox]
+      summary: Get SSH console
+      description: Returns a WebSocket URL and encrypted token for SSH access.
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+      responses:
+        '200':
+          description: SSH console credentials
+
+  /vps/proxmox/{serviceId}/start:
+    post:
+      tags: [VPS Proxmox]
+      summary: Start VM
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: VM started
+
+  /vps/proxmox/{serviceId}/shutdown:
+    post:
+      tags: [VPS Proxmox]
+      summary: Shutdown VM (graceful)
+      description: Sends ACPI shutdown signal.
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Shutdown initiated
+
+  /vps/proxmox/{serviceId}/reboot:
+    post:
+      tags: [VPS Proxmox]
+      summary: Reboot VM
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Reboot initiated
+
+  /vps/proxmox/{serviceId}/stop:
+    post:
+      tags: [VPS Proxmox]
+      summary: Force stop VM
+      description: "**Warning:** Risk of data corruption. Use shutdown for graceful stop."
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: VM force-stopped
+
+  /vps/proxmox/{serviceId}/hostname:
+    put:
+      tags: [VPS Proxmox]
+      summary: Change hostname
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hostname]
+              properties:
+                hostname:
+                  type: string
+                  example: my-server.example.com
+      responses:
+        '200':
+          description: Hostname changed
+
+  /vps/proxmox/{serviceId}/password:
+    put:
+      tags: [VPS Proxmox]
+      summary: Change root password
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+                  minLength: 8
+      responses:
+        '200':
+          description: Password changed
+
+  /vps/proxmox/{serviceId}/reinstall:
+    post:
+      tags: [VPS Proxmox]
+      summary: Reinstall OS
+      description: "**Wipes all data.** Async operation. Requires `confirm: true`."
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [template_id, password, confirm]
+              properties:
+                template_id:
+                  type: integer
+                  description: Template ID from /templates endpoint
+                password:
+                  type: string
+                  minLength: 8
+                confirm:
+                  type: boolean
+                  example: true
+      responses:
+        '200':
+          description: Reinstall initiated (returns operation UUID)
+
+  /vps/proxmox/{serviceId}/network/reconfigure:
+    post:
+      tags: [VPS Proxmox]
+      summary: Reconfigure network
+      description: Applies network config via QEMU Guest Agent. May require reboot.
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Network reconfigured
+
+  /vps/proxmox/{serviceId}/migrate:
+    post:
+      tags: [VPS Proxmox]
+      summary: Migrate VM
+      description: "Async operation. Requires `confirm: true`."
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                server_id:
+                  type: integer
+                group_id:
+                  type: integer
+                confirm:
+                  type: boolean
+      responses:
+        '200':
+          description: Migration initiated
+
+  /vps/proxmox/{serviceId}/operations:
+    get:
+      tags: [VPS Proxmox]
+      summary: List active operations
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Active operations list
+
+  /vps/proxmox/{serviceId}/operations/{uuid}:
+    get:
+      tags: [VPS Proxmox]
+      summary: Get operation status
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: uuid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Operation status
+
+  # ═══════════════════════════════════════════════════════
+  # VPS CLOUD (summary — same pattern)
+  # ═══════════════════════════════════════════════════════
+
+  /vps/cloud/{vmId}:
+    get:
+      tags: [VPS Cloud]
+      summary: Get VM info
+      parameters: &opVmIdParam
+        - name: vmId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: VM info
+  /vps/cloud/{vmId}/cancel:
+    post:
+      tags: [VPS Cloud]
+      summary: Request service cancellation
+      description: |
+        Submits a cancellation request via Impreza Account. The VM is **not** destroyed immediately —
+        cancellation is processed by Impreza Account according to the chosen type.
+      parameters: *opVmIdParam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [Immediate, End of Billing Period]
+                  example: End of Billing Period
+                reason:
+                  type: string
+                  description: Optional cancellation reason
+                  example: No longer needed
+      responses:
+        '200':
+          description: Cancellation request submitted
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  vm_id: 456
+                  service_id: 123
+                  cancel_type: "End of Billing Period"
+                  message: "Cancellation request submitted successfully."
+
+  /vps/cloud/templates:
+    get:
+      tags: [VPS Cloud]
+      summary: List available OS templates
+      responses:
+        '200':
+          description: Templates
+
+  /vps/cloud/locations:
+    get:
+      tags: [VPS Cloud]
+      summary: List datacenter locations
+      responses:
+        '200':
+          description: Locations
+
+  /vps/cloud/sizes:
+    get:
+      tags: [VPS Cloud]
+      summary: List VM plan sizes
+      responses:
+        '200':
+          description: Plan sizes
+
+  /vps/cloud/images:
+    get:
+      tags: [VPS Cloud]
+      summary: List saved images (backups)
+      responses:
+        '200':
+          description: Image list
+
+  /vps/cloud/{vmId}/boot:
+    post:
+      tags: [VPS Cloud]
+      summary: Boot VM
+      parameters: *opVmIdParam
+      responses:
+        '200':
+          description: VM booted
+
+  /vps/cloud/{vmId}/shutdown:
+    post:
+      tags: [VPS Cloud]
+      summary: Shutdown VM (graceful)
+      parameters: *opVmIdParam
+      responses:
+        '200':
+          description: Shutdown initiated
+
+  /vps/cloud/{vmId}/reboot:
+    post:
+      tags: [VPS Cloud]
+      summary: Reboot VM
+      parameters: *opVmIdParam
+      responses:
+        '200':
+          description: Reboot initiated
+
+  /vps/cloud/{vmId}/poweroff:
+    post:
+      tags: [VPS Cloud]
+      summary: Force power off
+      parameters: *opVmIdParam
+      responses:
+        '200':
+          description: VM powered off
+
+  /vps/cloud/{vmId}/hostname:
+    put:
+      tags: [VPS Cloud]
+      summary: Change hostname
+      parameters: *opVmIdParam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hostname]
+              properties:
+                hostname:
+                  type: string
+      responses:
+        '200':
+          description: Hostname changed
+
+  /vps/cloud/{vmId}/password:
+    put:
+      tags: [VPS Cloud]
+      summary: Change password
+      parameters: *opVmIdParam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+                  minLength: 8
+      responses:
+        '200':
+          description: Password changed
+
+  /vps/cloud/{vmId}/reinstall:
+    post:
+      tags: [VPS Cloud]
+      summary: Reinstall OS
+      description: "**Wipes all data.** Requires `confirm: true`."
+      parameters: *opVmIdParam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [template, confirm]
+              properties:
+                template:
+                  type: string
+                  example: ubuntu-22.04
+                ssh_keys:
+                  type: string
+                confirm:
+                  type: boolean
+      responses:
+        '200':
+          description: Reinstall initiated
+
+  /vps/cloud/{vmId}/resize:
+    post:
+      tags: [VPS Cloud]
+      summary: Resize VM
+      description: Requires reboot after resize.
+      parameters: *opVmIdParam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [instance_size]
+              properties:
+                instance_size:
+                  type: string
+      responses:
+        '200':
+          description: Resize initiated
+
+  /vps/cloud/{vmId}/vnc:
+    get:
+      tags: [VPS Cloud]
+      summary: Get VNC credentials
+      parameters: *opVmIdParam
+      responses:
+        '200':
+          description: VNC IP, port, password
+
+  /vps/cloud/{vmId}/images:
+    post:
+      tags: [VPS Cloud]
+      summary: Create image (backup)
+      parameters: *opVmIdParam
+      responses:
+        '201':
+          description: Image created
+
+  /vps/cloud/{vmId}/images/{id}/restore:
+    post:
+      tags: [VPS Cloud]
+      summary: Restore image
+      parameters:
+        - name: vmId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Restore initiated
+
+  /vps/cloud/images/{id}:
+    delete:
+      tags: [VPS Cloud]
+      summary: Delete image
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Image deleted
+
+  /vps/cloud/rdns/{ip}:
+    get:
+      tags: [VPS Cloud]
+      summary: Get rDNS (PTR record)
+      parameters:
+        - name: ip
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: rDNS record
+    put:
+      tags: [VPS Cloud]
+      summary: Set/update rDNS
+      parameters:
+        - name: ip
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain]
+              properties:
+                domain:
+                  type: string
+      responses:
+        '200':
+          description: rDNS updated
+    delete:
+      tags: [VPS Cloud]
+      summary: Delete rDNS
+      parameters:
+        - name: ip
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: rDNS deleted
+
+  /vps/cloud/{vmId}/rescue:
+    post:
+      tags: [VPS Cloud]
+      summary: Enable rescue mode
+      description: Reboot required to enter rescue mode after enabling.
+      parameters: *opVmIdParam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Rescue mode enabled
+    delete:
+      tags: [VPS Cloud]
+      summary: Disable rescue mode
+      parameters: *opVmIdParam
+      responses:
+        '200':
+          description: Rescue mode disabled
+
+  /vps/cloud/ssh-keys:
+    get:
+      tags: [VPS Cloud]
+      summary: List SSH keys
+      responses:
+        '200':
+          description: SSH key list
+
+  /vps/cloud/{vmId}/ssh-keys:
+    post:
+      tags: [VPS Cloud]
+      summary: Assign SSH keys to VM
+      parameters: *opVmIdParam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ssh_keys]
+              properties:
+                ssh_keys:
+                  type: string
+      responses:
+        '200':
+          description: SSH keys assigned
+
+  /vps/cloud/{vmId}/ipv6:
+    post:
+      tags: [VPS Cloud]
+      summary: Enable IPv6
+      parameters: *opVmIdParam
+      responses:
+        '200':
+          description: IPv6 enabled
+
+  /vps/cloud/{vmId}/boot-order:
+    put:
+      tags: [VPS Cloud]
+      summary: Change boot order
+      parameters: *opVmIdParam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bootorder]
+              properties:
+                bootorder:
+                  type: string
+                  enum: [cda, dca]
+      responses:
+        '200':
+          description: Boot order changed
+
+  /vps/cloud/{vmId}/iso/mount:
+    post:
+      tags: [VPS Cloud]
+      summary: Mount ISO
+      parameters: *opVmIdParam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [iso]
+              properties:
+                iso:
+                  type: string
+      responses:
+        '200':
+          description: ISO mounted
+
+  /vps/cloud/{vmId}/iso:
+    delete:
+      tags: [VPS Cloud]
+      summary: Unmount ISO
+      parameters: *opVmIdParam
+      responses:
+        '200':
+          description: ISO unmounted
+
+  /vps/cloud/{vmId}/vnc-password:
+    put:
+      tags: [VPS Cloud]
+      summary: Change VNC password
+      parameters: *opVmIdParam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+      responses:
+        '200':
+          description: VNC password changed

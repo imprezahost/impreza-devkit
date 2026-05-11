@@ -1,0 +1,78 @@
+# GitHub Actions workflow for impreza-cli-go releases.
+#
+# Triggered by a tag matching `cli-go-v*` pushed to this repo (the
+# public mirror at github.com/imprezahost/impreza-devkit).
+#
+# What it does:
+#   1. Check out the source at the tag.
+#   2. Set up Go 1.22+.
+#   3. Run `goreleaser release` in the cli-go/ subdirectory.
+#   4. Goreleaser builds 5 binaries (Linux x86_64 + arm64, macOS x86_64
+#      + arm64, Windows x86_64), bundles README + LICENSE + openapi/
+#      asyncapi specs into per-platform archives, generates SHA-256
+#      checksums, and uploads everything to the GitHub Release for
+#      the tag.
+#
+# Required secrets: none beyond the auto-provided GITHUB_TOKEN.
+
+name: Release impreza-cli-go
+
+on:
+  push:
+    tags:
+      - 'cli-go-v*'
+  # Manual trigger for re-running against an existing tag if a release
+  # needs to be regenerated (e.g. after a goreleaser config bump).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to (re-)release. Must already exist.'
+        required: true
+        default: ''
+
+permissions:
+  contents: write  # GoReleaser needs to create/update the GitHub Release.
+
+jobs:
+  release:
+    name: Build + publish binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          # Full history so goreleaser can derive the changelog from
+          # the commit range since the previous cli-go-v* tag.
+          fetch-depth: 0
+          # For workflow_dispatch, check out the specified tag instead
+          # of the workflow file branch.
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli-go/go.mod
+          # cache=true gates on the go.sum file; cli-go has one.
+          cache: true
+          cache-dependency-path: cli-go/go.sum
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '~> v2'
+          # Run from the cli-go subdirectory so the binary name +
+          # module path resolve correctly.
+          workdir: cli-go
+          # `--skip=validate` bypasses goreleaser's early semver check,
+          # which would otherwise reject `cli-go-v0.1.0` (the "cli-go-"
+          # prefix breaks `semver.NewVersion` — it expects "v" or
+          # numeric leading char). We don't run goreleaser-pro's
+          # `monorepo:` block (OSS doesn't have it), so the prefix
+          # stays through to template eval where `trimprefix .Version
+          # "cli-go-v"` in cli-go/.goreleaser.yml strips it from
+          # archive names + checksum filename + release header. The
+          # GitHub Release itself is still uploaded to the real tag
+          # `cli-go-v0.1.0` (unchanged) via `.Git.CurrentTag`.
+          args: release --clean --skip=validate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

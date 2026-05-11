@@ -1,0 +1,175 @@
+# Goreleaser config for impreza-cli-go.
+#
+# Builds the Go CLI for Linux / macOS / Windows on x86_64 + arm64
+# (5 binaries total) and uploads them to GitHub Releases when a tag
+# matching `cli-go-v*` is pushed to the public mirror.
+#
+# Local dry run (no upload):
+#
+#     goreleaser release --snapshot --clean --skip=publish
+#
+# CI (via .github/workflows/release-go.yml):
+#
+#     goreleaser release --clean
+
+# Schema version — required by goreleaser v2+.
+version: 2
+
+# When the project lives in a sub-directory of the repo, point
+# goreleaser at it so the binary name + module path resolve correctly.
+project_name: impreza-cli-go
+
+# Tag-prefix handling — the repo carries multiple release tracks
+# (`sdk-v*` + `cli-v*` for Python, `cli-go-v*` for the Go binary).
+# Goreleaser v2 OSS doesn't have the `monorepo:` config block (that's
+# Pro-only), so we strip the `cli-go-v` prefix manually inside every
+# template that references `.Version`. For tag `cli-go-v0.1.0`,
+# `trimprefix .Version "cli-go-v"` yields `0.1.0`, giving clean
+# archive + checksum filenames. The GitHub Release is still created
+# at the real tag `cli-go-v0.1.0` (unchanged), only the rendered
+# artefact names are cleaned up.
+
+# Build configuration ─────────────────────────────────────────────────
+
+before:
+  hooks:
+    - go mod tidy
+    # Copy LICENSE + openapi/asyncapi specs from the repo root into
+    # cli-go/ so the archive step below can reference them by plain
+    # name. Avoids a goreleaser quirk where `../foo` paths resolve
+    # to `./C:/...` on Windows snapshot builds. The copied files are
+    # gitignored — source of truth stays at the repo root.
+    - go run ./scripts/prep_assets.go
+
+builds:
+  - id: impreza
+    binary: impreza
+    main: .
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      # Strip debug info + inject the release version into main.version
+      # so `impreza --version` reports e.g. "0.1.0" instead of "dev".
+      - -s -w -X main.version={{.Version}}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    # Windows-on-arm64 builds OK with Go 1.22+ but the practical
+    # downloader base is much smaller — skip to keep the release size
+    # focused. Re-enable when there's demand.
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+# Archive configuration ───────────────────────────────────────────────
+
+archives:
+  - id: impreza
+    # tar.gz on UNIX, zip on Windows. README + LICENSE bundled so
+    # users have the docs alongside the binary.
+    formats: ['tar.gz']
+    format_overrides:
+      - goos: windows
+        formats: ['zip']
+    name_template: >-
+      {{ .ProjectName }}_{{ trimprefix .Version "cli-go-v" }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      # Bundled at archive time. LICENSE + openapi.yaml + asyncapi.yaml
+      # are copied here by the before.hooks `prep_assets.go` step from
+      # the repo root; README.md lives in cli-go/ already.
+      - LICENSE
+      - README.md
+      - openapi.yaml
+      - asyncapi.yaml
+
+# Checksum ───────────────────────────────────────────────────────────
+
+checksum:
+  name_template: '{{ .ProjectName }}_{{ trimprefix .Version "cli-go-v" }}_checksums.txt'
+  algorithm: sha256
+
+# Snapshot config (for local --snapshot runs) ─────────────────────────
+#
+# Don't call `incpatch` here — the repo also carries Python package
+# tags like `cli-v0.3.1` and `sdk-v0.3.1` which goreleaser may try
+# to parse as the "previous" version when no cli-go-v* tag exists
+# yet. Hard-coding `0.0.0` (with the short SHA suffix for traceability)
+# keeps the snapshot deterministic regardless of what other tags the
+# repo carries.
+snapshot:
+  version_template: '0.0.0-snapshot-{{ .ShortCommit }}'
+
+# Git tag config — narrow to cli-go-v* so the Python package tags
+# (`cli-v*`, `sdk-v*`) don't get picked up as "previous" or "current"
+# during release runs.
+git:
+  ignore_tags:
+    - '!cli-go-v*'
+
+# Changelog generation ────────────────────────────────────────────────
+#
+# Pull commit messages from the git range between this tag and the
+# previous cli-go-v* tag. Filter out non-customer-facing entries so the
+# auto-generated release notes stay focused.
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^refactor:'
+      - 'Merge branch'
+      - 'Merge pull request'
+  groups:
+    - title: New features
+      regexp: '(?i)^(feat|add)[(:]'
+      order: 0
+    - title: Bug fixes
+      regexp: '(?i)^(fix|hotfix)[(:]'
+      order: 10
+    - title: Other
+      order: 99
+
+# Release configuration ───────────────────────────────────────────────
+
+release:
+  # Target the public GitHub repo (the mirror).
+  github:
+    owner: imprezahost
+    name: impreza-devkit
+  # Phase 7.5.1 closed the 9-verb domain gap (register / transfer /
+  # set-nameservers / lock / unlock / id-protection / raa-verify /
+  # gdpr-auth / transfer-approval), so the Go CLI now ships full
+  # verb-surface parity with the Python CLI (89 commands across 10
+  # resource groups). First public release is no longer pre-release.
+  prerelease: 'false'
+  # Markdown rendered under the auto-generated changelog.
+  header: |
+    # impreza-cli-go {{ trimprefix .Version "cli-go-v" }}
+
+    Go-binary CLI for the [Impreza Host](https://imprezahost.com)
+    public REST API. Single static binary, no Python runtime
+    required. Full verb-surface parity with the `impreza-cli`
+    Python CLI (89 commands across 10 resource groups).
+
+    ## Install
+
+    Pick the archive for your OS + architecture below, extract,
+    and put `impreza` somewhere on your `$PATH`.
+
+    See the bundled `README.md` for usage. The OpenAPI 3.1 contract
+    + AsyncAPI 3.0 webhook contract are bundled in each archive
+    alongside the binary.
+  footer: |
+    ---
+
+    *Python alternative*: `pip install impreza-cli` is the
+    reference implementation. Same TOML config file, same verb
+    surface — pick the binary that fits your install model.

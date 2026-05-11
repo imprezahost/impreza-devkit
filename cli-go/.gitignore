@@ -1,0 +1,29 @@
+# Build artefacts
+/impreza
+/impreza.exe
+/dist/
+/build/
+
+# Release-prep assets — populated by scripts/prep_assets.go (called
+# from .goreleaser.yml before.hooks). Source of truth lives at the
+# repo root (../LICENSE, ../openapi/*.yaml); these are copies created
+# at archive time so goreleaser can reference them by plain name.
+/LICENSE
+/openapi.yaml
+/asyncapi.yaml
+
+# oapi-codegen output (regenerated via `make gen`)
+/internal/api/
+
+# Test caches
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
