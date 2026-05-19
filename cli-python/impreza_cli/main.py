@@ -19,6 +19,7 @@ from . import __version__
 from .commands import account as account_cmd
 from .commands import catalog as catalog_cmd
 from .commands import context as context_cmd
+from .commands import dedicated as dedicated_cmd
 from .commands import doctor as doctor_cmd
 from .commands import domain as domain_cmd
 from .commands import invoice as invoice_cmd
@@ -86,6 +87,7 @@ def _root(
 app.add_typer(account_cmd.app, name="account")
 app.add_typer(catalog_cmd.app, name="catalog")
 app.add_typer(context_cmd.app, name="context")
+app.add_typer(dedicated_cmd.app, name="dedicated")
 app.add_typer(doctor_cmd.app, name="doctor")
 app.add_typer(domain_cmd.app, name="domain")
 app.add_typer(invoice_cmd.app, name="invoice")

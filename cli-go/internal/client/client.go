@@ -94,6 +94,20 @@ func (c *Client) Post(ctx context.Context, path string, body any, target any) er
 	return c.do(ctx, http.MethodPost, path, nil, body, target)
 }
 
+// PostWithHeaders is Post + arbitrary request headers. Used by endpoints
+// that demand an out-of-band confirmation header (e.g. the dedicated-server
+// reinstall route, which requires X-Impreza-Confirm: WIPE in addition to
+// the body confirmation flag).
+func (c *Client) PostWithHeaders(
+	ctx context.Context,
+	path string,
+	body any,
+	headers map[string]string,
+	target any,
+) error {
+	return c.doWithHeaders(ctx, http.MethodPost, path, nil, body, headers, target)
+}
+
 // Put performs an authenticated PUT with a JSON body.
 func (c *Client) Put(ctx context.Context, path string, body any, target any) error {
 	return c.do(ctx, http.MethodPut, path, nil, body, target)
@@ -110,6 +124,12 @@ func (c *Client) Delete(ctx context.Context, path string, body any) error {
 // do handles the full request/response cycle: build URL, encode body,
 // execute, decode envelope, dispatch error or success branch.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any, target any) error {
+	return c.doWithHeaders(ctx, method, path, query, body, nil, target)
+}
+
+// doWithHeaders is the same as do but lets callers attach extra request
+// headers (Accept and Content-Type are still set automatically).
+func (c *Client) doWithHeaders(ctx context.Context, method, path string, query url.Values, body any, headers map[string]string, target any) error {
 	u, err := url.Parse(c.BaseURL + path)
 	if err != nil {
 		return fmt.Errorf("build URL %s%s: %w", c.BaseURL, path, err)
@@ -134,6 +154,9 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 
 	resp, err := c.HTTP.Do(req)

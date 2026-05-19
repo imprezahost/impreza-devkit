@@ -98,8 +98,9 @@ class HttpClient:
         path: str,
         *,
         json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        return self._request("POST", path, json=json)
+        return self._request("POST", path, json=json, headers=headers)
 
     def patch(
         self,
@@ -134,13 +135,16 @@ class HttpClient:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         attempt = 0
         last_network_error: httpx.RequestError | None = None
 
         while attempt <= self._max_retries:
             try:
-                response = self._client.request(method, path, params=params, json=json)
+                response = self._client.request(
+                    method, path, params=params, json=json, headers=headers
+                )
             except httpx.RequestError as exc:
                 last_network_error = exc
                 if attempt >= self._max_retries:

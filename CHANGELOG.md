@@ -14,6 +14,58 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 No changes yet.
 
+## [0.4.0] — 2026-05-19
+
+Adds the `dedicated` resource — a new top-level namespace mirroring
+the public `/dedicated/*` API surface for dedicated-server management.
+Operations are gated by per-service capabilities advertised through
+`GET /dedicated/{id}/capabilities`; calling a capability-gated
+endpoint against a service that doesn't advertise it returns
+`NOT_SUPPORTED`. Always inspect capabilities first when scripting.
+
+The dedicated surface is vendor-agnostic — the public payload never
+exposes the underlying backend identity, so the same code works
+across every dedicated service on the account.
+
+### Added
+
+- **`impreza-sdk`: `client.dedicated` / `async_client.dedicated`**
+  resource (`impreza/resources/dedicated.py`). 17 methods per side
+  covering the full `/dedicated/*` surface — list, info, capabilities,
+  status, ips, os-images, kvm, firewall, firewall/logs, bandwidth,
+  vpn, start, shutdown, reboot, set_rdns, reset_rdns, reinstall,
+  enable_kvm, disable_kvm, set_firewall.
+  - `reinstall(...)` is destructive: the SDK rejects `confirm=False`
+    locally and injects the required `X-Impreza-Confirm: WIPE`
+    header alongside the body confirmation.
+  - `_http` and `_http_async` gained an optional `headers` kwarg on
+    `post` so out-of-band confirmation headers travel through the
+    same retry / envelope handling as every other call.
+- **`impreza-cli` (Python): `impreza dedicated` command tree**
+  (`impreza_cli/commands/dedicated.py`). 20 sub-commands matching
+  the SDK methods, including the destructive `reinstall` verb gated
+  behind both `--confirm` and a TTY prompt (or `--yes`).
+- **`impreza-cli-go` (Go): `impreza dedicated` command tree**
+  (`cli-go/cmd/dedicated.go` + `cli-go/internal/client/dedicated.go`).
+  Same 20 verb surface as the Python CLI. `PostWithHeaders` /
+  `doWithHeaders` added to the internal HTTP client so the reinstall
+  verb can inject `X-Impreza-Confirm: WIPE` without bypassing the
+  shared retry / envelope handling.
+
+### Notes
+
+- The verb surface is **lock-step across both CLIs** (Python and Go)
+  and the SDK — 20 dedicated verbs on each, mapping 1:1 to the
+  server's `/dedicated/*` endpoints. Cosmetic differences only
+  (option naming, output renderers).
+- Total verb counts after this release: **106 verbs** on both
+  `impreza-cli` (Python) and `impreza-cli-go` (Go), across 11
+  resource groups.
+- This release is **purely additive**. No existing surface changes;
+  no breaking changes. Upgrade with `pip install -U impreza-sdk
+  impreza-cli` (Python) or downloading the new `cli-go-v0.2.0`
+  binaries (Go).
+
 ## [0.3.2] — 2026-05-11
 
 Hot-fix for `0.3.1`. Removes the rDNS sub-surface from the
@@ -481,7 +533,9 @@ Phase 1. CLI lives in a sibling package and lands in Phase 2.
 | 1.7 | 2026-05-09 | Crypto top-up (`TopupInvoice` future) |
 | 1.8 | 2026-05-09 | Release prep — this CHANGELOG, README polish, tag |
 
-[Unreleased]: https://github.com/imprezahost/impreza-devkit/compare/sdk-v0.3.1...master
+[Unreleased]: https://github.com/imprezahost/impreza-devkit/compare/sdk-v0.4.0...master
+[0.4.0]: https://github.com/imprezahost/impreza-devkit/compare/sdk-v0.3.2...sdk-v0.4.0
+[0.3.2]: https://github.com/imprezahost/impreza-devkit/compare/sdk-v0.3.1...sdk-v0.3.2
 [0.3.1]: https://github.com/imprezahost/impreza-devkit/compare/sdk-v0.3.0...sdk-v0.3.1
 [0.3.0]: https://github.com/imprezahost/impreza-devkit/compare/sdk-v0.2.0-alpha...sdk-v0.3.0
 [0.2.0a0]: https://github.com/imprezahost/impreza-devkit/compare/sdk-v0.1.0-alpha...sdk-v0.2.0-alpha

@@ -36,6 +36,7 @@ from ._http import (
 from ._tor import resolve_proxy
 from .resources.account import AccountResource
 from .resources.catalog import CatalogResource
+from .resources.dedicated import DedicatedResource
 from .resources.domains import DomainsResource
 from .resources.email import EmailResource
 from .resources.hosting import HostingResource
@@ -94,6 +95,7 @@ class Client:
         self.invoices = InvoicesResource(self._http)
         self.orders = OrdersResource(self._http)
         self.vps = VpsResource(self._http)
+        self.dedicated = DedicatedResource(self._http)
         self.webhooks = WebhooksResource(self._http)
 
     @classmethod

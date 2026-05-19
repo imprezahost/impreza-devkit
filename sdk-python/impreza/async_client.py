@@ -32,6 +32,7 @@ from ._http_async import AsyncHttpClient
 from ._tor import resolve_proxy
 from .resources.account import AsyncAccountResource
 from .resources.catalog import AsyncCatalogResource
+from .resources.dedicated import AsyncDedicatedResource
 from .resources.domains import AsyncDomainsResource
 from .resources.email import AsyncEmailResource
 from .resources.hosting import AsyncHostingResource
@@ -80,6 +81,7 @@ class AsyncClient:
         self.invoices = AsyncInvoicesResource(self._http)
         self.orders = AsyncOrdersResource(self._http)
         self.vps = AsyncVpsResource(self._http)
+        self.dedicated = AsyncDedicatedResource(self._http)
         self.webhooks = AsyncWebhooksResource(self._http)
 
     @classmethod

@@ -95,8 +95,9 @@ class AsyncHttpClient:
         path: str,
         *,
         json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        return await self._request("POST", path, json=json)
+        return await self._request("POST", path, json=json, headers=headers)
 
     async def patch(
         self,
@@ -131,13 +132,16 @@ class AsyncHttpClient:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         attempt = 0
         last_network_error: httpx.RequestError | None = None
 
         while attempt <= self._max_retries:
             try:
-                response = await self._client.request(method, path, params=params, json=json)
+                response = await self._client.request(
+                    method, path, params=params, json=json, headers=headers
+                )
             except httpx.RequestError as exc:
                 last_network_error = exc
                 if attempt >= self._max_retries:
