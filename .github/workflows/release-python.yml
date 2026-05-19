@@ -1,0 +1,105 @@
+# Publish impreza-sdk / impreza-cli to PyPI when a release tag is pushed.
+#
+# Triggers
+#   - `sdk-v*` tag push -> publishes `impreza-sdk` from sdk-python/
+#   - `cli-v*` tag push -> publishes `impreza-cli` from cli-python/
+#   - Manual dispatch     -> "Run workflow" button on the Actions page,
+#                            pick any existing tag (e.g. sdk-v0.4.0) and
+#                            it builds + publishes that version.
+#
+# Authentication
+#   Uses **PyPI Trusted Publishing (OIDC)**. No secrets stored in the repo.
+#   Each package must be registered as a trusted publisher in PyPI once:
+#     PyPI -> Manage account -> Publishing -> Add a new pending publisher
+#       Owner:     imprezahost
+#       Repo:      impreza-devkit
+#       Workflow:  release-python.yml
+#       Env:       pypi
+#   Repeat for `impreza-sdk` and `impreza-cli`.
+#
+# Version source
+#   `setuptools_scm` reads the version from the Git tag. We also export
+#   `SETUPTOOLS_SCM_PRETEND_VERSION` from the tag suffix so a manual
+#   dispatch picks the right version even if `git describe` resolves a
+#   different nearest tag (the monorepo carries sdk-v / cli-v / cli-go-v
+#   tracks on the same commit).
+
+name: Publish Python packages to PyPI
+
+on:
+  push:
+    tags:
+      - 'sdk-v*'
+      - 'cli-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. sdk-v0.4.0 or cli-v0.4.0)'
+        required: true
+        type: string
+
+jobs:
+  publish:
+    name: Publish ${{ github.ref_name || inputs.tag }}
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/${{ steps.tag.outputs.pkg_name }}/${{ steps.tag.outputs.version }}/
+    permissions:
+      id-token: write   # OIDC token for PyPI Trusted Publishing
+      contents: read
+    steps:
+      - name: Resolve tag, package directory and version
+        id: tag
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          case "$TAG" in
+            sdk-v*)
+              echo "dir=sdk-python"            >> "$GITHUB_OUTPUT"
+              echo "pkg_name=impreza-sdk"      >> "$GITHUB_OUTPUT"
+              echo "version=${TAG#sdk-v}"      >> "$GITHUB_OUTPUT"
+              ;;
+            cli-v*)
+              echo "dir=cli-python"            >> "$GITHUB_OUTPUT"
+              echo "pkg_name=impreza-cli"      >> "$GITHUB_OUTPUT"
+              echo "version=${TAG#cli-v}"      >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Tag '$TAG' must match sdk-v* or cli-v*"
+              exit 1
+              ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout ${{ steps.tag.outputs.tag }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          # setuptools_scm reads the full history to resolve tags, even
+          # though we also pin via SETUPTOOLS_SCM_PRETEND_VERSION.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build sdist and wheel
+        working-directory: ${{ steps.tag.outputs.dir }}
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+          echo "--- dist/ ---"
+          ls -la dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: ${{ steps.tag.outputs.dir }}/dist/
+          print-hash: true
+          verbose: true
