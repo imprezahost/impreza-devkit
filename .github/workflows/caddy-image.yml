@@ -1,0 +1,109 @@
+# GitHub Actions: build + push the custom Caddy image used by impreza-agent.
+#
+# The image bundles caddy-dns/cloudflare so the agent can do ACME
+# DNS-01 challenges against the imprezaapps.com Cloudflare zone — see
+# agent-go/packaging/caddy/Dockerfile for the full rationale.
+#
+# Triggers:
+#   - Tag push matching `caddy-v<X.Y.Z>` (e.g. `caddy-v2.8.4`).
+#     Cuts a new release: builds multi-arch + pushes 3 tags to GHCR.
+#   - Manual `workflow_dispatch` — re-run an existing release after a
+#     base image bump.
+#
+# Output (3 tags per release, all multi-arch linux/amd64 + linux/arm64):
+#   - ghcr.io/imprezahost/caddy:<X.Y.Z>-cf   (immutable)
+#   - ghcr.io/imprezahost/caddy:2-cf         (major-version stream — what
+#                                             the agent's caddy.go pins
+#                                             to)
+#   - ghcr.io/imprezahost/caddy:latest-cf    (latest stable cf-enabled)
+#
+# Required secrets: none — uses the auto-provided GITHUB_TOKEN with
+# `packages: write` to publish to ghcr.io/imprezahost/.
+
+name: Build + push Caddy image
+
+on:
+  push:
+    tags:
+      - 'caddy-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Caddy version to build (e.g. 2.8.4). The image tags will use this verbatim.'
+        required: true
+
+permissions:
+  contents: read
+  packages: write  # push to ghcr.io
+
+jobs:
+  build-push:
+    name: Build + push multi-arch Caddy + cloudflare DNS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        # tag-triggered: GITHUB_REF_NAME is e.g. `caddy-v2.8.4`, strip
+        # the `caddy-v` prefix → `2.8.4`.
+        # manual: just use the dispatch input.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#caddy-v}"
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "FATAL: could not resolve version"; exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved Caddy version: $VERSION"
+
+      - name: Set up QEMU (arm64 emulation for cross-build)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          # `github.actor` works for both tag-push and workflow_dispatch.
+          # GITHUB_TOKEN with `packages: write` (granted above) is
+          # auto-scoped to the repo's owner namespace, so pushes go to
+          # ghcr.io/<repo-owner>/... without extra setup.
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push
+        uses: docker/build-push-action@v6
+        with:
+          # Build context = repo root so the Dockerfile can COPY the
+          # caddy-dns-impreza/ subdir (the bundled libdns plugin).
+          # The Dockerfile lives in agent-go/packaging/caddy/ for
+          # discoverability but its COPY paths are relative to root.
+          context: .
+          file: agent-go/packaging/caddy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            CADDY_VERSION=${{ steps.ver.outputs.version }}
+          # Three tags per build: pinned, major-version stream, latest.
+          # The major-version stream (`2-cf`) is what agent-go pins to,
+          # so a new release auto-rolls out to fresh agent installs.
+          # Existing agents are unaffected until Caddy is restarted (the
+          # agent does not auto-pull; restart happens on agent upgrade
+          # or manual `docker pull` + `docker restart impreza_caddy`).
+          tags: |
+            ghcr.io/imprezahost/caddy:${{ steps.ver.outputs.version }}-cf
+            ghcr.io/imprezahost/caddy:2-cf
+            ghcr.io/imprezahost/caddy:latest-cf
+          labels: |
+            org.opencontainers.image.source=https://github.com/imprezahost/impreza-devkit
+            org.opencontainers.image.description=Caddy ${{ steps.ver.outputs.version }} + caddy-dns/cloudflare, for impreza-agent DNS-01 challenges
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.revision=${{ github.sha }}

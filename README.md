@@ -75,8 +75,17 @@ impreza-devkit/
 ├── cli-python/             impreza-cli package source + tests
 ├── cli-go/                 impreza-cli-go binary source + tests
 │                           (released independently; tag prefix `cli-go-v`)
+├── caddy-dns-impreza/      libdns provider that proxies ACME DNS-01
+│                           challenges through the Impreza public API
+│                           — bundled into the Caddy sidecar image used
+│                           by impreza-agent for HTTPS termination
 └── examples/               curl + Python recipes
 ```
+
+The Caddy sidecar image (`ghcr.io/imprezahost/caddy:2-cf`) is built +
+pushed by `.github/workflows/caddy-image.yml` from
+`agent-go/packaging/caddy/Dockerfile` + `caddy-dns-impreza/`. Triggers
+on `caddy-v<X.Y.Z>` tag push or manual workflow dispatch.
 
 ## Development
 
