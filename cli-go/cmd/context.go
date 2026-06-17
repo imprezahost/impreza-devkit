@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/imprezahost/impreza-devkit/cli-go/internal/config"
+	"github.com/imprezahost/impreza-devkit/sdk-go/config"
 )
 
 var contextCmd = &cobra.Command{

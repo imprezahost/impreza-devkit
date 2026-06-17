@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/imprezahost/impreza-devkit/cli-go/internal/client"
+	"github.com/imprezahost/impreza-devkit/sdk-go/client"
 	"github.com/imprezahost/impreza-devkit/cli-go/internal/output"
 )
 

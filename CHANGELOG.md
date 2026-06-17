@@ -12,7 +12,26 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **In-place redeploy for custom deployments.** Rebuild a running custom
+  app from its CURRENT source — re-pull the image, re-clone the watched
+  git ref at its new HEAD, or rebuild — without uninstalling first. The
+  deployment id, domain, and host port are all preserved, so the app's
+  URL never changes. This is the in-place alternative to uninstall +
+  recreate for shipping a new build.
+  - `impreza-cli` (Go): `impreza platform deployments redeploy <id>` —
+    `--env KEY=VALUE` (repeatable) merges env before the rebuild;
+    `--follow` blocks until it settles.
+  - `impreza-sdk` (Go): `Client.PlatformRedeployCustomDeployment(ctx, id, req)`.
+
+### Changed
+
+- Custom deployments now keep a **stable domain**. Recreating a custom
+  deployment under a name it previously used reuses that app's
+  auto-allocated `*.imprezaapps.com` subdomain instead of minting a new
+  one, so neither an in-place redeploy nor an uninstall + recreate
+  changes your URL.
 
 ## [0.4.0] — 2026-05-19
 

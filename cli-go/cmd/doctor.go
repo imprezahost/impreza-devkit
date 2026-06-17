@@ -9,8 +9,8 @@ import (
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/spf13/cobra"
 
-	"github.com/imprezahost/impreza-devkit/cli-go/internal/client"
-	"github.com/imprezahost/impreza-devkit/cli-go/internal/config"
+	"github.com/imprezahost/impreza-devkit/sdk-go/client"
+	"github.com/imprezahost/impreza-devkit/sdk-go/config"
 	"github.com/imprezahost/impreza-devkit/cli-go/internal/output"
 )
 

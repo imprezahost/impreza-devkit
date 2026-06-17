@@ -2,8 +2,8 @@ package client
 
 // Platform-realm client surface — the `/v1/platform/*` endpoints used
 // by CLI, panel, and third-party integrations to manage the app
-// catalog, deployments, and managed servers. See `../../specs/openapi-platform.yaml`
-// in `impreza/impreza-platform` for the canonical contract.
+// catalog, deployments, and managed servers. See the published OpenAPI
+// spec for the canonical contract.
 //
 // Authentication is the standard Impreza API key + secret (same as
 // every other resource — Client built via New, not NewAgent).
@@ -617,6 +617,46 @@ func (c *Client) PlatformGetCustomDeployment(ctx context.Context, id string) (*C
 	}
 	var out CustomDeployment
 	if err := c.Get(ctx, "/v1/platform/deployments/custom/"+url.PathEscape(id), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CustomRedeployRequest is the body of POST
+// /v1/platform/deployments/custom/{id}/redeploy. All fields are optional —
+// an empty body redeploys the current source unchanged.
+type CustomRedeployRequest struct {
+	// Vars, when non-empty, is merged over the deployment's stored env
+	// before the rebuild (rotate a secret / add a var without an
+	// uninstall+recreate). System vars (DEPLOYMENT_ID, DOMAIN_URL,
+	// HOST_PORT, ...) are preserved server-side.
+	Vars map[string]any `json:"vars,omitempty"`
+}
+
+// CustomRedeployResponse is the 202 body of a redeploy: the refreshed
+// custom deployment plus the enqueued command id and a human-readable
+// note. The embedded CustomDeployment carries id / status / domain / etc.
+type CustomRedeployResponse struct {
+	CustomDeployment
+	CommandID string `json:"command_id,omitempty"`
+	Note      string `json:"note,omitempty"`
+}
+
+// PlatformRedeployCustomDeployment rebuilds an existing custom deployment
+// in place from its CURRENT source — re-pull image / re-clone the watched
+// git ref at its new HEAD / rebuild — reusing the same deployment_id so
+// the domain, host port, and URL are all preserved. The API-key twin of
+// the git-push auto-deploy; prefer it over uninstall + recreate to ship a
+// new build.
+//
+// Status flips to `updating`; poll PlatformGetCustomDeployment for the
+// terminal running/failed. Returns 202 with the command id + deployment.
+func (c *Client) PlatformRedeployCustomDeployment(ctx context.Context, id string, req CustomRedeployRequest) (*CustomRedeployResponse, error) {
+	if id == "" {
+		return nil, fmt.Errorf("deployment id is required")
+	}
+	var out CustomRedeployResponse
+	if err := c.Post(ctx, "/v1/platform/deployments/custom/"+url.PathEscape(id)+"/redeploy", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

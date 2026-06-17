@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/imprezahost/impreza-devkit/cli-go/internal/client"
+	"github.com/imprezahost/impreza-devkit/sdk-go/client"
 	"github.com/imprezahost/impreza-devkit/cli-go/internal/output"
 )
 

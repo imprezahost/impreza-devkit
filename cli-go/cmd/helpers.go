@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/imprezahost/impreza-devkit/cli-go/internal/client"
-	"github.com/imprezahost/impreza-devkit/cli-go/internal/config"
+	"github.com/imprezahost/impreza-devkit/sdk-go/client"
+	"github.com/imprezahost/impreza-devkit/sdk-go/config"
 	"github.com/imprezahost/impreza-devkit/cli-go/internal/output"
 )
 

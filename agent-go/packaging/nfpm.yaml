@@ -1,0 +1,55 @@
+# nfpm config — produces impreza-agent .deb and .rpm artifacts.
+#
+# Used by CI (GitHub Actions / GitLab CI). Local dev does not need to
+# invoke nfpm; `make build` is enough for testing.
+#
+# To build locally:
+#   nfpm pkg --packager deb --target dist/impreza-agent.deb -f packaging/nfpm.yaml
+#   nfpm pkg --packager rpm --target dist/impreza-agent.rpm -f packaging/nfpm.yaml
+
+name: impreza-agent
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+
+maintainer: Impreza Host <support@imprezahost.com>
+description: |
+  Impreza Platform managed-server daemon.
+  Connects to the control plane via long-poll and executes deploy /
+  update / rollback commands on this host.
+vendor: Impreza Host
+homepage: https://imprezahost.com
+license: Proprietary
+
+# No runtime dependencies beyond systemd — the binary is CGO-free and
+# statically linked. Docker / Caddy land later as Suggests (not Depends)
+# because some platforms run only systemd workloads.
+recommends:
+  - systemd
+
+contents:
+  - src: ../dist/impreza-agent
+    dst: /usr/local/bin/impreza-agent
+    file_info:
+      mode: 0755
+
+  - src: ./systemd/impreza-agent.service
+    dst: /etc/systemd/system/impreza-agent.service
+    file_info:
+      mode: 0644
+
+  - dst: /etc/impreza-agent
+    type: dir
+    file_info:
+      mode: 0700
+
+  - dst: /var/lib/impreza-agent
+    type: dir
+    file_info:
+      mode: 0700
+
+scripts:
+  postinstall: ./scripts/postinstall.sh
+  preremove:   ./scripts/preremove.sh

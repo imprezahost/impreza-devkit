@@ -3,16 +3,20 @@ module github.com/imprezahost/impreza-devkit/cli-go
 go 1.26.3
 
 require (
-	github.com/BurntSushi/toml v1.6.0
 	github.com/fatih/color v1.19.0
+	github.com/imprezahost/impreza-devkit/sdk-go v0.0.0
 	github.com/jedib0t/go-pretty/v6 v6.7.10
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/net v0.54.0
 	golang.org/x/term v0.43.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
+require golang.org/x/net v0.54.0 // indirect
+
+replace github.com/imprezahost/impreza-devkit/sdk-go => ../sdk-go
+
 require (
+	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

@@ -49,7 +49,7 @@ example.com {
         dns impreza {
             agent_id {env.IMPREZA_AGENT_ID}
             agent_secret {env.IMPREZA_AGENT_SECRET}
-            base_url https://staging-api.imprezahost.com
+            base_url https://your-control-plane.example.com
         }
     }
     reverse_proxy backend:8080

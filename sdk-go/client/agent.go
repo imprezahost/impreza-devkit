@@ -1,8 +1,8 @@
 package client
 
 // Agent-realm client surface — the `/v1/agent/*` endpoints consumed by
-// the impreza-agent daemon. See `../../specs/openapi-platform.yaml` in
-// `impreza/impreza-platform` for the canonical contract.
+// the impreza-agent daemon. See the published OpenAPI spec for the
+// canonical contract.
 //
 // Two distinct flows live here:
 //

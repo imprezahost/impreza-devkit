@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/imprezahost/impreza-devkit/cli-go/internal/client"
+	"github.com/imprezahost/impreza-devkit/sdk-go/client"
 )
 
 // waitForOperation polls an Operation future and renders a single

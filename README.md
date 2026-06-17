@@ -1,14 +1,12 @@
 # Impreza DevKit
 
 Official client tooling for the [Impreza Host](https://imprezahost.com)
-public REST API. Python + Go SDKs, a reference Python CLI and a
-single-binary Go CLI, plus the OpenAPI 3.1 + AsyncAPI 3.0 contracts that
-back them.
+public REST API. Two co-released Python packages, a single-binary Go
+CLI, plus the OpenAPI 3.1 + AsyncAPI 3.0 contracts that back them.
 
 | Package | Install | Docs |
 |---|---|---|
 | **`impreza-sdk`** (Python) | `pip install impreza-sdk` | [`sdk-python/README.md`](sdk-python/README.md) |
-| **`sdk-go`** (Go) | `go get github.com/imprezahost/impreza-devkit/sdk-go` | [`sdk-go/README.md`](sdk-go/README.md) |
 | **`impreza-cli`** (Python — reference CLI) | `pip install impreza-cli` | [`cli-python/README.md`](cli-python/README.md) |
 | **`impreza`** (Go — single-binary CLI) | [GitHub Releases](https://github.com/imprezahost/impreza-devkit/releases) (tag prefix `cli-go-v`) | [`cli-go/README.md`](cli-go/README.md) |
 | OpenAPI 3.1 spec (REST) | — | [`openapi/openapi.yaml`](openapi/openapi.yaml) |
@@ -74,21 +72,11 @@ impreza-devkit/
 ├── openapi/openapi.yaml    OpenAPI 3.1 contract (REST)
 ├── openapi/asyncapi.yaml   AsyncAPI 3.0 contract (webhook events)
 ├── sdk-python/             impreza-sdk package source + tests
-├── sdk-go/                 impreza Go SDK source + tests (go get …/sdk-go)
 ├── cli-python/             impreza-cli package source + tests
 ├── cli-go/                 impreza-cli-go binary source + tests
 │                           (released independently; tag prefix `cli-go-v`)
-├── caddy-dns-impreza/      libdns provider that proxies ACME DNS-01
-│                           challenges through the Impreza public API
-│                           — bundled into the Caddy sidecar image used
-│                           by impreza-agent for HTTPS termination
 └── examples/               curl + Python recipes
 ```
-
-The Caddy sidecar image (`ghcr.io/imprezahost/caddy:2-cf`) is built +
-pushed by `.github/workflows/caddy-image.yml` from
-`agent-go/packaging/caddy/Dockerfile` + `caddy-dns-impreza/`. Triggers
-on `caddy-v<X.Y.Z>` tag push or manual workflow dispatch.
 
 ## Development
 

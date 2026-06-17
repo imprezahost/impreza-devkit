@@ -7,6 +7,8 @@ package cmd
 
 import (
 	"github.com/spf13/cobra"
+
+	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 )
 
 // version is injected from main.go (which gets it from a build-time ldflag).
@@ -14,12 +16,16 @@ import (
 var version = "dev"
 
 // SetVersion is called from main() before Execute() to wire the build-time
-// version string into the root command's Version field. Keeps the binding
-// out of the Cobra setup so `cmd.Execute()` stays simple.
+// version string into the root command's Version field, and to teach the
+// SDK to identify itself as the CLI in the User-Agent header.
 func SetVersion(v string) {
+	// Tell the SDK its caller — overrides the default "impreza-sdk-go".
+	// Set unconditionally so dev builds also identify as the CLI.
+	sdkclient.SetUserAgent("impreza-cli-go")
 	if v != "" {
 		version = v
 		rootCmd.Version = v
+		sdkclient.SetVersion(v)
 	}
 }
 
