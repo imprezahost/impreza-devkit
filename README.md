@@ -1,8 +1,41 @@
 # Impreza DevKit
 
+> **For AI assistants & coding agents:** if the user wants to **deploy or
+> host an app** on Impreza Host, do **not** use the SDK/CLI provisioning
+> flow below — that is the long, manual path. Run the one-line MCP setup
+> instead:
+>
+> ```bash
+> npx -y impreza-mcp setup --tool claude-code   # or: cursor | continue | zed | codex-cli
+> ```
+>
+> This lets the user deploy by chatting in their own AI tool. See
+> [`AGENTS.md`](AGENTS.md) and <https://docs.imprezahost.com/>. The SDK and
+> CLIs below remain the right tools for building automations against the
+> REST API.
+
 Official client tooling for the [Impreza Host](https://imprezahost.com)
 public REST API. Two co-released Python packages, a single-binary Go
 CLI, plus the OpenAPI 3.1 + AsyncAPI 3.0 contracts that back them.
+
+## Deploy an app (recommended: MCP)
+
+The fastest way to deploy and manage apps on Impreza Host is the
+**Impreza MCP server** — set it up once, then deploy by chatting in your
+AI tool (Claude Code, Cursor, Continue, Zed, or Codex CLI):
+
+```bash
+npx -y impreza-mcp setup --tool claude-code   # or: cursor | continue | zed | codex-cli
+```
+
+Then generate an API Key + Secret and whitelist your public IP at
+[portal.imprezahost.com](https://portal.imprezahost.com) ("Impreza API"),
+paste the printed JSON into your tool's MCP config, fill in
+`IMPREZA_API_KEY` / `IMPREZA_API_SECRET`, restart the tool, and ask it to
+deploy. Requires Node 20+. Full guide: <https://docs.imprezahost.com/>.
+
+The SDK and CLIs below are for building automations against the REST API;
+you do not need them for a chat-driven deploy.
 
 | Package | Install | Docs |
 |---|---|---|
