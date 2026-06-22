@@ -32,13 +32,14 @@ revocable token — no install, no API key, no IP whitelist.
 https://mcp.imprezahost.com/mcp
 ```
 
-The client registers itself automatically. It currently exposes the read
-tools (list servers / apps / deployments) — handy for checking your account
-from chat. Revoke it any time under **Impreza API → Connected Apps**.
+The client registers itself automatically and can reach the same full toolset
+as this local server — each call gated by the scopes you grant on consent
+(read / deploy / manage, destructive opt-in). Revoke it any time under
+**Impreza API → Connected Apps**.
 
-**Full deploy power — local MCP server.** To let the AI deploy, restart,
-change domains, add Tor and wire git auto-deploy, set it up once, then deploy
-by chatting (Claude Code, Cursor, Continue, Zed, or Codex CLI):
+**Local MCP server — for coding agents.** Runs on your machine next to a coding
+agent (Claude Code, Cursor, Continue, Zed, Codex CLI); also the only path that
+can upload a local project folder. Set it up once, then deploy by chatting:
 
 ```bash
 npx -y impreza-mcp setup --tool claude-code   # or: cursor | continue | zed | codex-cli
