@@ -18,21 +18,40 @@ Official client tooling for the [Impreza Host](https://imprezahost.com)
 public REST API. Two co-released Python packages, a single-binary Go
 CLI, plus the OpenAPI 3.1 + AsyncAPI 3.0 contracts that back them.
 
-## Deploy an app (recommended: MCP)
+## Connect an AI tool (recommended: MCP)
 
-The fastest way to deploy and manage apps on Impreza Host is the
-**Impreza MCP server** — set it up once, then deploy by chatting in your
-AI tool (Claude Code, Cursor, Continue, Zed, or Codex CLI):
+Two ways to connect — both additive, and the classic API key + secret keeps
+working unchanged.
+
+**Easiest — remote connector + OAuth (no install).** If your AI client
+supports remote MCP connectors (e.g. Claude), add this URL and click
+**Authorize**: you sign in to your Impreza clientarea and approve a scoped,
+revocable token — no install, no API key, no IP whitelist.
+
+```
+https://mcp.imprezahost.com/mcp
+```
+
+The client registers itself automatically. It currently exposes the read
+tools (list servers / apps / deployments) — handy for checking your account
+from chat. Revoke it any time under **Impreza API → Connected Apps**.
+
+**Full deploy power — local MCP server.** To let the AI deploy, restart,
+change domains, add Tor and wire git auto-deploy, set it up once, then deploy
+by chatting (Claude Code, Cursor, Continue, Zed, or Codex CLI):
 
 ```bash
 npx -y impreza-mcp setup --tool claude-code   # or: cursor | continue | zed | codex-cli
 ```
 
-Then generate an API Key + Secret and whitelist your public IP at
+Then generate an API Key + Secret at
 [portal.imprezahost.com](https://portal.imprezahost.com) ("Impreza API"),
 paste the printed JSON into your tool's MCP config, fill in
 `IMPREZA_API_KEY` / `IMPREZA_API_SECRET`, restart the tool, and ask it to
-deploy. Requires Node 20+. Full guide: <https://docs.imprezahost.com/>.
+deploy. The key's IP factor is now **per-key and optional** — `whitelist`
+(default), `tofu` (trust-on-first-use), or `keyonly` — or pair the tool from
+your clientarea so there's no secret to copy. Requires Node 20+. Full guide:
+<https://docs.imprezahost.com/>.
 
 The SDK and CLIs below are for building automations against the REST API;
 you do not need them for a chat-driven deploy.
