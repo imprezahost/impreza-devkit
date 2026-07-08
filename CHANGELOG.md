@@ -33,6 +33,13 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
   one, so neither an in-place redeploy nor an uninstall + recreate
   changes your URL.
 
+### Fixed
+
+- Redeploying a build-mode (Dockerfile / git) custom deployment now rebuilds
+  the image on every run, so `impreza platform deployments redeploy` always
+  ships the latest commit. Requires the server agent at **0.5.1** or newer
+  (re-run the install script on the VPS to update).
+
 ## [0.4.0] — 2026-05-19
 
 Adds the `dedicated` resource — a new top-level namespace mirroring
