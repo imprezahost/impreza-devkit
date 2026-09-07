@@ -1,14 +1,17 @@
 """Invoices resource — accessed via ``Client.invoices``.
 
-Phase 1.3 ships read access (list / get). Pay-from-balance and other
-write operations land in Phase 1.4 / 1.7.
+Read access (``list`` / ``get``) plus pay-from-balance (``pay``).
+
+``pay`` spends real account credit and is not reversible from here, so
+it takes no ``confirm`` flag by design — the decision belongs to the
+caller, and every CLI/UI on top of this prompts before calling it.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..models.invoice import Invoice, InvoiceDetail
+from ..models.invoice import Invoice, InvoiceDetail, InvoicePayment
 
 if TYPE_CHECKING:  # pragma: no cover
     from .._http import HttpClient
@@ -29,12 +32,21 @@ def _extract_invoice_detail(payload: dict[str, object]) -> InvoiceDetail:
     return InvoiceDetail.model_validate(data)
 
 
+def _extract_payment(payload: dict[str, object], invoice_id: int) -> InvoicePayment:
+    data_raw = payload.get("data")
+    data = data_raw if isinstance(data_raw, dict) else {}
+    # The endpoint echoes invoice_id, but fall back to the one we asked
+    # about so the result is never ambiguous about which invoice moved.
+    data.setdefault("invoice_id", invoice_id)
+    return InvoicePayment.model_validate(data)
+
+
 def _list_params(status: str | None) -> dict[str, object] | None:
     return {"status": status} if status else None
 
 
 class InvoicesResource:
-    """Sync read access to the authenticated client's invoices."""
+    """Sync access to the authenticated client's invoices."""
 
     def __init__(self, http: HttpClient) -> None:
         self._http = http
@@ -53,9 +65,24 @@ class InvoicesResource:
         payload = self._http.get(f"/invoices/{invoice_id}")
         return _extract_invoice_detail(payload)
 
+    def pay(self, invoice_id: int) -> InvoicePayment:
+        """Pay an unpaid invoice from the account credit balance.
+
+        This spends real money and cannot be undone through the API.
+
+        Raises:
+            Conflict: 409 — the invoice is already paid
+                (``code == "ALREADY_PAID"``) or the balance does not cover
+                it (``code == "INSUFFICIENT_BALANCE"``). Top up first with
+                ``client.account.topup(...)``.
+            ResourceNotFound: 404 — no such invoice on this account.
+        """
+        payload = self._http.post(f"/invoices/{invoice_id}/pay")
+        return _extract_payment(payload, invoice_id)
+
 
 class AsyncInvoicesResource:
-    """Async read access to the authenticated client's invoices."""
+    """Async access to the authenticated client's invoices."""
 
     def __init__(self, http: AsyncHttpClient) -> None:
         self._http = http
@@ -67,3 +94,11 @@ class AsyncInvoicesResource:
     async def get(self, invoice_id: int) -> InvoiceDetail:
         payload = await self._http.get(f"/invoices/{invoice_id}")
         return _extract_invoice_detail(payload)
+
+    async def pay(self, invoice_id: int) -> InvoicePayment:
+        """Pay an unpaid invoice from the account credit balance.
+
+        Spends real money; see :meth:`InvoicesResource.pay`.
+        """
+        payload = await self._http.post(f"/invoices/{invoice_id}/pay")
+        return _extract_payment(payload, invoice_id)

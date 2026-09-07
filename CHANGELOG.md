@@ -25,7 +25,54 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
     `--follow` blocks until it settles.
   - `impreza-sdk` (Go): `Client.PlatformRedeployCustomDeployment(ctx, id, req)`.
 
+- **Pay an invoice from balance** — `POST /invoices/{id}/pay`, the last
+  documented endpoint with no client binding. Renewal invoices are
+  generated automatically, so this is the verb that settles them.
+  - `impreza-sdk` (Python): `client.invoices.pay(id)` /
+    `await async_client.invoices.pay(id)`, returning `InvoicePayment`.
+  - `impreza-sdk` (Go): `Client.InvoicePay(ctx, id)`.
+  - `impreza-cli` (Python): `impreza invoice pay <id> [--yes]`.
+  - `impreza-cli` (Go): `impreza invoice pay <id> [--yes]`.
+  Both CLIs read the invoice first and put the amount in the prompt, so
+  you confirm a number rather than an id; `--yes` skips the read and the
+  prompt for scripts. `ALREADY_PAID` exits 0 (nothing to do) and
+  `INSUFFICIENT_BALANCE` points at `impreza account topup`.
+
+- **`Conflict` exception (HTTP 409) in the Python SDK**, matching the
+  `*client.Conflict` the Go SDK already had. 409 previously fell through
+  to the generic `ApiError`, which left no way to tell `ALREADY_PAID`
+  from `INSUFFICIENT_BALANCE` other than string-matching the message.
+  Subclasses `ApiError`, so existing handlers are unaffected.
+
+- **Dedicated Servers in the OpenAPI contract.** `openapi/openapi.yaml`
+  now documents all 20 `/dedicated/*` operations under a
+  `Dedicated Servers` tag, including the capability gating and the
+  two-factor confirmation the reinstall route requires
+  (`"confirm": true` **and** `X-Impreza-Confirm: WIPE`). The surface has
+  shipped in both SDKs and both CLIs since 0.4.0 but was missing from
+  the published spec, so generated clients and the docs site never saw
+  it.
+  Each of the 20 carries an `operationId` (`dedicated<Verb>`, matching
+  the SDK method names) and a description, so the block is Spectral-clean.
+
+- **`.spectral.yaml`** pins the ruleset the `openapi:lint` CI job uses.
+  With none committed, current Spectral versions abort with "No ruleset
+  has been found" and older ones fall back to `spectral:oas`, so the
+  job's verdict depended on the container image. The spec has 0 errors;
+  183 pre-existing documentation-completeness findings are demoted to
+  `info` and documented in the ruleset as a tracked backlog rather than
+  waived.
+
 ### Changed
+
+- The API-key **IP factor is per-key and optional** — `whitelist`
+  (default), `tofu` (trust-on-first-use) or `keyonly`. `openapi.yaml`
+  and `AGENTS.md` both still stated that every request IP must be
+  whitelisted, and both CLIs' `IP_NOT_WHITELISTED` remediation offered
+  whitelisting as the only fix — a dead end for CI, containers, dynamic
+  IPs and Tor. The hint now also points at the modes, and `AGENTS.md`
+  documents the no-install remote MCP connector (OAuth, no key to copy)
+  alongside the local server.
 
 - Custom deployments now keep a **stable domain**. Recreating a custom
   deployment under a name it previously used reuses that app's
@@ -35,10 +82,27 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ### Fixed
 
+- **`impreza dedicated` (Python CLI) was dead on arrival.** Every one of
+  its 20 verbs crashed with
+  `AttributeError: 'Context' object has no attribute 'context_override'`
+  before issuing a request: the module passed Typer's `Context` where a
+  `GlobalState` was expected, and called `resolve_output`, `print_table`
+  and `print_dict` with signatures that never existed. The verbs now run,
+  and `tests/test_dedicated_commands.py` covers the plumbing — it was
+  the only command module with no test file, which is why this shipped.
+  The Go CLI, both SDKs, and the MCP server were unaffected.
+
+- `agent-go` now builds as a standalone module. Its `go.sum` was never
+  committed and `golang.org/x/sys` was missing from `go.mod`; inside the
+  workspace `go.work.sum` covered the gap, so `cd agent-go && go build`
+  failed only for people who cloned the published repo, where `go.work`
+  is not shipped.
+
 - Redeploying a build-mode (Dockerfile / git) custom deployment now rebuilds
-  the image on every run, so `impreza platform deployments redeploy` always
-  ships the latest commit. Requires the server agent at **0.5.1** or newer
-  (re-run the install script on the VPS to update).
+  the image, so `impreza platform deployments redeploy` ships new commits on
+  every run instead of reusing the cached image. Agent-side — requires the
+  server agent at **0.5.1** or newer (re-run `curl … /install.sh` on the VPS
+  to update; existing agents do not auto-upgrade).
 
 ## [0.4.0] — 2026-05-19
 

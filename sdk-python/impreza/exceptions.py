@@ -81,6 +81,20 @@ class InsufficientCredit(ApiError):
     """402 — the operation requires more balance than the account has available."""
 
 
+class Conflict(ApiError):
+    """409 — the request collides with the resource's current state.
+
+    Raised where an operation is valid in general but not right now:
+    paying an invoice that is already paid, or paying one the account
+    cannot currently cover. Inspect ``code`` to tell them apart
+    (``ALREADY_PAID`` vs ``INSUFFICIENT_BALANCE``).
+
+    Note this is distinct from :class:`InsufficientCredit` (402), which
+    the API uses for the order/top-up paths. The invoice-pay endpoint
+    reports a shortfall as 409 ``INSUFFICIENT_BALANCE``.
+    """
+
+
 class RateLimitExceeded(ApiError):
     """429 — too many requests. Wait ``retry_after`` seconds before trying again.
 

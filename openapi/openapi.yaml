@@ -19,9 +19,19 @@ info:
 
     Generate keys in your [Impreza Account → API Management](https://portal.imprezahost.com/imprezaapi.php).
 
-    ## IP Whitelist
+    ## IP factor
 
-    Your request IP must be whitelisted before making API calls. Add IPs in the API Management page.
+    Each key carries its own IP mode, set in the API Management page:
+
+    - `whitelist` (default) — the request IP must be on the key's list, or
+      the call answers `403 IP_NOT_WHITELISTED`.
+    - `tofu` — trust on first use: the key locks to the first IP that
+      presents it, and later calls from anywhere else are refused.
+    - `keyonly` — no IP factor; the key and secret alone authenticate.
+
+    `tofu` and `keyonly` exist for callers with no stable egress address —
+    CI, containers, dynamic residential IPs, Tor. They trade the IP factor
+    away, so scope those keys narrowly and rotate them on any suspicion.
 
     ## Rate Limiting
 
@@ -85,6 +95,8 @@ tags:
     description: Proxmox VPS management (31+ operations)
   - name: VPS Cloud
     description: Cloud VPS management (27+ operations)
+  - name: Dedicated Servers
+    description: Bare-metal management, gated by per-service capabilities (20 operations)
   - name: Webhooks
     description: Subscribe to events delivered as HMAC-signed POSTs
 
@@ -200,7 +212,7 @@ components:
           example: 15.00
         dedicated_ip:
           type: string
-          example: 185.100.86.42
+          example: 203.0.113.42
         registered_at:
           type: string
           example: "2024-06-01"
@@ -255,7 +267,7 @@ components:
           example: "@"
         value:
           type: string
-          example: "185.100.86.42"
+          example: "203.0.113.42"
         ttl:
           type: integer
           example: 14400
@@ -1696,7 +1708,7 @@ paths:
                   example: "@"
                 value:
                   type: string
-                  example: "185.100.86.42"
+                  example: "203.0.113.42"
                 ttl:
                   type: integer
                   default: 14400
@@ -3113,3 +3125,436 @@ paths:
       responses:
         '200':
           description: VNC password changed
+
+  # ═══════════════════════════════════════════════════════
+  # DEDICATED SERVERS
+  # Vendor-agnostic bare-metal surface. Every operation past
+  # the discovery verbs is gated by the per-service capability
+  # list: read GET /dedicated/{serviceId}/capabilities first,
+  # because a feature absent from that list answers
+  # 403 NOT_SUPPORTED rather than performing the action.
+  # Operations that cannot be applied automatically on a given
+  # machine answer 200 with {"status": "queued"} and an
+  # operator completes them within a few hours.
+  # ═══════════════════════════════════════════════════════
+
+  /dedicated:
+    get:
+      operationId: dedicatedList
+      tags: [Dedicated Servers]
+      summary: List dedicated servers
+      description: |
+        Every dedicated / bare-metal service on the account, with the
+        capability list for each. Dedicated servers are provisioned by
+        hand, so a freshly ordered machine only appears here once it has
+        been racked and handed over.
+      responses:
+        '200':
+          description: Dedicated servers
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  - service_id: 15957
+                    domain: srv1.example.com
+                    ip: 203.0.113.10
+                    status: Active
+                    capabilities: [power, rdns, kvm, firewall, bandwidth]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /dedicated/{serviceId}:
+    get:
+      operationId: dedicatedGet
+      tags: [Dedicated Servers]
+      summary: Get dedicated server details
+      description: Product and specs, location, contract dates, and capabilities.
+      parameters: &dedServiceIdParam
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Dedicated server details
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /dedicated/{serviceId}/capabilities:
+    get:
+      operationId: dedicatedCapabilities
+      tags: [Dedicated Servers]
+      summary: Get advertised capabilities
+      description: |
+        The capability strings this machine supports. Read this before
+        any capability-gated operation — the alternative is a wasted
+        round-trip that answers `NOT_SUPPORTED`.
+      parameters: *dedServiceIdParam
+      responses:
+        '200':
+          description: Capability list
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  capabilities: [power, rdns, reinstall, kvm, firewall, bandwidth, vpn]
+
+  /dedicated/{serviceId}/status:
+    get:
+      operationId: dedicatedStatus
+      description: Cheapest way to answer “is my server up?”. Read it before a power operation, and again afterwards to confirm the action took effect.
+      tags: [Dedicated Servers]
+      summary: Get power / provisioning state
+      parameters: *dedServiceIdParam
+      responses:
+        '200':
+          description: Current state
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  power: 'on'
+                  provisioning: completed
+
+  /dedicated/{serviceId}/ips:
+    get:
+      operationId: dedicatedIps
+      description: Every IP assigned to the server with its current PTR. Feed one of these `ip` values into the set-PTR route.
+      tags: [Dedicated Servers]
+      summary: List IPs with current PTR
+      parameters: *dedServiceIdParam
+      responses:
+        '200':
+          description: IPs and their reverse DNS
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  ips:
+                    - ip: 203.0.113.10
+                      ptr: srv1.example.com
+
+  /dedicated/{serviceId}/os-images:
+    get:
+      operationId: dedicatedOsImages
+      description: The `os_id` values accepted by the reinstall route on this machine.
+      tags: [Dedicated Servers]
+      summary: List OS images available for reinstall
+      parameters: *dedServiceIdParam
+      responses:
+        '200':
+          description: OS images
+          content:
+            application/json:
+              example:
+                success: true
+                data:
+                  - os_id: ubuntu-24.04
+                    label: Ubuntu 24.04 LTS
+
+  /dedicated/{serviceId}/start:
+    post:
+      operationId: dedicatedStart
+      tags: [Dedicated Servers]
+      summary: Power on
+      description: Requires the `power` capability.
+      parameters: *dedServiceIdParam
+      responses:
+        '200':
+          description: Power-on signal sent
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /dedicated/{serviceId}/shutdown:
+    post:
+      operationId: dedicatedShutdown
+      tags: [Dedicated Servers]
+      summary: Graceful shutdown
+      description: |
+        Requires the `power` capability. Interrupts everything running
+        on the machine — read `GET /dedicated/{serviceId}/status` first.
+      parameters: *dedServiceIdParam
+      responses:
+        '200':
+          description: Shutdown signal sent
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /dedicated/{serviceId}/reboot:
+    post:
+      operationId: dedicatedReboot
+      tags: [Dedicated Servers]
+      summary: Reboot
+      description: |
+        Requires the `power` capability. Interrupts everything running
+        on the machine — read `GET /dedicated/{serviceId}/status` first.
+      parameters: *dedServiceIdParam
+      responses:
+        '200':
+          description: Reboot signal sent
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /dedicated/{serviceId}/ips/{ip}/rdns:
+    put:
+      operationId: dedicatedSetRdns
+      tags: [Dedicated Servers]
+      summary: Set PTR for one IP
+      description: |
+        Requires the `rdns` capability. Applied synchronously on most
+        machines; where no automated path exists the response is
+        `{"status": "queued"}`. Publish a PTR only for a hostname that
+        has a matching forward A record.
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: ip
+          in: path
+          required: true
+          description: The IP to change, exactly as returned by `GET /dedicated/{serviceId}/ips`.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hostname]
+              properties:
+                hostname:
+                  type: string
+                  description: PTR hostname to publish, e.g. mail.example.com.
+      responses:
+        '200':
+          description: PTR set (or queued)
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /dedicated/{serviceId}/ips/rdns/reset:
+    post:
+      operationId: dedicatedResetRdns
+      tags: [Dedicated Servers]
+      summary: Reset PTR on every IP
+      description: |
+        Requires the `rdns` capability. Restores the Impreza default PTR
+        (`<ip-with-dashes>.impreza.host`) on every IP of the service.
+      parameters: *dedServiceIdParam
+      responses:
+        '200':
+          description: PTRs reset (or queued)
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /dedicated/{serviceId}/kvm:
+    get:
+      operationId: dedicatedKvm
+      tags: [Dedicated Servers]
+      summary: Get KVM / IPMI access info
+      description: Requires the `kvm` capability.
+      parameters: *dedServiceIdParam
+      responses:
+        '200':
+          description: Current KVM access info
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    delete:
+      operationId: dedicatedDisableKvm
+      tags: [Dedicated Servers]
+      summary: Disable KVM access
+      description: Requires the `kvm` capability.
+      parameters: *dedServiceIdParam
+      responses:
+        '200':
+          description: KVM access disabled
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /dedicated/{serviceId}/kvm/enable:
+    post:
+      operationId: dedicatedEnableKvm
+      tags: [Dedicated Servers]
+      summary: Enable KVM access
+      description: |
+        Requires the `kvm` capability. On machines that bind a KVM
+        session to a source address, the server uses the caller's
+        request IP as the session IP — no client-supplied value is
+        trusted for that binding.
+      parameters: *dedServiceIdParam
+      responses:
+        '200':
+          description: KVM access enabled
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /dedicated/{serviceId}/firewall:
+    get:
+      operationId: dedicatedFirewall
+      tags: [Dedicated Servers]
+      summary: Get DDoS firewall state
+      description: Requires the `firewall` capability.
+      parameters: *dedServiceIdParam
+      responses:
+        '200':
+          description: Firewall state per IP
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      operationId: dedicatedSetFirewall
+      tags: [Dedicated Servers]
+      summary: Update DDoS firewall state / sensitivity
+      description: Requires the `firewall` capability.
+      parameters: *dedServiceIdParam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ip]
+              properties:
+                ip:
+                  type: string
+                  description: The IP to update.
+                state:
+                  type: string
+                  enum: [always_on, redirect_on_attack]
+                  description: Omit to leave unchanged.
+                sensitivity:
+                  type: string
+                  enum: [low, normal, medium, high]
+                  description: Omit to leave unchanged.
+      responses:
+        '200':
+          description: Firewall updated
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /dedicated/{serviceId}/firewall/logs:
+    get:
+      operationId: dedicatedFirewallLogs
+      tags: [Dedicated Servers]
+      summary: Get DDoS attack logs
+      description: Requires the `firewall` capability.
+      parameters: *dedServiceIdParam
+      responses:
+        '200':
+          description: Attack log entries
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /dedicated/{serviceId}/bandwidth:
+    get:
+      operationId: dedicatedBandwidth
+      tags: [Dedicated Servers]
+      summary: Get bandwidth / traffic graph
+      description: |
+        Requires the `bandwidth` capability. Returns graph data (PNG,
+        base64-encoded) for the requested metric and window.
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: type
+          in: query
+          description: Metric to graph.
+          schema:
+            type: string
+            enum: [port_bits, port_upkts, port_percent, port_errors, port_pktsize, port_discards]
+            default: port_bits
+        - name: scale
+          in: query
+          description: Time window.
+          schema:
+            type: string
+            enum: [day, week, month]
+            default: month
+      responses:
+        '200':
+          description: Bandwidth graph
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /dedicated/{serviceId}/vpn:
+    get:
+      operationId: dedicatedVpn
+      tags: [Dedicated Servers]
+      summary: Get VPN credentials
+      description: Requires the `vpn` capability.
+      parameters: *dedServiceIdParam
+      responses:
+        '200':
+          description: VPN credentials
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /dedicated/{serviceId}/reinstall:
+    post:
+      operationId: dedicatedReinstall
+      tags: [Dedicated Servers]
+      summary: Reinstall the OS (destructive)
+      description: |
+        Requires the `reinstall` capability. **Wipes ALL data on the
+        machine.** Two independent confirmations are mandatory: the body
+        must carry `"confirm": true` *and* the request must send the
+        `X-Impreza-Confirm: WIPE` header. A request missing either one is
+        rejected without touching the server.
+
+        Where a synchronous reinstall path exists the response carries
+        `root_password`; otherwise it is `{"status": "queued"}` and the
+        Impreza team performs the reinstall within a few hours. Rotate
+        the password after the machine comes back up — the value travels
+        in the response body and will sit in any client-side log or
+        shell scrollback that captured it.
+      parameters:
+        - name: serviceId
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: X-Impreza-Confirm
+          in: header
+          required: true
+          description: Must be the literal string `WIPE`.
+          schema:
+            type: string
+            enum: [WIPE]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [os_id, password, confirm]
+              properties:
+                os_id:
+                  type: string
+                  description: An `os_id` from `GET /dedicated/{serviceId}/os-images`.
+                password:
+                  type: string
+                  minLength: 8
+                  description: New root password.
+                os_label:
+                  type: string
+                  description: Optional label — resolved from `os_id` when omitted.
+                confirm:
+                  type: boolean
+                  enum: [true]
+                  description: Must be `true`. Acknowledges total data loss.
+      responses:
+        '200':
+          description: Reinstall started, or queued for an operator
+        '400':
+          description: Missing `confirm` in the body
+        '403':
+          $ref: '#/components/responses/Forbidden'

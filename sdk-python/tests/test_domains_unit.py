@@ -94,7 +94,7 @@ def _dns_list_payload() -> dict[str, object]:
         "success": True,
         "data": {
             "records": [
-                {"type": "A", "host": "@", "value": "185.100.86.42", "ttl": 14400},
+                {"type": "A", "host": "@", "value": "203.0.113.42", "ttl": 14400},
                 {
                     "type": "MX",
                     "host": "@",
@@ -343,11 +343,11 @@ def test_dns_add_sends_correct_body() -> None:
 
     with Client(api_key="x", api_secret="y") as c:
         c.domains.dns.add(
-            "example.com", type="A", host="www", value="1.2.3.4", ttl=3600
+            "example.com", type="A", host="www", value="203.0.113.24", ttl=3600
         )
 
     body = json.loads(route.calls.last.request.content)
-    assert body == {"type": "A", "host": "www", "value": "1.2.3.4", "ttl": 3600}
+    assert body == {"type": "A", "host": "www", "value": "203.0.113.24", "ttl": 3600}
 
 
 @respx.mock
@@ -388,16 +388,16 @@ def test_dns_update_uses_put_with_old_new_value() -> None:
             "example.com",
             type="A",
             host="@",
-            old_value="1.2.3.4",
-            new_value="5.6.7.8",
+            old_value="203.0.113.24",
+            new_value="203.0.113.25",
         )
 
     body = json.loads(route.calls.last.request.content)
     assert body == {
         "type": "A",
         "host": "@",
-        "old_value": "1.2.3.4",
-        "new_value": "5.6.7.8",
+        "old_value": "203.0.113.24",
+        "new_value": "203.0.113.25",
     }
 
 
@@ -408,10 +408,10 @@ def test_dns_delete_sends_record_in_body() -> None:
     )
 
     with Client(api_key="x", api_secret="y") as c:
-        c.domains.dns.delete("example.com", type="A", host="@", value="1.2.3.4")
+        c.domains.dns.delete("example.com", type="A", host="@", value="203.0.113.24")
 
     body = json.loads(route.calls.last.request.content)
-    assert body == {"type": "A", "host": "@", "value": "1.2.3.4"}
+    assert body == {"type": "A", "host": "@", "value": "203.0.113.24"}
 
 
 # ── activate / id-protection / resend trio ────────────────────────────
@@ -522,8 +522,8 @@ async def test_async_dns_update_uses_put() -> None:
             "example.com",
             type="A",
             host="@",
-            old_value="1.2.3.4",
-            new_value="5.6.7.8",
+            old_value="203.0.113.24",
+            new_value="203.0.113.25",
         )
 
     assert route.called

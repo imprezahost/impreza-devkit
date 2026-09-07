@@ -57,7 +57,7 @@ def _service_payload(
             "product_group": "VPS Hosting",
             "billing_cycle": "monthly",
             "amount": 15.0,
-            "dedicated_ip": "185.100.86.42",
+            "dedicated_ip": "203.0.113.42",
             "registered_at": "2024-06-01",
             "next_due": "2026-04-01",
             "vps_backend": backend,
@@ -486,20 +486,20 @@ def test_cloud_iso_mount_unmount() -> None:
 @respx.mock
 def test_cloud_rdns_get_set_delete() -> None:
     _setup_cloud_vps(80)
-    get = respx.get(f"{BASE}/vps/cloud/rdns/185.100.86.42").mock(
+    get = respx.get(f"{BASE}/vps/cloud/rdns/203.0.113.42").mock(
         return_value=httpx.Response(200, json=_ok({"hostname": "old.example.com"}))
     )
-    put = respx.put(f"{BASE}/vps/cloud/rdns/185.100.86.42").mock(
+    put = respx.put(f"{BASE}/vps/cloud/rdns/203.0.113.42").mock(
         return_value=httpx.Response(200, json=_ok({"hostname": "new.example.com"}))
     )
-    delete = respx.delete(f"{BASE}/vps/cloud/rdns/185.100.86.42").mock(
+    delete = respx.delete(f"{BASE}/vps/cloud/rdns/203.0.113.42").mock(
         return_value=httpx.Response(200, json=_ok())
     )
     with Client(api_key="x", api_secret="y") as c:
         vps = c.vps.get(80)
-        assert vps.rdns.get("185.100.86.42") == {"hostname": "old.example.com"}
-        assert vps.rdns.set("185.100.86.42", "new.example.com") == {"hostname": "new.example.com"}
-        vps.rdns.delete("185.100.86.42")
+        assert vps.rdns.get("203.0.113.42") == {"hostname": "old.example.com"}
+        assert vps.rdns.set("203.0.113.42", "new.example.com") == {"hostname": "new.example.com"}
+        vps.rdns.delete("203.0.113.42")
     assert get.called and put.called and delete.called
     assert b"new.example.com" in put.calls.last.request.read()
 
@@ -691,12 +691,12 @@ async def test_async_cloud_rdns_set() -> None:
     respx.get(f"{BASE}/account/services/240").mock(
         return_value=httpx.Response(200, json=_service_payload(240, backend="cloud"))
     )
-    route = respx.put(f"{BASE}/vps/cloud/rdns/1.2.3.4").mock(
+    route = respx.put(f"{BASE}/vps/cloud/rdns/203.0.113.24").mock(
         return_value=httpx.Response(200, json=_ok({"hostname": "h"}))
     )
     async with AsyncClient(api_key="x", api_secret="y") as c:
         vps = await c.vps.get(240)
-        result = await vps.rdns.set("1.2.3.4", "h")
+        result = await vps.rdns.set("203.0.113.24", "h")
     assert route.called
     assert result == {"hostname": "h"}
 

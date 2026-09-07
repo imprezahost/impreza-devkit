@@ -280,12 +280,12 @@ def test_yaml_round_trip_key_whoami(seeded_config: Path) -> None:
                     "ip_whitelist": [
                         {
                             "id": 1,
-                            "ip_address": "1.2.3.4",
+                            "ip_address": "203.0.113.24",
                             "label": "office",
                             "created_at": "2026-04-01",
                         }
                     ],
-                    "request_ip": "1.2.3.4",
+                    "request_ip": "203.0.113.24",
                 }
             ),
         )

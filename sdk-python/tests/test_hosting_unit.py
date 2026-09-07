@@ -32,7 +32,7 @@ def test_hosting_get_returns_account_summary_dict() -> None:
             200,
             json=_ok(
                 {
-                    "ip": "208.115.225.138",
+                    "ip": "203.0.113.55",
                     "plan": "USA Linux Hosting III",
                     "disk_used": 1234,
                     "disk_limit": 50000,
@@ -45,7 +45,7 @@ def test_hosting_get_returns_account_summary_dict() -> None:
     )
     with Client(api_key="x", api_secret="y") as c:
         info = c.hosting.get(15957)
-    assert info["ip"] == "208.115.225.138"
+    assert info["ip"] == "203.0.113.55"
     assert info["plan"] == "USA Linux Hosting III"
     assert info["status"] == "active"
 

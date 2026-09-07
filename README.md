@@ -82,7 +82,7 @@ with Client.from_env() as c:
     invoice = c.account.topup(amount=50, method="xmr")
     invoice.wait_until_paid(timeout=7200)
 
-    c.domains.dns.add("example.com", type="A", name="@", value="1.2.3.4")
+    c.domains.dns.add("example.com", type="A", name="@", value="203.0.113.24")
     c.vps.get(17988).reboot()
 ```
 

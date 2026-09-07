@@ -29,12 +29,43 @@ from __future__ import annotations
 
 import time
 from typing import Any
+from urllib.parse import quote
 
 import typer
 from impreza import Operation, Vps
 from impreza.exceptions import ApiError, InvalidRequest, ResourceNotFound
 
 from ..output import error
+
+# Impreza Account -> API Management page (keys, IP whitelist, IP mode).
+# Same URL the OpenAPI spec + READMEs point at.
+PORTAL_API_URL = "https://portal.imprezahost.com/imprezaapi.php"
+
+
+def ip_whitelist_hint(request_ip: str = "") -> str:
+    """Remediation text for an IP_NOT_WHITELISTED failure, shared by
+    ``doctor`` and ``context`` so the wording stays consistent with the
+    Go CLI (``ipWhitelistHint``) and the MCP server.
+
+    Points at the portal (pre-filling the IP via ``?addip=`` when known)
+    and at the per-key IP modes — the real fix for a headless / CI /
+    dynamic-IP / Tor client that can't pin a stable source IP. ASCII-only
+    (no Unicode glyphs) per the cp1252 lesson the doctor docstring notes.
+    """
+    link = PORTAL_API_URL
+    if request_ip:
+        link = f"{PORTAL_API_URL}?addip={quote(request_ip)}"
+    head = (
+        f"Your IP {request_ip} isn't on this key's whitelist."
+        if request_ip
+        else "The calling IP isn't on this key's whitelist."
+    )
+    return (
+        f"{head} Fix it in Impreza Account -> API Management ({link}): "
+        "add the IP to the whitelist, or -- better for a headless / CI / "
+        'dynamic-IP / Tor client -- set this key\'s IP mode to "Key only" '
+        '(no IP check) or "First-use lock" (pins the first IP it sees).'
+    )
 
 
 def exit_on_api_error(exc: ApiError) -> None:
@@ -122,7 +153,9 @@ def wait_for_operation(
 
 
 __all__ = [
+    "PORTAL_API_URL",
     "exit_on_api_error",
+    "ip_whitelist_hint",
     "resolve_vps_or_exit",
     "wait_for_operation",
 ]

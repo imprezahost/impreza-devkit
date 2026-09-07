@@ -261,7 +261,7 @@ def test_dns_list_renders_records(seeded_config: Path) -> None:
                     {
                         "type": "A",
                         "host": "@",
-                        "value": "1.2.3.4",
+                        "value": "203.0.113.24",
                         "ttl": 3600,
                         "priority": None,
                     },
@@ -278,7 +278,7 @@ def test_dns_list_renders_records(seeded_config: Path) -> None:
     )
     result = runner.invoke(app, ["domain", "dns", "list", "example.com"])
     assert result.exit_code == 0, result.stderr
-    assert "1.2.3.4" in result.stdout
+    assert "203.0.113.24" in result.stdout
     assert "mail.example.com" in result.stdout
     # Priority shows for MX, dash for A
     assert "10" in result.stdout
@@ -327,7 +327,7 @@ def test_dns_list_json_output(seeded_config: Path) -> None:
                     {
                         "type": "A",
                         "host": "@",
-                        "value": "1.2.3.4",
+                        "value": "203.0.113.24",
                         "ttl": 3600,
                         "priority": None,
                     }
@@ -342,7 +342,7 @@ def test_dns_list_json_output(seeded_config: Path) -> None:
     parsed = json.loads(result.stdout)
     assert isinstance(parsed, list) and len(parsed) == 1
     assert parsed[0]["type"] == "A"
-    assert parsed[0]["value"] == "1.2.3.4"
+    assert parsed[0]["value"] == "203.0.113.24"
     # Null priority should round-trip as JSON null, not a string
     assert parsed[0]["priority"] is None
 
@@ -712,14 +712,14 @@ def test_dns_add_a_record(seeded_config: Path) -> None:
             "domain", "dns", "add", "example.com",
             "--type", "A",
             "--name", "@",
-            "--value", "1.2.3.4",
+            "--value", "203.0.113.24",
             "--ttl", "3600",
         ],
     )
     assert result.exit_code == 0, result.stderr
     assert "Added A record" in result.stdout
     body = route.calls.last.request.read()
-    assert b"1.2.3.4" in body
+    assert b"203.0.113.24" in body
     assert b"3600" in body
 
 
@@ -773,14 +773,14 @@ def test_dns_update(seeded_config: Path) -> None:
             "domain", "dns", "update", "example.com",
             "--type", "A",
             "--name", "@",
-            "--old-value", "1.2.3.4",
-            "--new-value", "5.6.7.8",
+            "--old-value", "203.0.113.24",
+            "--new-value", "203.0.113.25",
         ],
     )
     assert result.exit_code == 0, result.stderr
     body = route.calls.last.request.read()
-    assert b"1.2.3.4" in body
-    assert b"5.6.7.8" in body
+    assert b"203.0.113.24" in body
+    assert b"203.0.113.25" in body
 
 
 @respx.mock
@@ -804,8 +804,8 @@ def test_dns_update_404(seeded_config: Path) -> None:
             "domain", "dns", "update", "example.com",
             "--type", "A",
             "--name", "@",
-            "--old-value", "1.2.3.4",
-            "--new-value", "5.6.7.8",
+            "--old-value", "203.0.113.24",
+            "--new-value", "203.0.113.25",
         ],
     )
     assert result.exit_code == 1
@@ -823,7 +823,7 @@ def test_dns_delete_with_yes(seeded_config: Path) -> None:
             "domain", "dns", "delete", "example.com",
             "--type", "A",
             "--name", "@",
-            "--value", "1.2.3.4",
+            "--value", "203.0.113.24",
             "--yes",
         ],
     )
@@ -840,7 +840,7 @@ def test_dns_delete_decline_at_prompt(seeded_config: Path) -> None:
                 "domain", "dns", "delete", "example.com",
                 "--type", "A",
                 "--name", "@",
-                "--value", "1.2.3.4",
+                "--value", "203.0.113.24",
             ],
             input="n\n",
         )

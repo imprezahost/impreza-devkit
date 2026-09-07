@@ -218,7 +218,7 @@ def test_api_key_self_round_trips() -> None:
                     "ip_whitelist": [
                         {
                             "id": 6,
-                            "ip_address": "64.31.49.102",
+                            "ip_address": "198.51.100.31",
                             "label": "office",
                             "created_at": "2026-04-01 13:04:40",
                         },
@@ -248,5 +248,5 @@ def test_api_key_self_round_trips() -> None:
     assert ident.request_ip == "203.0.113.42"
     assert len(ident.ip_whitelist) == 2
     assert isinstance(ident.ip_whitelist[0], IpWhitelistEntry)
-    assert ident.ip_whitelist[0].ip_address == "64.31.49.102"
+    assert ident.ip_whitelist[0].ip_address == "198.51.100.31"
     assert ident.ip_whitelist[1].label == "home"

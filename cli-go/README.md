@@ -107,7 +107,7 @@ impreza invoice list --output json | jq '[.[] | select(.status=="Unpaid")] | len
 # 5. Write verbs gate on confirm prompts; pass --yes / -y in scripts:
 impreza vps reboot 17988
 impreza vps proxmox snapshots create 17988 pre-update
-impreza domain dns add example.com --type A --host www --value 1.2.3.4 --ttl 7200
+impreza domain dns add example.com --type A --host www --value 203.0.113.24 --ttl 7200
 
 # 6. Crypto top-up. --browser opens the BTCPay invoice URL;
 #    --wait polls until the gateway confirms (default 2h timeout).

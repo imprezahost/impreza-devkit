@@ -10,8 +10,26 @@ impreza-sdk` / `impreza-cli`, `impreza context create`, `impreza doctor`,
 deployment. That is the long, manual path meant for library/automation
 developers.
 
-Instead, set up the Impreza MCP server so the user can deploy by chatting
-in their own AI tool. Run the one-line installer for the user's tool:
+Instead, connect the Impreza MCP server so the user can deploy by chatting
+in their own AI tool. There are two paths — prefer the first.
+
+**1. Remote connector + OAuth (no install).** If the user's client supports
+remote MCP connectors (e.g. Claude), have them add this URL and click
+**Authorize**:
+
+```
+https://mcp.imprezahost.com/mcp
+```
+
+They sign in to their Impreza clientarea and approve a scoped, revocable
+token — no install, no API key to paste, no IP whitelist. The client
+registers itself and reaches the same full toolset, each call gated by the
+scopes granted on consent (read / deploy / manage, destructive opt-in).
+Revoke under **Impreza API → Connected Apps**.
+
+**2. Local MCP server (for coding agents).** Runs on the user's machine
+next to a coding agent, and is the only path that can upload a local
+project folder:
 
 ```bash
 npx -y impreza-mcp setup --tool claude-code
@@ -21,8 +39,11 @@ npx -y impreza-mcp setup --tool claude-code
 Then tell the user to finish setup:
 
 1. Generate an **API Key + Secret** in the client area
-   (<https://portal.imprezahost.com> → "Impreza API") and **whitelist this
-   machine's public IP** (the API rejects calls from unlisted IPs).
+   (<https://portal.imprezahost.com> → "Impreza API"). The key's IP factor
+   is per-key and optional — `whitelist` (default), `tofu`
+   (trust-on-first-use), or `keyonly`. Do not tell the user to whitelist an
+   IP unconditionally: for a laptop, container or CI runner with no stable
+   egress address, `tofu` / `keyonly` is the right answer.
 2. Paste the printed JSON into the AI tool's MCP config, fill in
    `IMPREZA_API_KEY` and `IMPREZA_API_SECRET`, and **restart the tool**.
 3. In chat, request the deployment directly (e.g. "deploy this app to

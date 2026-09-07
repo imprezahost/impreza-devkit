@@ -30,7 +30,7 @@ def seeded_config(isolated_config: Path) -> Path:
 
 def _identity_envelope(
     *,
-    request_ip: str = "1.2.3.4",
+    request_ip: str = "203.0.113.24",
     whitelist: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
@@ -50,7 +50,7 @@ def _identity_envelope(
             else [
                 {
                     "id": 6,
-                    "ip_address": "1.2.3.4",
+                    "ip_address": "203.0.113.24",
                     "label": "office",
                     "created_at": "2026-04-01 13:04:40",
                 }
@@ -70,7 +70,7 @@ def test_whoami_renders_table(seeded_config: Path) -> None:
     # Identity header
     assert "imp_a1b2c3d4" in result.stdout
     assert "ci-bot" in result.stdout
-    assert "1.2.3.4" in result.stdout
+    assert "203.0.113.24" in result.stdout
     # Whitelist sub-table heading
     assert "IP whitelist" in result.stdout
 
@@ -84,17 +84,17 @@ def test_whoami_marks_current_ip(seeded_config: Path) -> None:
         return_value=httpx.Response(
             200,
             json=_identity_envelope(
-                request_ip="1.2.3.4",
+                request_ip="203.0.113.24",
                 whitelist=[
                     {
                         "id": 1,
-                        "ip_address": "1.2.3.4",
+                        "ip_address": "203.0.113.24",
                         "label": "current",
                         "created_at": "2026-04-01",
                     },
                     {
                         "id": 2,
-                        "ip_address": "5.6.7.8",
+                        "ip_address": "203.0.113.25",
                         "label": "other",
                         "created_at": "2026-04-02",
                     },
@@ -105,8 +105,8 @@ def test_whoami_marks_current_ip(seeded_config: Path) -> None:
     result = runner.invoke(app, ["key", "whoami"])
     assert result.exit_code == 0
     # Both IPs visible
-    assert "1.2.3.4" in result.stdout
-    assert "5.6.7.8" in result.stdout
+    assert "203.0.113.24" in result.stdout
+    assert "203.0.113.25" in result.stdout
     # `yes` for the matching IP, `no` for the other (per ASCII glyphs)
     assert "yes" in result.stdout
     assert "no" in result.stdout
@@ -135,7 +135,7 @@ def test_whoami_json_emits_full_identity(seeded_config: Path) -> None:
     assert parsed["id"] == 21
     assert parsed["prefix"] == "imp_a1b2c3d4"
     assert isinstance(parsed["ip_whitelist"], list)
-    assert parsed["ip_whitelist"][0]["ip_address"] == "1.2.3.4"
+    assert parsed["ip_whitelist"][0]["ip_address"] == "203.0.113.24"
 
 
 @respx.mock

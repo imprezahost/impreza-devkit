@@ -151,7 +151,7 @@ func runDoctorChecks(cmd *cobra.Command) []doctorCheck {
 				out = append(out, doctorCheck{
 					Name: "api-reachable", Status: "FAIL",
 					Summary: "Forbidden (HTTP 403)",
-					Detail:  fmt.Sprintf("%s. Add the calling IP to the key's whitelist via your Impreza Account, or use a different key whose whitelist already covers this IP.", ae.Message),
+					Detail:  ae.Message + ".\n" + ipWhitelistHint(""),
 					OK:      false,
 				})
 			default:
@@ -236,7 +236,7 @@ func runDoctorChecks(cmd *cobra.Command) []doctorCheck {
 				Name:    "ip-whitelist",
 				Status:  "FAIL",
 				Summary: fmt.Sprintf("request_ip %s not in whitelist (%d entr%s)", id.RequestIP, len(id.IPWhitelist), pluralY(len(id.IPWhitelist))),
-				Detail:  fmt.Sprintf("Whitelist: %v. Add the calling IP via your Impreza Account, or switch to a context whose key already allows this IP.", labels),
+				Detail:  fmt.Sprintf("Whitelist: %v.\n%s", labels, ipWhitelistHint(id.RequestIP)),
 				OK:      false,
 			})
 		}

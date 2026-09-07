@@ -10,6 +10,13 @@ class Invoice(BaseModel):
 
     For full line items + transaction history, fetch via ``invoices.get(id)``
     which returns :class:`InvoiceDetail`.
+
+    .. note::
+       The money fields below are ``float``, matching every other amount
+       in the SDK. Binary floats cannot represent decimal cents exactly,
+       so do not accumulate them: compare and total invoice amounts with
+       :class:`decimal.Decimal` (or integer cents) on your side, and treat
+       these values as display/transport only.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -49,6 +56,24 @@ class InvoiceTransaction(BaseModel):
     gateway: str | None = None
     amount: float | None = None
     transaction_id: str | None = None
+
+
+class InvoicePayment(BaseModel):
+    """Result of ``POST /invoices/{id}/pay``.
+
+    ``amount`` is what was actually drawn from the balance, which is the
+    invoice total unless credit had already been applied to it.
+
+    Money is a ``float`` here to stay consistent with every other amount
+    in this package; see the note on :class:`Invoice`.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    invoice_id: int
+    amount: float
+    currency: str | None = None
+    message: str | None = None
 
 
 class InvoiceDetail(Invoice):

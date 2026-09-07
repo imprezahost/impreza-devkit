@@ -1,6 +1,6 @@
-"""``impreza invoice`` subcommand surface — Phase 2.6.
+"""``impreza invoice`` subcommand surface.
 
-Read-only invoice commands over `c.invoices.*`:
+Invoice commands over `c.invoices.*`:
 
 * ``impreza invoice list [--status STATUS] [-o ...]``
     Wraps ``c.invoices.list(status=...)``. Multi-row table with
@@ -8,9 +8,9 @@ Read-only invoice commands over `c.invoices.*`:
 * ``impreza invoice show <id> [-o ...]``
     Wraps ``c.invoices.get(id)``. Field/value detail with line
     items as a sub-table (or JSON-array key in non-table modes).
-
-Pay-from-balance (`POST /invoices/{id}/pay`) lands in Phase 3
-alongside the rest of the mutating CLI surface.
+* ``impreza invoice pay <id> [--yes] [-o ...]``
+    Wraps ``c.invoices.pay(id)``. Spends real account credit, so it
+    prompts with the concrete amount unless ``--yes`` is passed.
 """
 
 from __future__ import annotations
@@ -18,16 +18,16 @@ from __future__ import annotations
 from typing import Any
 
 import typer
-from impreza.exceptions import ApiError, ResourceNotFound
+from impreza.exceptions import ApiError, Conflict, ResourceNotFound
 
-from ..output import OutputFormat, error, print_dict, print_table
+from ..output import OutputFormat, error, info, print_dict, print_table, success
 from ..sdk import make_client_or_exit
-from ..state import from_typer_context, resolve_output
+from ..state import confirm_or_exit, from_typer_context, resolve_output
 from ._helpers import exit_on_api_error as _exit_on_api_error
 
 app = typer.Typer(
     name="invoice",
-    help="Read invoices on your account.",
+    help="List, inspect, and pay invoices on your account.",
     no_args_is_help=True,
 )
 
@@ -196,3 +196,76 @@ def show(
             columns=["id", "date", "gateway", "amount", "transaction_id"],
             fmt=fmt,
         )
+
+
+# ── invoice pay ─────────────────────────────────────────────────────
+
+
+@app.command("pay")
+def pay(
+    typer_ctx: typer.Context,
+    invoice_id: int = typer.Argument(..., help="Invoice id to pay."),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt."
+    ),
+    output: OutputFormat | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Output format. Overrides the global --output flag.",
+        case_sensitive=False,
+    ),
+) -> None:
+    """Pay an unpaid invoice from your account credit balance.
+
+    Wraps ``POST /invoices/{id}/pay``. This spends real money and the
+    API offers no way to undo it, so without ``--yes`` the invoice is
+    fetched first and the prompt names the amount about to leave the
+    balance — confirming a number beats confirming an id. ``--yes``
+    skips both the fetch and the prompt, for scripts.
+    """
+    state = from_typer_context(typer_ctx)
+    fmt = resolve_output(state, output)
+
+    with make_client_or_exit(state) as client:
+        if not yes:
+            try:
+                inv = client.invoices.get(invoice_id)
+            except ResourceNotFound:
+                error(f"Invoice {invoice_id} not found on this account.")
+                raise typer.Exit(code=1) from None
+            except ApiError as exc:
+                _exit_on_api_error(exc)
+            if inv.status.lower() == "paid":
+                info(f"Invoice {invoice_id} is already paid; nothing to do.")
+                raise typer.Exit(code=0)
+            confirm_or_exit(
+                f"This will pay invoice {invoice_id} "
+                f"({inv.total:.2f}) from your account balance.",
+                yes=yes,
+            )
+
+        try:
+            result = client.invoices.pay(invoice_id)
+        except ResourceNotFound:
+            error(f"Invoice {invoice_id} not found on this account.")
+            raise typer.Exit(code=1) from None
+        except Conflict as exc:
+            # 409 splits two very different outcomes: nothing to do, or
+            # top up first. Say which, and don't call it a crash.
+            if (exc.code or "").upper() == "ALREADY_PAID":
+                info(f"Invoice {invoice_id} is already paid; nothing to do.")
+                raise typer.Exit(code=0) from None
+            error(f"{exc}")
+            info("Add credit with `impreza account topup` and retry.")
+            raise typer.Exit(code=1) from None
+        except ApiError as exc:
+            _exit_on_api_error(exc)
+
+    if fmt is not OutputFormat.TABLE:
+        print_dict(f"Invoice {invoice_id}", result.model_dump(), fmt=fmt)
+        return
+
+    amount = f"{result.amount:.2f}"
+    currency = f" {result.currency}" if result.currency else ""
+    success(f"Invoice {invoice_id} paid — {amount}{currency} from balance.")

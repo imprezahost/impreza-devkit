@@ -74,9 +74,9 @@ print(domain.status, domain.expiry_date)
 
 # DNS CRUD (nested under domains)
 records = c.domains.dns.list("example.com")
-c.domains.dns.add("example.com", type="A", name="@", value="1.2.3.4", ttl=3600)
+c.domains.dns.add("example.com", type="A", name="@", value="203.0.113.24", ttl=3600)
 c.domains.dns.update("example.com", type="A", name="@",
-                     old_value="1.2.3.4", new_value="5.6.7.8")
+                     old_value="203.0.113.24", new_value="203.0.113.25")
 ```
 
 ## VPS (smart dispatch)

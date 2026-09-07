@@ -132,7 +132,7 @@ func runLogin(cmd *cobra.Command, _ []string) error {
 		emsg := err.Error()
 		switch {
 		case strings.Contains(emsg, "IP_NOT_WHITELISTED"):
-			hint = "\n  Whitelist this machine's public IP on the API key in your Impreza clientarea."
+			hint = "\n  " + ipWhitelistHint("")
 		case strings.Contains(emsg, "AUTH_INVALID"), strings.Contains(emsg, "UNAUTHORIZED"):
 			hint = "\n  Double-check the key + secret were copied from the same row in clientarea → API Management."
 		}

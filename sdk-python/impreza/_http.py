@@ -27,6 +27,7 @@ import httpx
 from .exceptions import (
     ApiError,
     AuthError,
+    Conflict,
     InsufficientCredit,
     InvalidRequest,
     IpNotWhitelisted,
@@ -269,6 +270,8 @@ class HttpClient:
             return InvalidRequest(message, **kwargs)
         if status_code == 402:
             return InsufficientCredit(message, **kwargs)
+        if status_code == 409:
+            return Conflict(message, **kwargs)
         if status_code == 429:
             retry_after: int | None = None
             if response is not None:

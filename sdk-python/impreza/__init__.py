@@ -31,6 +31,13 @@ following resources:
 >>> asyncio.run(main())  # doctest: +SKIP
 """
 
+# Read the installed package version from metadata. This always matches
+# the wheel that pip installed, so `impreza.__version__` and
+# `pip show impreza-sdk` stay in sync without anyone remembering to
+# bump a hard-coded string at release time.
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
 from ._polling import AsyncOperation, Operation
 from ._topup import AsyncTopupInvoice, TopupInvoice
 from .async_client import AsyncClient
@@ -39,6 +46,7 @@ from .exceptions import (
     ApiError,
     AuthError,
     BackendNotSupported,
+    Conflict,
     ImprezaError,
     InsufficientCredit,
     InvalidRequest,
@@ -64,7 +72,13 @@ from .models.account import (
 from .models.dns import DnsRecord
 from .models.domain import Domain, DomainRegistration, DomainTransfer
 from .models.email import TitanSsoUrl
-from .models.invoice import Invoice, InvoiceDetail, InvoiceItem, InvoiceTransaction
+from .models.invoice import (
+    Invoice,
+    InvoiceDetail,
+    InvoiceItem,
+    InvoicePayment,
+    InvoiceTransaction,
+)
 from .models.order import Order, OrderDetail, OrderItem, OrderResult
 from .models.product import (
     ConfigOption,
@@ -97,12 +111,6 @@ from .models.webhook import (
 )
 from .resources.vps import AsyncVps, Vps
 
-# Read the installed package version from metadata. This always matches
-# the wheel that pip installed, so `impreza.__version__` and
-# `pip show impreza-sdk` stay in sync without anyone remembering to
-# bump a hard-coded string at release time.
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
-
 try:
     __version__ = _pkg_version("impreza-sdk")
 except PackageNotFoundError:  # source checkout without an install
@@ -124,6 +132,7 @@ __all__ = [
     "Client",
     "ConfigOption",
     "ConfigOptionChoice",
+    "Conflict",
     "ConsoleUrl",
     "CustomField",
     "CyclePrice",
@@ -138,6 +147,7 @@ __all__ = [
     "Invoice",
     "InvoiceDetail",
     "InvoiceItem",
+    "InvoicePayment",
     "InvoiceTransaction",
     "IpNotWhitelisted",
     "IpWhitelistEntry",

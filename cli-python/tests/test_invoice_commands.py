@@ -240,3 +240,148 @@ def test_invoice_with_no_contexts_exits_nonzero(isolated_config: Path) -> None:
     result = runner.invoke(app, ["invoice", "list"])
     assert result.exit_code == 1
     assert "No contexts configured" in result.stderr
+
+
+# ── invoice pay ─────────────────────────────────────────────────────
+
+
+def _pay_envelope() -> dict[str, object]:
+    return {
+        "success": True,
+        "data": {
+            "invoice_id": 2345,
+            "amount": 17.0,
+            "currency": "USD",
+            "message": "Invoice paid from account balance.",
+        },
+        "meta": {"request_id": "req_t"},
+    }
+
+
+def _pay_detail_envelope(status: str = "Unpaid") -> dict[str, object]:
+    return {
+        "success": True,
+        "data": {
+            "id": 2345,
+            "invoice_num": "2345",
+            "date": "2026-03-01",
+            "total": 17.0,
+            "status": status,
+        },
+        "meta": {"request_id": "req_t"},
+    }
+
+
+def _err(code: str, message: str) -> dict[str, object]:
+    return {
+        "success": False,
+        "error": {"code": code, "message": message},
+        "meta": {"request_id": "req_t"},
+    }
+
+
+@respx.mock
+def test_pay_with_yes_skips_fetch_and_prompt(seeded_config: Path) -> None:
+    """--yes is the script path: one POST, no confirmation, no extra GET."""
+    get_route = respx.get(f"{BASE}/invoices/2345").mock(
+        return_value=httpx.Response(200, json=_pay_detail_envelope())
+    )
+    pay_route = respx.post(f"{BASE}/invoices/2345/pay").mock(
+        return_value=httpx.Response(200, json=_pay_envelope())
+    )
+    result = runner.invoke(app, ["invoice", "pay", "2345", "--yes"])
+    assert result.exit_code == 0, result.stdout
+    assert pay_route.called
+    assert not get_route.called
+    assert "17.00" in result.stdout
+
+
+@respx.mock
+def test_pay_prompts_with_amount_and_declining_does_not_pay(
+    seeded_config: Path,
+) -> None:
+    """Declining is not an error, and nothing is charged."""
+    respx.get(f"{BASE}/invoices/2345").mock(
+        return_value=httpx.Response(200, json=_pay_detail_envelope())
+    )
+    pay_route = respx.post(f"{BASE}/invoices/2345/pay").mock(
+        return_value=httpx.Response(200, json=_pay_envelope())
+    )
+    result = runner.invoke(app, ["invoice", "pay", "2345"], input="n\n")
+    assert result.exit_code == 0, result.stdout
+    assert not pay_route.called
+    assert "17.00" in result.stdout
+    assert "Cancelled." in result.stdout
+
+
+@respx.mock
+def test_pay_confirmed_charges(seeded_config: Path) -> None:
+    respx.get(f"{BASE}/invoices/2345").mock(
+        return_value=httpx.Response(200, json=_pay_detail_envelope())
+    )
+    pay_route = respx.post(f"{BASE}/invoices/2345/pay").mock(
+        return_value=httpx.Response(200, json=_pay_envelope())
+    )
+    result = runner.invoke(app, ["invoice", "pay", "2345"], input="y\n")
+    assert result.exit_code == 0, result.stdout
+    assert pay_route.called
+
+
+@respx.mock
+def test_pay_already_paid_is_not_an_error(seeded_config: Path) -> None:
+    """An already-paid invoice is a no-op, not a failure — exit 0 so a
+    retrying script doesn't treat it as a broken run."""
+    respx.get(f"{BASE}/invoices/2345").mock(
+        return_value=httpx.Response(200, json=_pay_detail_envelope(status="Paid"))
+    )
+    pay_route = respx.post(f"{BASE}/invoices/2345/pay").mock(
+        return_value=httpx.Response(200, json=_pay_envelope())
+    )
+    result = runner.invoke(app, ["invoice", "pay", "2345"])
+    assert result.exit_code == 0, result.stdout
+    assert not pay_route.called
+    assert "already paid" in result.stdout.lower()
+
+
+@respx.mock
+def test_pay_409_already_paid_exits_zero(seeded_config: Path) -> None:
+    """Same outcome when the race is lost server-side (409 ALREADY_PAID)."""
+    respx.post(f"{BASE}/invoices/2345/pay").mock(
+        return_value=httpx.Response(409, json=_err("ALREADY_PAID", "Already paid."))
+    )
+    result = runner.invoke(app, ["invoice", "pay", "2345", "--yes"])
+    assert result.exit_code == 0, result.stdout
+    assert "already paid" in result.stdout.lower()
+
+
+@respx.mock
+def test_pay_409_insufficient_balance_points_at_topup(seeded_config: Path) -> None:
+    respx.post(f"{BASE}/invoices/2345/pay").mock(
+        return_value=httpx.Response(
+            409,
+            json=_err("INSUFFICIENT_BALANCE", "Insufficient balance. Required: USD 17.00"),
+        )
+    )
+    result = runner.invoke(app, ["invoice", "pay", "2345", "--yes"])
+    assert result.exit_code == 1
+    assert "topup" in result.stdout.lower() or "topup" in result.stderr.lower()
+
+
+@respx.mock
+def test_pay_404(seeded_config: Path) -> None:
+    respx.post(f"{BASE}/invoices/999/pay").mock(
+        return_value=httpx.Response(404, json=_err("NOT_FOUND", "No such invoice."))
+    )
+    result = runner.invoke(app, ["invoice", "pay", "999", "--yes"])
+    assert result.exit_code == 1
+    assert "not found" in result.stderr.lower()
+
+
+@respx.mock
+def test_pay_json_output(seeded_config: Path) -> None:
+    respx.post(f"{BASE}/invoices/2345/pay").mock(
+        return_value=httpx.Response(200, json=_pay_envelope())
+    )
+    result = runner.invoke(app, ["invoice", "pay", "2345", "--yes", "-o", "json"])
+    assert result.exit_code == 0, result.stdout
+    assert json.loads(result.stdout)["invoice_id"] == 2345

@@ -72,3 +72,38 @@ func (c *Client) InvoiceShow(ctx context.Context, id int) (*InvoiceDetail, error
 	}
 	return &inv, nil
 }
+
+// InvoicePayment is the response from POST /v1/invoices/{id}/pay.
+//
+// Amount is what actually left the balance, which is the invoice total
+// unless credit had already been applied. It is a float64 to match every
+// other money field in this package — see the note on Invoice; do not
+// accumulate these values, compare and total them in minor units.
+type InvoicePayment struct {
+	InvoiceID int     `json:"invoice_id"`
+	Amount    float64 `json:"amount"`
+	Currency  string  `json:"currency,omitempty"`
+	Message   string  `json:"message,omitempty"`
+}
+
+// InvoicePay wraps POST /v1/invoices/{id}/pay — pays an unpaid invoice
+// from the account credit balance.
+//
+// This spends real money and the API offers no way to undo it. Callers
+// that front a human (the CLI does) must confirm before calling.
+//
+// A 409 comes back as *Conflict, with two cases worth telling apart via
+// APIError.Code: ALREADY_PAID (nothing to do) and INSUFFICIENT_BALANCE
+// (top up first, see TopupCreate). A 404 comes back as *NotFound.
+func (c *Client) InvoicePay(ctx context.Context, id int) (*InvoicePayment, error) {
+	var out InvoicePayment
+	if err := c.Post(ctx, "/v1/invoices/"+formatInt(id)+"/pay", nil, &out); err != nil {
+		return nil, err
+	}
+	// The endpoint echoes invoice_id, but fall back to the id we asked
+	// about so the result is never ambiguous about which invoice moved.
+	if out.InvoiceID == 0 {
+		out.InvoiceID = id
+	}
+	return &out, nil
+}

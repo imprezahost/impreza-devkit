@@ -65,38 +65,25 @@ app = typer.Typer(
 # ── helpers ─────────────────────────────────────────────────────────
 
 
-def _emit(value: Any, *, ctx: typer.Context) -> None:
-    """Render a heterogeneous payload (dict, list[dict], or scalar).
+def _emit(value: Any, *, ctx: typer.Context, title: str) -> None:
+    """Render a heterogeneous payload (dict or list[dict]).
 
     The /dedicated/* payloads vary by service — there's no single
-    typed projection that fits every endpoint. Tables turn into flat
-    key=value dumps; JSON / YAML pass the structure through.
+    typed projection that fits every endpoint, so dispatch on the
+    shape and let :mod:`..output` handle the format: a dict becomes a
+    Field / Value table, a list of dicts a row table, and JSON / YAML
+    pass the structure through untouched.
     """
-    state = from_typer_context(ctx)
-    fmt = resolve_output(state, override=None)
-    if fmt is OutputFormat.TABLE and isinstance(value, dict):
-        print_dict(value)
-    elif fmt is OutputFormat.TABLE and isinstance(value, list) and value and isinstance(value[0], dict):
-        # Use the first row's keys as the column order so the table
-        # is stable across runs.
-        columns = list(value[0].keys())
-        print_table(columns, value)
-    else:
-        print_dict(value) if isinstance(value, dict) else typer.echo(_serialize(value, fmt))
-
-
-def _serialize(value: Any, fmt: OutputFormat) -> str:
-    """Format a non-dict value for JSON / YAML output."""
-    import json
-
-    if fmt is OutputFormat.YAML:
-        try:
-            import yaml  # type: ignore[import-not-found]
-
-            return yaml.safe_dump(value, sort_keys=False).rstrip()
-        except ImportError:  # pragma: no cover
-            return json.dumps(value, indent=2, ensure_ascii=False)
-    return json.dumps(value, indent=2, ensure_ascii=False)
+    fmt = resolve_output(from_typer_context(ctx), None)
+    if isinstance(value, list):
+        rows = value if all(isinstance(row, dict) for row in value) else [
+            {"value": item} for item in value
+        ]
+        print_table(title, rows, fmt=fmt)
+    elif isinstance(value, dict):
+        print_dict(title, value, fmt=fmt)
+    else:  # pragma: no cover — every /dedicated/* endpoint returns dict or list
+        print_dict(title, {"value": value}, fmt=fmt)
 
 
 # ── discovery ──────────────────────────────────────────────────────
@@ -105,7 +92,7 @@ def _serialize(value: Any, fmt: OutputFormat) -> str:
 @app.command("list")
 def cmd_list(ctx: typer.Context) -> None:
     """List every dedicated server on the account."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         items = client.dedicated.list()
     except ApiError as exc:
@@ -114,9 +101,8 @@ def cmd_list(ctx: typer.Context) -> None:
     if not items:
         info("No dedicated servers on this account.")
         return
-    fmt = resolve_output(from_typer_context(ctx), override=None)
+    fmt = resolve_output(from_typer_context(ctx), None)
     if fmt is OutputFormat.TABLE:
-        columns = ["service_id", "domain", "ip", "status", "capabilities"]
         rows = [
             {
                 "service_id": item.get("service_id"),
@@ -127,21 +113,28 @@ def cmd_list(ctx: typer.Context) -> None:
             }
             for item in items
         ]
-        print_table(columns, rows)
+        print_table(
+            f"Dedicated servers ({len(rows)})",
+            rows,
+            columns=["service_id", "domain", "ip", "status", "capabilities"],
+            fmt=fmt,
+        )
     else:
-        _emit(items, ctx=ctx)
+        # JSON / YAML echo the raw server payload rather than the
+        # table projection, so scripts see every field.
+        _emit(items, ctx=ctx, title="Dedicated servers")
 
 
 @app.command("show")
 def cmd_show(ctx: typer.Context, service_id: int = typer.Argument(...)) -> None:
     """Show full details for a dedicated server."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         data = client.dedicated.info(service_id)
     except ApiError as exc:
         exit_on_api_error(exc)
         return
-    _emit(data, ctx=ctx)
+    _emit(data, ctx=ctx, title=f"Dedicated {service_id}")
 
 
 @app.command("capabilities")
@@ -152,49 +145,49 @@ def cmd_capabilities(ctx: typer.Context, service_id: int = typer.Argument(...)) 
     bandwidth, vpn, kvm, reinstall, power — so you don't waste a
     round-trip on a NOT_SUPPORTED response.
     """
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         data = client.dedicated.capabilities(service_id)
     except ApiError as exc:
         exit_on_api_error(exc)
         return
-    _emit(data, ctx=ctx)
+    _emit(data, ctx=ctx, title=f"Dedicated {service_id} — capabilities")
 
 
 @app.command("status")
 def cmd_status(ctx: typer.Context, service_id: int = typer.Argument(...)) -> None:
     """Show current power / provisioning state."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         data = client.dedicated.status(service_id)
     except ApiError as exc:
         exit_on_api_error(exc)
         return
-    _emit(data, ctx=ctx)
+    _emit(data, ctx=ctx, title=f"Dedicated {service_id} — status")
 
 
 @app.command("ips")
 def cmd_ips(ctx: typer.Context, service_id: int = typer.Argument(...)) -> None:
     """List the IPs assigned to the server with current PTR."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         data = client.dedicated.ips(service_id)
     except ApiError as exc:
         exit_on_api_error(exc)
         return
-    _emit(data, ctx=ctx)
+    _emit(data, ctx=ctx, title=f"Dedicated {service_id} — IPs")
 
 
 @app.command("os-images")
 def cmd_os_images(ctx: typer.Context, service_id: int = typer.Argument(...)) -> None:
     """List OS images available for reinstall."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         data = client.dedicated.os_images(service_id)
     except ApiError as exc:
         exit_on_api_error(exc)
         return
-    _emit(data, ctx=ctx)
+    _emit(data, ctx=ctx, title=f"Dedicated {service_id} — OS images")
 
 
 # ── power ──────────────────────────────────────────────────────────
@@ -203,7 +196,7 @@ def cmd_os_images(ctx: typer.Context, service_id: int = typer.Argument(...)) -> 
 @app.command("start")
 def cmd_start(ctx: typer.Context, service_id: int = typer.Argument(...)) -> None:
     """Power on a dedicated server."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         client.dedicated.start(service_id)
     except ApiError as exc:
@@ -215,7 +208,7 @@ def cmd_start(ctx: typer.Context, service_id: int = typer.Argument(...)) -> None
 @app.command("shutdown")
 def cmd_shutdown(ctx: typer.Context, service_id: int = typer.Argument(...)) -> None:
     """Graceful shutdown."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         client.dedicated.shutdown(service_id)
     except ApiError as exc:
@@ -227,7 +220,7 @@ def cmd_shutdown(ctx: typer.Context, service_id: int = typer.Argument(...)) -> N
 @app.command("reboot")
 def cmd_reboot(ctx: typer.Context, service_id: int = typer.Argument(...)) -> None:
     """Reboot."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         client.dedicated.reboot(service_id)
     except ApiError as exc:
@@ -252,25 +245,25 @@ def cmd_set_rdns(
     automated rDNS path the response is ``{status: queued, ...}`` and
     an operator on our side completes it within a few hours.
     """
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         data = client.dedicated.set_rdns(service_id, ip, hostname)
     except ApiError as exc:
         exit_on_api_error(exc)
         return
-    _emit(data, ctx=ctx)
+    _emit(data, ctx=ctx, title=f"Dedicated {service_id} — rDNS")
 
 
 @app.command("reset-rdns")
 def cmd_reset_rdns(ctx: typer.Context, service_id: int = typer.Argument(...)) -> None:
     """Reset every PTR back to the Impreza default (impreza.host pattern)."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         data = client.dedicated.reset_rdns(service_id)
     except ApiError as exc:
         exit_on_api_error(exc)
         return
-    _emit(data, ctx=ctx)
+    _emit(data, ctx=ctx, title=f"Dedicated {service_id} — rDNS reset")
 
 
 # ── KVM ────────────────────────────────────────────────────────────
@@ -279,13 +272,13 @@ def cmd_reset_rdns(ctx: typer.Context, service_id: int = typer.Argument(...)) ->
 @app.command("kvm")
 def cmd_kvm(ctx: typer.Context, service_id: int = typer.Argument(...)) -> None:
     """Show current KVM / IPMI access info."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         data = client.dedicated.kvm(service_id)
     except ApiError as exc:
         exit_on_api_error(exc)
         return
-    _emit(data, ctx=ctx)
+    _emit(data, ctx=ctx, title=f"Dedicated {service_id} — KVM")
 
 
 @app.command("enable-kvm")
@@ -296,19 +289,19 @@ def cmd_enable_kvm(ctx: typer.Context, service_id: int = typer.Argument(...)) ->
     automatically when the service needs it — nothing for you to
     pass.
     """
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         data = client.dedicated.enable_kvm(service_id)
     except ApiError as exc:
         exit_on_api_error(exc)
         return
-    _emit(data, ctx=ctx)
+    _emit(data, ctx=ctx, title=f"Dedicated {service_id} — KVM enabled")
 
 
 @app.command("disable-kvm")
 def cmd_disable_kvm(ctx: typer.Context, service_id: int = typer.Argument(...)) -> None:
     """Close the active KVM/IPMI session."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         client.dedicated.disable_kvm(service_id)
     except ApiError as exc:
@@ -323,25 +316,25 @@ def cmd_disable_kvm(ctx: typer.Context, service_id: int = typer.Argument(...)) -
 @app.command("firewall")
 def cmd_firewall(ctx: typer.Context, service_id: int = typer.Argument(...)) -> None:
     """Show DDoS firewall state. Requires the ``firewall`` capability."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         data = client.dedicated.firewall(service_id)
     except ApiError as exc:
         exit_on_api_error(exc)
         return
-    _emit(data, ctx=ctx)
+    _emit(data, ctx=ctx, title=f"Dedicated {service_id} — firewall")
 
 
 @app.command("ddos-logs")
 def cmd_ddos_logs(ctx: typer.Context, service_id: int = typer.Argument(...)) -> None:
     """Show DDoS attack logs. Requires the ``firewall`` capability."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         data = client.dedicated.ddos_logs(service_id)
     except ApiError as exc:
         exit_on_api_error(exc)
         return
-    _emit(data, ctx=ctx)
+    _emit(data, ctx=ctx, title=f"Dedicated {service_id} — DDoS logs")
 
 
 @app.command("set-firewall")
@@ -361,7 +354,7 @@ def cmd_set_firewall(
     ),
 ) -> None:
     """Update DDoS firewall state/sensitivity for an IP. Requires the ``firewall`` capability."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         data = client.dedicated.set_firewall(
             service_id, ip=ip, state=state, sensitivity=sensitivity
@@ -369,7 +362,7 @@ def cmd_set_firewall(
     except ApiError as exc:
         exit_on_api_error(exc)
         return
-    _emit(data, ctx=ctx)
+    _emit(data, ctx=ctx, title=f"Dedicated {service_id} — firewall updated")
 
 
 # ── Bandwidth (capability-gated) ───────────────────────────────────
@@ -387,13 +380,13 @@ def cmd_bandwidth(
     scale: str = typer.Option("month", "--scale", help="day | week | month"),
 ) -> None:
     """Bandwidth graph (PNG base64). Requires the ``bandwidth`` capability."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         data = client.dedicated.bandwidth(service_id, type=type, scale=scale)
     except ApiError as exc:
         exit_on_api_error(exc)
         return
-    _emit(data, ctx=ctx)
+    _emit(data, ctx=ctx, title=f"Dedicated {service_id} — bandwidth")
 
 
 # ── VPN (capability-gated) ─────────────────────────────────────────
@@ -402,13 +395,13 @@ def cmd_bandwidth(
 @app.command("vpn")
 def cmd_vpn(ctx: typer.Context, service_id: int = typer.Argument(...)) -> None:
     """Show rotating VPN credentials. Requires the ``vpn`` capability."""
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         data = client.dedicated.vpn(service_id)
     except ApiError as exc:
         exit_on_api_error(exc)
         return
-    _emit(data, ctx=ctx)
+    _emit(data, ctx=ctx, title=f"Dedicated {service_id} — VPN")
 
 
 # ── Reinstall (destructive) ────────────────────────────────────────
@@ -451,7 +444,7 @@ def cmd_reinstall(
         f"Reinstall service {service_id} to os-id={os_id}? ALL DATA WILL BE LOST.",
         yes=yes,
     )
-    client = make_client_or_exit(ctx)
+    client = make_client_or_exit(from_typer_context(ctx))
     try:
         data = client.dedicated.reinstall(
             service_id,
@@ -463,4 +456,4 @@ def cmd_reinstall(
     except ApiError as exc:
         exit_on_api_error(exc)
         return
-    _emit(data, ctx=ctx)
+    _emit(data, ctx=ctx, title=f"Dedicated {service_id} — reinstall")

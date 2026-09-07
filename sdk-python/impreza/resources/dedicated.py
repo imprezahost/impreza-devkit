@@ -14,11 +14,17 @@ when ``confirm=True`` is passed.
 
 from __future__ import annotations
 
+import builtins
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:  # pragma: no cover
     from .._http import HttpClient
     from .._http_async import AsyncHttpClient
+
+# `DedicatedResource` and `AsyncDedicatedResource` define a `list()` method,
+# which shadows the builtin `list` within the class body for mypy's
+# class-scope name resolution. Use `builtins.list[X]` inside those classes
+# to disambiguate.
 
 
 def _data(payload: dict[str, Any]) -> Any:
@@ -99,7 +105,7 @@ class DedicatedResource:
         """List IPs with current PTR."""
         return _data(self._http.get(f"/dedicated/{service_id}/ips")) or {}
 
-    def os_images(self, service_id: int) -> list[dict[str, Any]]:
+    def os_images(self, service_id: int) -> builtins.list[dict[str, Any]]:
         """OS images available for reinstall."""
         result = _data(self._http.get(f"/dedicated/{service_id}/os-images"))
         return result if isinstance(result, list) else []
@@ -261,7 +267,7 @@ class AsyncDedicatedResource:
     async def ips(self, service_id: int) -> dict[str, Any]:
         return _data(await self._http.get(f"/dedicated/{service_id}/ips")) or {}
 
-    async def os_images(self, service_id: int) -> list[dict[str, Any]]:
+    async def os_images(self, service_id: int) -> builtins.list[dict[str, Any]]:
         result = _data(await self._http.get(f"/dedicated/{service_id}/os-images"))
         return result if isinstance(result, list) else []
 

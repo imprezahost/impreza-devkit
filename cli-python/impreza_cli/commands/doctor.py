@@ -49,6 +49,7 @@ from impreza.exceptions import (
 from ..output import OutputFormat, error, success, warning
 from ..sdk import make_client_or_exit
 from ..state import from_typer_context, resolve_output
+from ._helpers import ip_whitelist_hint
 
 app = typer.Typer(
     name="doctor",
@@ -152,9 +153,7 @@ def _check_api_reachable(client: Any, key_holder: dict[str, Any]) -> _CheckResul
     except IpNotWhitelisted as exc:
         r.failed(
             "IP not whitelisted (HTTP 403)",
-            f"{exc.message}. Add the calling IP to the API key's "
-            "whitelist via Impreza Account, or use a different "
-            "key whose whitelist already covers this IP.",
+            f"{exc.message}. {ip_whitelist_hint()}",
         )
         return r
     except PermissionDenied as exc:
@@ -238,9 +237,7 @@ def _check_ip_whitelist(key_holder: dict[str, Any]) -> _CheckResult:
         r.failed(
             f"request_ip {request_ip} not in whitelist "
             f"({len(entries)} entr{'y' if len(entries) == 1 else 'ies'})",
-            f"Whitelist: {labels}. Add the calling IP via your Impreza "
-            "Account, or switch to a context whose key already "
-            "allows this IP.",
+            f"Whitelist: {labels}. {ip_whitelist_hint(request_ip)}",
         )
         return r
 

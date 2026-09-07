@@ -44,11 +44,63 @@ import (
 const (
 	// Per-command timeouts. `docker compose pull` is the slow one;
 	// keep the others tight so an agent doesn't sit on a stuck command.
-	composePullTimeout    = 5 * time.Minute
-	composeUpTimeout      = 2 * time.Minute
-	composeDownTimeout    = 2 * time.Minute
+	composePullTimeout = 5 * time.Minute
+	composeUpTimeout   = 2 * time.Minute
+	// Build-mode (Dockerfile / git) `up --build` runs `docker build`
+	// inline, which for a real app (npm/pip/go, cold layers) easily
+	// outruns the 2-minute plain-up budget. Give it a much wider window.
+	composeBuildTimeout = 10 * time.Minute
+	// Teardown now also unlinks image layers (`down --rmi all`), so it
+	// does real I/O on multi-GB stacks — 2 minutes was cutting it close.
+	composeDownTimeout    = 4 * time.Minute
 	composeRestartTimeout = 1 * time.Minute
 	composeQueryTimeout   = 30 * time.Second
+
+	// Post-`up` settle gate. `compose up -d` returning 0 only means the
+	// containers were CREATED — it says nothing about whether they stayed
+	// up. A crash-looping container therefore used to be reported as a
+	// successful deploy, which is how a Postgres restarting 13 times
+	// showed as "installed" in the panel while burning CPU and disk in
+	// the customer's VPS forever.
+	//
+	// settleInterval/settleStableSamples: how long the stack has to look
+	// good before we believe it. The first sample is taken immediately, so
+	// 3 samples land at t=0/3/6 — measured at ~6s added to a healthy
+	// deploy. Deliberately cheap, because this runs on EVERY deploy.
+	settleInterval      = 3 * time.Second
+	settleStableSamples = 3
+	// settleBudget bounds the wait for a stack that is neither clearly
+	// healthy nor clearly crash-looping (slow first boot of a container
+	// that declares a HEALTHCHECK, say).
+	settleBudget = 60 * time.Second
+	// crashLoopRestarts is the FAST PATH for spotting a crash loop: this
+	// many restarts accumulated during the gate. It only fires while the
+	// backoff is still short (Docker starts at 100ms and doubles), so it
+	// catches a freshly broken container quickly but goes quiet once a
+	// container has been looping long enough for the delay to stretch.
+	// The persistent-`restarting` streak in awaitStackSettled is what
+	// covers that case; do not rely on this alone.
+	crashLoopRestarts = 3
+)
+
+// settleVerdict is the outcome of the post-`up` gate.
+type settleVerdict int
+
+const (
+	// settleHealthy — every container is up (or a one-shot that exited 0)
+	// and nothing restarted while we watched.
+	settleHealthy settleVerdict = iota
+	// settleCrashLooping — a container is provably unable to stay up.
+	// This is the only verdict that fails a deploy, because it is the
+	// only one we can assert without guessing.
+	settleCrashLooping
+	// settleUnsettled — the budget ran out with the stack neither clearly
+	// good nor clearly broken. ADVISORY ONLY: a slow-booting app must not
+	// be reported as a failed install, so this is logged and attached to
+	// the result, and the deploy still succeeds. Mirrors the posture the
+	// HTTPS probe already takes ("did not respond OK ...; proceeding
+	// anyway").
+	settleUnsettled
 )
 
 // Docker is the runtime executor. Build with NewDocker.
@@ -125,6 +177,11 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) sdkclie
 	}
 
 	appDir := d.appDir(p.DeploymentID)
+	// A pre-existing compose.yaml means this deployment_id has been
+	// deployed before, i.e. this is a redeploy over live customer data
+	// rather than a first install. The failure-rollback path below is
+	// deliberately gentler in that case — see rollbackFailedDeploy.
+	isRedeploy := exists(filepath.Join(appDir, "compose.yaml"))
 	dataDir := filepath.Join(appDir, "data")
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return failResult(cmd.ID, "mkdir state dir: "+err.Error())
@@ -242,20 +299,82 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) sdkclie
 	}
 
 	// 1. Pull (long).
+	//
+	// A failed pull used to return straight out, leaving whatever layers
+	// already downloaded plus the state dir on the customer's disk with
+	// nothing in the panel pointing at them. Roll back before reporting.
 	d.Log.Info("docker deploy: pulling images", "deployment_id", p.DeploymentID)
 	pullCtx, cancelPull := context.WithTimeout(ctx, composePullTimeout)
 	defer cancelPull()
 	if out, err := d.compose(pullCtx, appDir, "pull"); err != nil {
+		d.rollbackFailedDeploy(ctx, appDir, p.DeploymentID, isRedeploy, "compose pull failed")
 		return failResult(cmd.ID, fmt.Sprintf("docker compose pull: %v\n%s", err, tail(out, 1536)))
 	}
 
-	// 2. Up -d.
-	d.Log.Info("docker deploy: bringing stack up", "deployment_id", p.DeploymentID)
-	upCtx, cancelUp := context.WithTimeout(ctx, composeUpTimeout)
-	defer cancelUp()
-	if out, err := d.compose(upCtx, appDir, "up", "-d"); err != nil {
-		return failResult(cmd.ID, fmt.Sprintf("docker compose up: %v\n%s", err, tail(out, 1536)))
+	// 2. Up -d. Build-mode deploys (Dockerfile / git) force a rebuild:
+	//    the build context was just re-fetched (fresh git HEAD / uploaded
+	//    tarball), and a plain `up -d` reuses the EXISTING image — so on a
+	//    redeploy new commits would never ship (a silent no-op deploy the
+	//    panel still reports as "updated"). `--build` runs `docker build`
+	//    against the fresh context; unchanged layers still hit the cache.
+	//    Catalog / image deploys (Build == nil) skip --build (nothing to
+	//    build) and keep the tight 2-min budget; build-mode gets the wider
+	//    build budget.
+	//
+	//    On failure: a partially-successful `up` leaves the services that
+	//    DID start running. Capture their logs for the failure report,
+	//    then tear the stack down so a failed install doesn't bill the
+	//    customer's disk and CPU indefinitely.
+	upArgs := []string{"up", "-d"}
+	upTimeout := composeUpTimeout
+	if p.Manifest.Runtime.Build != nil {
+		upArgs = append(upArgs, "--build")
+		upTimeout = composeBuildTimeout
 	}
+	d.Log.Info("docker deploy: bringing stack up",
+		"deployment_id", p.DeploymentID, "build", p.Manifest.Runtime.Build != nil)
+	upCtx, cancelUp := context.WithTimeout(ctx, upTimeout)
+	defer cancelUp()
+	if out, err := d.compose(upCtx, appDir, upArgs...); err != nil {
+		failLogs := d.grabFailureLogs(ctx, appDir)
+		d.rollbackFailedDeploy(ctx, appDir, p.DeploymentID, isRedeploy, "compose up failed")
+		return failResult(cmd.ID, fmt.Sprintf(
+			"docker compose up: %v\n%s\n%s", err, tail(out, 1536), failLogs,
+		))
+	}
+
+	// 2.1 Settle gate. `up -d` exiting 0 means "containers created", not
+	//     "app works" — see the settleVerdict docs. A crash-looping
+	//     container is the one failure we can assert rather than guess,
+	//     so it fails the deploy AND gets torn down: it can never serve
+	//     traffic, and leaving it costs the customer CPU and disk
+	//     indefinitely (this is the dead-container-in-the-VPS case).
+	//
+	//     Anything less certain stays advisory on purpose. Tearing down a
+	//     running app because a HEALTHCHECK was still warming up would be
+	//     a far worse bug than the one being fixed.
+	settleStart := time.Now()
+	verdict, detail := d.awaitStackSettled(ctx, p.DeploymentID)
+	switch verdict {
+	case settleCrashLooping:
+		d.Log.Warn("docker deploy: stack is crash-looping, tearing down",
+			"deployment_id", p.DeploymentID, "detail", detail,
+			"waited", time.Since(settleStart).Round(time.Second))
+		failLogs := d.grabFailureLogs(ctx, appDir)
+		d.rollbackFailedDeploy(ctx, appDir, p.DeploymentID, isRedeploy, "stack crash-looping after up")
+		return failResult(cmd.ID, fmt.Sprintf(
+			"deploy did not produce a working app: %s\n%s", detail, failLogs,
+		))
+	case settleUnsettled:
+		d.Log.Warn("docker deploy: stack not confirmed healthy, proceeding anyway",
+			"deployment_id", p.DeploymentID, "detail", detail,
+			"waited", time.Since(settleStart).Round(time.Second))
+	default:
+		d.Log.Info("docker deploy: stack settled",
+			"deployment_id", p.DeploymentID, "detail", detail,
+			"waited", time.Since(settleStart).Round(time.Second))
+	}
+	settleNote := detail
 
 	// 2.5 Phase 9.9: lifecycle.install hook. Manifest authors put a
 	//     wizard-complete shell script here that pokes the app's
@@ -384,6 +503,36 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) sdkclie
 		}
 	}
 
+	// 3.5 Manifest-declared readiness probe (manifest.lifecycle.health).
+	//
+	//     Until now this field was dead: the health_check command handler
+	//     ran `compose ps` and always returned success without ever
+	//     executing the script, so every manifest's carefully written
+	//     probe did nothing. Running it here — last, after routes and the
+	//     HTTPS handshake, so the app has had the most time to warm up —
+	//     makes it live.
+	//
+	//     ADVISORY, like the HTTPS probe above. These scripts are
+	//     app-specific curls that can fail for reasons that have nothing
+	//     to do with a broken install (cold cache, slow migration, a
+	//     probe written against an older version). The crash-loop gate is
+	//     what fails a deploy; this only annotates the result.
+	if healthScript := strings.TrimSpace(p.Manifest.Lifecycle.Health); healthScript != "" {
+		hCtx, cancelH := context.WithTimeout(ctx, composeQueryTimeout)
+		hOut, hErr := d.runShellScript(hCtx, appDir, p.Vars, healthScript)
+		cancelH()
+		if hErr != nil {
+			d.Log.Warn("docker deploy: lifecycle.health probe did not pass (advisory)",
+				"deployment_id", p.DeploymentID, "err", hErr)
+			settleNote += fmt.Sprintf("\nreadiness probe did not pass (advisory): %v\n%s",
+				hErr, tail(hOut, 512))
+		} else {
+			d.Log.Info("docker deploy: lifecycle.health probe passed",
+				"deployment_id", p.DeploymentID)
+			settleNote += "\nreadiness probe passed"
+		}
+	}
+
 	// 4. Capture a short tail of logs for the result so the panel
 	//    shows something concrete on success.
 	logsCtx, cancelLogs := context.WithTimeout(ctx, composeQueryTimeout)
@@ -391,13 +540,17 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) sdkclie
 	logOut, _ := d.compose(logsCtx, appDir, "logs", "--tail=20", "--no-color")
 
 	d.Log.Info("docker deploy: success", "deployment_id", p.DeploymentID, "onion", primaryOnion)
+	// Lead the tail with the settle/readiness summary. On an advisory
+	// miss this is the only place an operator finds out the app was never
+	// confirmed healthy, so it goes above the log tail rather than being
+	// buried under 4KB of container output.
 	return sdkclient.DeployResult{
 		CommandID:    cmd.ID,
 		Status:       "success",
 		DeploymentID: p.DeploymentID,
 		Domain:       envValue(p.Vars, "DOMAIN_URL"),
 		Onion:        primaryOnion,
-		LogsTail:     tail(logOut, 4096),
+		LogsTail:     "health: " + settleNote + "\n\n" + tail(logOut, 4096),
 	}
 }
 
@@ -413,26 +566,69 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 	appDir := d.appDir(p.DeploymentID)
 
 	if !exists(appDir) {
-		// Nothing to do — treat as idempotent success.
-		d.Log.Info("docker uninstall: no state dir, no-op", "deployment_id", p.DeploymentID)
+		// No state dir, but containers may still exist — a deploy that
+		// died after `compose up` and before/while writing state, or a
+		// dir already removed by a half-finished earlier uninstall,
+		// would otherwise leave them running forever with nothing left
+		// on disk to point at them. Sweep by compose label, then report
+		// idempotent success.
+		d.Log.Info("docker uninstall: no state dir, sweeping by label", "deployment_id", p.DeploymentID)
+		d.forceRemoveProjectContainers(ctx, p.DeploymentID)
 		return sdkclient.DeployResult{CommandID: cmd.ID, Status: "success", DeploymentID: p.DeploymentID}
 	}
 
 	downCtx, cancel := context.WithTimeout(ctx, composeDownTimeout)
 	defer cancel()
-	args := []string{"down"}
+	// `--remove-orphans` catches containers from a previous revision of
+	// this compose file whose service was renamed or dropped (a redeploy
+	// leaves those behind otherwise).
+	//
+	// `--rmi all` is what actually reclaims the disk. NOT `local`:
+	// `local` only removes images with no custom tag, and every catalog
+	// manifest pins an explicit `image:`, so `local` is a silent no-op
+	// here — that is why uninstalls were leaving 650MB postgres layers
+	// on the box. `all` is safe against collateral damage because the
+	// daemon refuses to delete an image still referenced by any
+	// container, running OR stopped; compose logs a warning and moves
+	// on. Worst case another deployment re-pulls the image later.
+	args := []string{"down", "--remove-orphans", "--rmi", "all"}
 	if p.PurgeData {
 		args = append(args, "--volumes")
 	}
-	if out, err := d.compose(downCtx, appDir, args...); err != nil {
-		d.Log.Warn("docker compose down failed, removing state anyway", "deployment_id", p.DeploymentID, "err", err)
-		return failResult(cmd.ID, fmt.Sprintf("compose down: %v\n%s", err, tail(out, 1024)))
+	out, downErr := d.compose(downCtx, appDir, args...)
+	if downErr != nil {
+		// Do NOT bail here. A failing `down` is exactly the case that
+		// used to strand a dead container plus the whole state dir: the
+		// old code logged "removing state anyway" and then returned
+		// without removing anything. Fall back to a label-scoped force
+		// removal and continue to the on-disk cleanup below.
+		d.Log.Warn("docker compose down failed, falling back to label sweep",
+			"deployment_id", p.DeploymentID, "err", downErr, "out", tail(out, 512))
+		d.forceRemoveProjectContainers(ctx, p.DeploymentID)
 	}
 
+	// On-disk cleanup runs whether or not `down` succeeded.
+	//
+	// purge_data=true (what the panel's Uninstall button sends) removes
+	// the whole tree. purge_data=false keeps `data/` — but still drops
+	// compose.yaml, .env and any build context, because .env holds the
+	// app's generated secrets (DB superuser password, API keys) and
+	// there is no flow that ever reads them again: a later reinstall
+	// gets a fresh deployment_id, hence a fresh appDir. Keeping them
+	// would be indefinite secret retention for no functional gain.
 	if p.PurgeData {
 		if err := os.RemoveAll(appDir); err != nil {
 			d.Log.Warn("removeAll state dir failed", "deployment_id", p.DeploymentID, "err", err)
 		}
+	} else {
+		for _, leftover := range []string{"compose.yaml", ".env", "build-ctx"} {
+			if err := os.RemoveAll(filepath.Join(appDir, leftover)); err != nil {
+				d.Log.Warn("uninstall: removing transient artifact failed",
+					"deployment_id", p.DeploymentID, "path", leftover, "err", err)
+			}
+		}
+		d.Log.Info("docker uninstall: data/ retained (purge_data=false)",
+			"deployment_id", p.DeploymentID, "dir", filepath.Join(appDir, "data"))
 	}
 
 	// Remove any Caddy routes that pointed at this deployment so we
@@ -457,7 +653,328 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 		}
 		cancelTorRm()
 	}
-	return sdkclient.DeployResult{CommandID: cmd.ID, Status: "success", DeploymentID: p.DeploymentID}
+
+	res := sdkclient.DeployResult{CommandID: cmd.ID, Status: "success", DeploymentID: p.DeploymentID}
+	if downErr != nil {
+		// Still a success: the teardown ran and the fallback sweep took
+		// the containers out, so the control plane should retire the
+		// deployment rather than park it in `uninstalling` forever. But
+		// surface what went wrong — a recurring warning here means the
+		// compose file or the daemon needs a look.
+		res.LogsTail = fmt.Sprintf(
+			"compose down reported an error; cleanup completed via label sweep.\n%v\n%s",
+			downErr, tail(out, 1024),
+		)
+	}
+	return res
+}
+
+// forceRemoveProjectContainers is the teardown of last resort: it finds
+// every container compose labelled for this deployment's project and
+// force-removes it (with its anonymous volumes). Used when `compose
+// down` itself fails — a broken/unparseable compose.yaml, an
+// unresolvable image reference, or a state dir that is already gone —
+// so a failed uninstall can no longer strand a live container inside a
+// customer's VPS.
+//
+// Scoped strictly by the compose project label, which the deploy path
+// derives from the appDir name (the deployment_id). It can never touch
+// another deployment's containers, impreza_caddy, or anything the
+// customer runs by hand.
+func (d *Docker) forceRemoveProjectContainers(ctx context.Context, deploymentID string) {
+	if deploymentID == "" {
+		return
+	}
+	lsCtx, cancelLs := context.WithTimeout(ctx, composeQueryTimeout)
+	defer cancelLs()
+	label := "com.docker.compose.project=" + strings.ToLower(deploymentID)
+	ids, err := d.dockerCmd(lsCtx, "ps", "-aq", "--filter", "label="+label).Output()
+	if err != nil {
+		d.Log.Warn("uninstall fallback: docker ps failed", "deployment_id", deploymentID, "err", err)
+		return
+	}
+	fields := strings.Fields(string(ids))
+	if len(fields) == 0 {
+		return
+	}
+	rmCtx, cancelRm := context.WithTimeout(ctx, composeDownTimeout)
+	defer cancelRm()
+	// -v drops anonymous volumes attached to the container, which is
+	// where images with a bare `VOLUME` directive (postgres:18 among
+	// them) silently accumulate gigabytes.
+	rmArgs := append([]string{"rm", "-f", "-v"}, fields...)
+	if out, err := d.dockerCmd(rmCtx, rmArgs...).CombinedOutput(); err != nil {
+		d.Log.Warn("uninstall fallback: docker rm failed",
+			"deployment_id", deploymentID, "err", err, "out", tail(out, 512))
+		return
+	}
+	d.Log.Info("uninstall fallback: force-removed containers",
+		"deployment_id", deploymentID, "count", len(fields))
+}
+
+// containerState is one container's state as of a single sample.
+type containerState struct {
+	Name     string
+	Status   string // running | restarting | exited | created | paused | dead
+	Restarts int
+	ExitCode int
+	Health   string // "", starting, healthy, unhealthy
+}
+
+// ok reports whether this container counts as settled.
+//
+// An `exited` container with code 0 is treated as fine on purpose: a
+// stack may include a one-shot init/migration service that does its job
+// and stops, and failing a deploy over that would be wrong.
+//
+// `unhealthy` is NOT ok, but it is also not fatal — it feeds the
+// advisory verdict, because images differ wildly in how long they take
+// to report healthy on a cold first boot.
+func (c containerState) ok() bool {
+	switch c.Status {
+	case "running":
+		return c.Health == "" || c.Health == "healthy"
+	case "exited":
+		return c.ExitCode == 0
+	default:
+		return false
+	}
+}
+
+// inspectProjectContainers samples the live state of every container
+// compose labelled for this deployment. One `docker inspect` for the
+// whole set — this runs in a poll loop, so it stays a single exec per
+// sample rather than one per container.
+func (d *Docker) inspectProjectContainers(ctx context.Context, deploymentID string) ([]containerState, error) {
+	lsCtx, cancelLs := context.WithTimeout(ctx, composeQueryTimeout)
+	defer cancelLs()
+	label := "com.docker.compose.project=" + strings.ToLower(deploymentID)
+	idsOut, err := d.dockerCmd(lsCtx, "ps", "-aq", "--filter", "label="+label).Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker ps: %w", err)
+	}
+	ids := strings.Fields(string(idsOut))
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	// RestartCount is a TOP-LEVEL field on the container JSON, NOT under
+	// .State — `{{.State.RestartCount}}` makes the whole template fail
+	// with "map has no entry for key RestartCount", which returns an
+	// empty string for every field and would have silently degraded this
+	// gate into a permanent no-op.
+	const format = `{{.Name}}|{{.State.Status}}|{{.RestartCount}}|{{.State.ExitCode}}|` +
+		`{{if .State.Health}}{{.State.Health.Status}}{{end}}`
+	inspCtx, cancelInsp := context.WithTimeout(ctx, composeQueryTimeout)
+	defer cancelInsp()
+	args := append([]string{"inspect", "--format", format}, ids...)
+	out, err := d.dockerCmd(inspCtx, args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker inspect: %w", err)
+	}
+
+	var states []containerState
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) < 5 {
+			continue
+		}
+		restarts, _ := strconv.Atoi(strings.TrimSpace(parts[2]))
+		exitCode, _ := strconv.Atoi(strings.TrimSpace(parts[3]))
+		states = append(states, containerState{
+			Name:     strings.TrimPrefix(parts[0], "/"),
+			Status:   parts[1],
+			Restarts: restarts,
+			ExitCode: exitCode,
+			Health:   parts[4],
+		})
+	}
+	return states, nil
+}
+
+// awaitStackSettled watches the stack after `compose up -d` and decides
+// whether the deploy actually produced a working app.
+//
+// Returns the verdict plus a human-readable detail string for the
+// DeployResult, so whoever reads the panel sees which container broke
+// and how, not just "deploy failed".
+func (d *Docker) awaitStackSettled(ctx context.Context, deploymentID string) (settleVerdict, string) {
+	deadline := time.Now().Add(settleBudget)
+	stable := 0
+	// Restart counts from the first sample form the baseline. A redeploy
+	// over a long-lived container legitimately carries a non-zero count
+	// from weeks ago; only growth from here means a loop starting NOW.
+	baseline := map[string]int{}
+	haveBaseline := false
+	// Consecutive samples each container has looked broken. Requiring a
+	// streak instead of failing on the first bad sample is what keeps
+	// this from misfiring on a stack whose `depends_on` has no health
+	// condition: Evolution's app container legitimately exits non-zero
+	// once when it beats its Postgres to the socket, then comes up fine
+	// on the restart. A genuinely broken image never recovers, so it just
+	// takes settleStableSamples to convict it.
+	badStreak := map[string]int{}
+	var last []containerState
+
+	for {
+		states, err := d.inspectProjectContainers(ctx, deploymentID)
+		if err != nil {
+			// Can't see the stack — don't invent a failure over a docker
+			// CLI hiccup. Treat as advisory and let the deploy stand.
+			d.Log.Warn("settle gate: inspect failed, skipping gate",
+				"deployment_id", deploymentID, "err", err)
+			return settleUnsettled, "settle gate skipped: " + err.Error()
+		}
+		if len(states) == 0 {
+			// compose up succeeded but nothing is labelled for the
+			// project. Nothing to assert; don't block the deploy.
+			return settleUnsettled, "settle gate skipped: no containers found for project"
+		}
+		last = states
+
+		if !haveBaseline {
+			for _, s := range states {
+				baseline[s.Name] = s.Restarts
+			}
+			haveBaseline = true
+		}
+
+		// Fatal check first: a container that cannot stay up.
+		for _, s := range states {
+			grew := s.Restarts - baseline[s.Name]
+
+			// `dead` is unrecoverable by definition — no streak needed.
+			if s.Status == "dead" {
+				return settleCrashLooping, fmt.Sprintf("container %s is in the dead state", s.Name)
+			}
+
+			// Fast path: flapping quickly enough to rack up restarts while
+			// we watch. Catches a container we happen to sample as
+			// `running` in the gap between two crashes.
+			if grew >= crashLoopRestarts {
+				return settleCrashLooping, fmt.Sprintf(
+					"container %s restarted %d times while starting up (status=%s, last exit=%d) — it cannot stay up",
+					s.Name, grew, s.Status, s.ExitCode)
+			}
+
+			// Streak path, and the one that actually catches the reported
+			// bug. Docker's restart backoff doubles each time, so a
+			// container that has been looping for a while only gains a
+			// restart every ~30s+ — measured on the broken Postgres, the
+			// count moved 10 -> 11 across a 9s window. Waiting for the
+			// count to grow would have let it through as "unsettled" and
+			// therefore reported the install as a success. Persistent
+			// `restarting` state is the signal that does not depend on
+			// backoff timing at all.
+			broken := s.Status == "restarting" ||
+				(s.Status == "exited" && s.ExitCode != 0)
+			if broken {
+				badStreak[s.Name]++
+				if badStreak[s.Name] >= settleStableSamples {
+					return settleCrashLooping, fmt.Sprintf(
+						"container %s stayed in status=%s (exit=%d, %d restarts) across %d consecutive checks — it cannot stay up",
+						s.Name, s.Status, s.ExitCode, s.Restarts, badStreak[s.Name])
+				}
+			} else {
+				badStreak[s.Name] = 0
+			}
+		}
+
+		allOK := true
+		for _, s := range states {
+			if !s.ok() {
+				allOK = false
+				break
+			}
+		}
+		if allOK {
+			stable++
+			if stable >= settleStableSamples {
+				return settleHealthy, describeStates(states)
+			}
+		} else {
+			stable = 0
+		}
+
+		if time.Now().After(deadline) {
+			return settleUnsettled, fmt.Sprintf(
+				"stack did not settle within %s: %s", settleBudget, describeStates(last))
+		}
+		select {
+		case <-ctx.Done():
+			return settleUnsettled, "settle gate interrupted: " + ctx.Err().Error()
+		case <-time.After(settleInterval):
+		}
+	}
+}
+
+// describeStates renders one line per container for the result detail.
+func describeStates(states []containerState) string {
+	var sb strings.Builder
+	for i, s := range states {
+		if i > 0 {
+			sb.WriteString("; ")
+		}
+		fmt.Fprintf(&sb, "%s=%s", s.Name, s.Status)
+		if s.Health != "" {
+			fmt.Fprintf(&sb, "/%s", s.Health)
+		}
+		if s.Restarts > 0 {
+			fmt.Fprintf(&sb, " restarts=%d", s.Restarts)
+		}
+	}
+	return sb.String()
+}
+
+// grabFailureLogs returns a short tail of whatever the stack managed to
+// log before the deploy gave up. Called BEFORE rollback, since teardown
+// destroys the containers the logs live in. Best-effort: an error here
+// just means the failure report carries less detail.
+func (d *Docker) grabFailureLogs(ctx context.Context, appDir string) string {
+	logCtx, cancel := context.WithTimeout(ctx, composeQueryTimeout)
+	defer cancel()
+	out, _ := d.compose(logCtx, appDir, "logs", "--tail=40", "--no-color")
+	if len(out) == 0 {
+		return ""
+	}
+	return "--- container logs before rollback ---\n" + tail(out, 2048)
+}
+
+// rollbackFailedDeploy tears down the artifacts a failed deploy left
+// behind, so a failed install stops costing the customer disk.
+//
+// `data/` and named volumes are NEVER touched — no `--volumes` here.
+// This function runs on redeploys too, where `data/` holds live customer
+// data, and a failed install has nothing in `data/` worth reclaiming
+// anyway. The state dir is kept so a retry works and so an operator can
+// still read compose.yaml.
+//
+// The one difference between the two cases is image removal. On a first
+// install the pulled images are pure waste, so `--rmi all` reclaims
+// them. On a redeploy the cached image is what makes a retry able to
+// restore service without the registry — if the registry outage is what
+// broke the deploy in the first place, deleting the local copy would
+// turn a recoverable failure into an app that cannot come back. So
+// redeploys keep their images.
+func (d *Docker) rollbackFailedDeploy(ctx context.Context, appDir, deploymentID string, isRedeploy bool, reason string) {
+	args := []string{"down", "--remove-orphans"}
+	if !isRedeploy {
+		args = append(args, "--rmi", "all")
+	}
+	downCtx, cancel := context.WithTimeout(ctx, composeDownTimeout)
+	defer cancel()
+	if out, err := d.compose(downCtx, appDir, args...); err != nil {
+		d.Log.Warn("deploy rollback: compose down failed, falling back to label sweep",
+			"deployment_id", deploymentID, "reason", reason, "err", err, "out", tail(out, 512))
+		d.forceRemoveProjectContainers(ctx, deploymentID)
+		return
+	}
+	d.Log.Info("deploy rollback: torn down after failed deploy",
+		"deployment_id", deploymentID, "reason", reason, "redeploy", isRedeploy)
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -806,13 +1323,25 @@ func (d *Docker) appDir(deploymentID string) string {
 // compose runs `docker compose <args>` with appDir as the working
 // directory. Combined stdout + stderr is returned so the caller can
 // attach a tail to the result on failure.
+//
+// `docker compose` reads .env automatically when present in the working
+// directory — no extra flag needed.
 func (d *Docker) compose(ctx context.Context, appDir string, args ...string) ([]byte, error) {
-	full := append([]string{"compose"}, args...)
-	cmd := exec.CommandContext(ctx, "docker", full...)
+	cmd := d.dockerCmd(ctx, append([]string{"compose"}, args...)...)
 	cmd.Dir = appDir
-	// `docker compose` reads .env automatically when present in the
-	// working directory — no extra flag needed.
-	//
+	return cmd.CombinedOutput()
+}
+
+// dockerCmd builds a `docker` invocation carrying the env every docker
+// call from this agent needs. Factored out of compose() so the plain
+// (non-compose) calls in the teardown fallback get it too: the systemd
+// unit sets ProtectHome=yes, which makes /root read-only, and the docker
+// CLI wants to create $HOME/.docker. Without the override those calls
+// fail on exactly the hardened production boxes where the fallback is
+// the only thing standing between a failed `compose down` and a
+// container left running forever in a customer's VPS.
+func (d *Docker) dockerCmd(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	// Phase 12 Iteration 3a: the docker CLI tries to create
 	// $HOME/.docker (default /root/.docker on systemd-run agents)
 	// for buildx state when `docker compose up` invokes `docker build`
@@ -826,7 +1355,7 @@ func (d *Docker) compose(ctx context.Context, appDir string, args ...string) ([]
 	cmd.Env = append(os.Environ(),
 		"DOCKER_CONFIG="+filepath.Join(d.StateDir, ".docker"),
 	)
-	return cmd.CombinedOutput()
+	return cmd
 }
 
 // writeAtomic writes data to a temp file in the destination directory,
@@ -1207,10 +1736,12 @@ func fetchAndExtractBuildContext(
 	return nil
 }
 
-// validGitRef mirrors the server's PlatformController::validateGitRef.
-// Defense-in-depth (HARDENING.md #2): the control plane already rejects
-// malformed refs at create time, but this keeps the agent self-defending
-// if a future code path hands it an unvalidated ref.
+// validGitRef mirrors the ref validation the control plane applies at
+// create time. Defense-in-depth: the server already rejects malformed
+// refs, but the ref reaches `git clone` from here, so the agent
+// validates it itself rather than trusting an upstream check it cannot
+// see — if a future code path hands it an unvalidated ref, this is what
+// stops it.
 var validGitRef = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 
 // gitCloneIntoBuildContext shallow-clones a git repository into destDir

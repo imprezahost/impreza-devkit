@@ -27,7 +27,7 @@ def _services_payload() -> dict[str, object]:
                     "product_group": "VPS Hosting",
                     "billing_cycle": "monthly",
                     "amount": 15.0,
-                    "dedicated_ip": "185.100.86.42",
+                    "dedicated_ip": "203.0.113.42",
                     "registered_at": "2024-06-01",
                     "next_due": "2026-04-01",
                 },
@@ -71,7 +71,7 @@ def test_services_list_parses_array() -> None:
     assert all(isinstance(s, Service) for s in services)
     assert services[0].id == 567
     assert services[0].product == "VPS Plan 2"
-    assert services[0].dedicated_ip == "185.100.86.42"
+    assert services[0].dedicated_ip == "203.0.113.42"
     assert services[1].domain == "another.net"
 
 

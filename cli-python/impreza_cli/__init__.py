@@ -14,7 +14,8 @@ auth, retry, and error handling are inherited.
 # Read the installed package version from metadata. Always matches
 # `pip show impreza-cli`, so `impreza --version` can't drift from
 # the wheel even if someone forgets to bump a hard-coded string.
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 
 try:
     __version__ = _pkg_version("impreza-cli")

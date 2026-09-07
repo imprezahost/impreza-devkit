@@ -53,7 +53,7 @@ def _key_identity_payload(
     label: str | None = "ci-bot",
     status: str = "active",
     rate_limit: int = 60,
-    request_ip: str = "200.1.2.3",
+    request_ip: str = "198.51.100.23",
     whitelist: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
@@ -67,7 +67,7 @@ def _key_identity_payload(
         "rate_limit_per_minute": rate_limit,
         "ip_whitelist": whitelist if whitelist is not None else [
             {
-                "id": 1, "ip_address": "200.1.2.3",
+                "id": 1, "ip_address": "198.51.100.23",
                 "label": "home office",
                 "created_at": "2026-05-01T10:00:00Z",
             },
@@ -126,7 +126,7 @@ def test_doctor_all_green(seeded_config: Path) -> None:
     assert "Jane Doe" in result.stdout
     assert "5.00 USD" in result.stdout
     # IP match rendered
-    assert "200.1.2.3" in result.stdout
+    assert "198.51.100.23" in result.stdout
     assert "home office" in result.stdout
 
 
@@ -210,7 +210,7 @@ def test_doctor_ip_not_whitelisted_403(seeded_config: Path) -> None:
                 "meta": {"request_id": "req_test"},
                 "error": {
                     "code": "IP_NOT_WHITELISTED",
-                    "message": "IP 1.2.3.4 not whitelisted on this key.",
+                    "message": "IP 203.0.113.24 not whitelisted on this key.",
                 },
             },
         )
@@ -257,9 +257,9 @@ def test_doctor_ip_whitelist_mismatch(seeded_config: Path) -> None:
         return_value=httpx.Response(
             200,
             json=_ok(_key_identity_payload(
-                request_ip="9.9.9.9",
+                request_ip="198.51.100.77",
                 whitelist=[
-                    {"id": 1, "ip_address": "200.1.2.3",
+                    {"id": 1, "ip_address": "198.51.100.23",
                      "label": "home office",
                      "created_at": "2026-05-01T10:00:00Z"},
                 ],
@@ -271,7 +271,7 @@ def test_doctor_ip_whitelist_mismatch(seeded_config: Path) -> None:
     )
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
-    assert "request_ip 9.9.9.9 not in whitelist" in result.stdout
+    assert "request_ip 198.51.100.77 not in whitelist" in result.stdout
     assert "Impreza Account" in result.stdout
 
 

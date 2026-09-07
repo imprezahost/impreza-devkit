@@ -33,7 +33,7 @@ impreza doctor
 [OK]    api-reachable: GET /account/api-keys/self OK (142ms)
         key prefix='imp_a1b2c3d4', label='devkit'
 [OK]    key-status: status='active'
-[OK]    ip-whitelist: request_ip 200.1.2.3 matches entry ('home')
+[OK]    ip-whitelist: request_ip 198.51.100.23 matches entry ('home')
 [OK]    account-profile: Jane Doe <jane@example.com>, balance 5.00 USD
                          registered 2024-01-15
 ----------------------------------------
@@ -54,7 +54,7 @@ $ impreza invoice list --output json \
 #    data accidentally; pass --yes / -y to skip prompts in scripts:
 $ impreza vps reboot 17988
 $ impreza vps proxmox snapshots create 17988 pre-update
-$ impreza domain dns add example.com --type A --name www --value 1.2.3.4
+$ impreza domain dns add example.com --type A --name www --value 203.0.113.24
 
 # 6. Crypto top-up. --browser opens the BTCPay invoice URL
 #    automatically; --wait polls until the gateway confirms
