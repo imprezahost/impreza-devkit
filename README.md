@@ -121,13 +121,20 @@ READMEs above for the full usage walkthroughs.
 ```
 impreza-devkit/
 ├── CHANGELOG.md            release history (Python packages move in lock-step)
+├── AGENTS.md               instructions for AI coding agents in this repo
 ├── LICENSE                 MIT
 ├── openapi/openapi.yaml    OpenAPI 3.1 contract (REST)
 ├── openapi/asyncapi.yaml   AsyncAPI 3.0 contract (webhook events)
+├── .spectral.yaml          ruleset the OpenAPI lint runs against
 ├── sdk-python/             impreza-sdk package source + tests
 ├── cli-python/             impreza-cli package source + tests
-├── cli-go/                 impreza-cli-go binary source + tests
+├── sdk-go/                 Go SDK — the client both Go binaries build on
+├── cli-go/                 Go CLI binary source + tests
 │                           (released independently; tag prefix `cli-go-v`)
+├── agent-go/               deployment agent that runs on the managed VPS
+│                           (shipped by its own installer, not a repo tag)
+├── caddy-dns-impreza/      Caddy DNS-01 plugin, for wildcard certs over
+│                           the Impreza DNS API
 └── examples/               curl + Python recipes
 ```
 

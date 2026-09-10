@@ -12,6 +12,10 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.5.0] — 2026-09-09
+
 ### Added
 
 - **In-place redeploy for custom deployments.** Rebuild a running custom
@@ -91,6 +95,27 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
   and `tests/test_dedicated_commands.py` covers the plumbing — it was
   the only command module with no test file, which is why this shipped.
   The Go CLI, both SDKs, and the MCP server were unaffected.
+
+- **`impreza-cli` now declares `click`.** `impreza_cli/config.py` imports
+  click directly for `click.get_app_dir()`, but click was never listed —
+  it used to arrive free as a Typer dependency. Typer dropped it (0.27
+  requires only annotated-doc, colorama, rich and shellingham), so
+  `pip install impreza-cli` on a clean machine resolved a Typer without
+  click and the CLI died at import: every command, since `main.py`
+  imports all of them to build the app. **This affects the published
+  0.4.0 too** — a fresh install of 0.4.0 today is broken the same way,
+  which is why 0.5.0 supersedes rather than merely extends it.
+
+- **`impreza-cli` now requires `impreza-sdk>=0.5.0,<0.6`** instead of a
+  bare `impreza-sdk`. With no lower bound, a resolver that landed on SDK
+  0.4.0 produced a CLI that did not merely lack `invoice pay` — it failed
+  to start at all. `impreza_cli/main.py` imports every command module
+  eagerly to build the Typer app, so `commands/invoice.py` doing
+  `from impreza.exceptions import Conflict` against an SDK without it
+  raises `ImportError` and takes every other command down with it. The
+  upper bound reflects that pre-1.0 we treat each minor as potentially
+  breaking; both bounds move together when the CLI adopts a newer SDK
+  feature.
 
 - `agent-go` now builds as a standalone module. Its `go.sum` was never
   committed and `golang.org/x/sys` was missing from `go.mod`; inside the
@@ -623,7 +648,8 @@ Phase 1. CLI lives in a sibling package and lands in Phase 2.
 | 1.7 | 2026-05-09 | Crypto top-up (`TopupInvoice` future) |
 | 1.8 | 2026-05-09 | Release prep — this CHANGELOG, README polish, tag |
 
-[Unreleased]: https://github.com/imprezahost/impreza-devkit/compare/sdk-v0.4.0...master
+[Unreleased]: https://github.com/imprezahost/impreza-devkit/compare/sdk-v0.5.0...master
+[0.5.0]: https://github.com/imprezahost/impreza-devkit/compare/sdk-v0.4.0...sdk-v0.5.0
 [0.4.0]: https://github.com/imprezahost/impreza-devkit/compare/sdk-v0.3.2...sdk-v0.4.0
 [0.3.2]: https://github.com/imprezahost/impreza-devkit/compare/sdk-v0.3.1...sdk-v0.3.2
 [0.3.1]: https://github.com/imprezahost/impreza-devkit/compare/sdk-v0.3.0...sdk-v0.3.1

@@ -28,11 +28,33 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = [
-    "impreza-sdk",
-    # Typer 0.13+ no longer ships an `[all]` extra; Rich, click,
-    # shellingham etc. are direct deps already bundled.
+    # Lock-step with the SDK, and a real lower bound rather than a bare
+    # name. `main.py` imports every command module eagerly to build the
+    # Typer app, so a command that touches an SDK symbol the installed
+    # SDK lacks doesn't break that one verb — it makes the whole CLI
+    # fail to start. `impreza invoice pay` needs `client.invoices.pay`
+    # and `impreza.exceptions.Conflict`, both new in SDK 0.5.0; against
+    # 0.4.0 the import of `commands/invoice.py` raises ImportError and
+    # every other command dies with it.
+    #
+    # Upper bound because pre-1.0 we treat each minor as potentially
+    # breaking (see CHANGELOG). Raise BOTH bounds in the same commit that
+    # makes the CLI depend on a newer SDK feature, or this stops
+    # protecting anything.
+    "impreza-sdk>=0.5.0,<0.6",
     "typer>=0.12",
     "rich>=13.7",
+    # Declared explicitly because `config.py` imports click directly, for
+    # `click.get_app_dir()` — the OS-correct config location.
+    #
+    # It used to arrive free as a Typer dependency, which is why it was
+    # never listed. Typer dropped it: 0.27 requires only annotated-doc,
+    # colorama, rich and shellingham. So `pip install impreza-cli` on a
+    # clean machine resolved a Typer without click and the CLI died at
+    # import — every command, since `main.py` imports all of them to
+    # build the app. A direct import needs a direct dependency; anything
+    # else is borrowing another package's transitive graph.
+    "click>=8.0",
     # Reading TOML on 3.10. The stdlib's `tomllib` lands in 3.11; both
     # back to the same surface in our `config` module via a small
     # try/except shim.

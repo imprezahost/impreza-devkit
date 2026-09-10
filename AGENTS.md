@@ -73,5 +73,16 @@ path above is preferred.
 - **Python CLI:** `cd cli-python && pip install -e ../sdk-python -e ".[test,dev]" && pytest -q`.
 - **Go CLI:** `cd cli-go && make build && make test` (Go 1.22+).
 
+## Releasing
+
+Do not tag, publish, or bump a version on your own initiative — ask
+first. The procedure is not what it looks like: a release tag has to land
+on one specific commit or the PyPI publish silently never runs, and a
+PyPI version can never be re-uploaded once it is wrong. Publishing also
+spends a version number that clients pin against.
+
+Maintainers: the runbook is `RELEASING.md` in the development
+repository.
+
 The nearest AGENTS.md to the edited file wins; instructions the user gives
 in chat override this file.
