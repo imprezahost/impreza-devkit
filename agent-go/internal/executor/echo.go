@@ -1,10 +1,5 @@
-// Package executor runs the agent's incoming commands. The MVP ships
-// a single executor — `Echo` — that pretends to succeed at whatever
-// command kind it is handed. Real executors (Docker, systemd, Caddy)
-// land in Phase 9.2+.
-//
-// Every executor implements the small `Executor` interface so the poll
-// loop is decoupled from the underlying mechanism.
+// Package executor runs incoming commands. Docker is the production executor;
+// Echo is an explicit simulation fixture and must not be a production fallback.
 package executor
 
 import (
@@ -28,7 +23,7 @@ type Executor interface {
 	Execute(ctx context.Context, cmd *sdkclient.PollCommand) sdkclient.DeployResult
 }
 
-// Echo is the MVP executor. It always reports success, with a logs_tail
+// Echo is a simulation fixture. It always reports success, with a logs_tail
 // that names the command kind so the panel can confirm the round-trip
 // works end-to-end. Useful for verifying the long-poll, the auth
 // realm, and the deploy-result path in isolation before adding any
@@ -36,8 +31,7 @@ type Executor interface {
 type Echo struct{}
 
 // Execute satisfies Executor. Value receiver because Echo has no state
-// — letting callers compose with `Echo{}.Execute(...)` as a fallback
-// inside other executors.
+// — intended only for tests that explicitly select simulated execution.
 func (e Echo) Execute(ctx context.Context, cmd *sdkclient.PollCommand) sdkclient.DeployResult {
 	now := time.Now().UTC().Format(time.RFC3339)
 	return sdkclient.DeployResult{

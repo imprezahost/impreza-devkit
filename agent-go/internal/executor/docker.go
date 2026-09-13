@@ -11,10 +11,8 @@ package executor
 //	.env           — KEY=VALUE pairs from DeployPayload.vars
 //	data/          — bind-mounted into containers (per-app convention)
 //
-// All command kinds defined in the SDK route through Execute(); unknown
-// or not-yet-implemented kinds fall back to Echo so a synthetic test
-// command (e.g. `health_check` against a nonexistent deployment) still
-// gets a clean success reply.
+// Command kinds route through Execute(). Unsupported kinds fail explicitly;
+// a terminal result must never claim an operation ran when it did not.
 
 import (
 	"archive/tar"
@@ -146,11 +144,11 @@ func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) sdkcli
 	case sdkclient.CommandUpdateRoutes:
 		return d.updateRoutes(ctx, cmd)
 	default:
-		// Kinds we haven't implemented yet (Update,
-		// AgentUpgrade) fall back to the echo path so the command
-		// queue advances and operators get a clear "no-op" in the
-		// result rather than a server-side stuck job.
-		return Echo{}.Execute(ctx, cmd)
+		message := fmt.Sprintf("Unsupported command %q. No operation was performed. Check agent and platform compatibility.", cmd.Kind)
+		if cmd.Kind == sdkclient.CommandAgentUpgrade {
+			message += " Use the agent update command shown in the portal; queued agent upgrades are not supported."
+		}
+		return failResult(cmd.ID, message)
 	}
 }
 

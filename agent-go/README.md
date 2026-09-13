@@ -104,3 +104,10 @@ that do not implement an upgrade command.
 ## Git revision integrity
 
 Agents 0.6.1 and later honor the full Git commit supplied by a push webhook or manifest build context. If the branch has advanced, the agent fetches and checks out the requested commit. Invalid or unavailable commits fail before container replacement; the current application remains running. When no commit is supplied, deployment follows the selected branch. This does not pin external image tags, dependencies or database state.
+
+## Unsupported commands (unreleased)
+
+The development agent rejects unsupported command kinds with an explicit failed
+result and continues polling subsequent jobs. It does not perform an operation
+or echo the command payload. Queued agent upgrades remain unsupported; use the
+update command above. This change is not included in stable agent 0.6.1.

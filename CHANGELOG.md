@@ -12,6 +12,10 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+### Fixed
+
+- Reject unsupported agent commands with an explicit failure instead of simulated success. Continue polling subsequent jobs. Queued agent upgrades remain unsupported; use the customer-initiated update command.
+
 ## Agent 0.6.1 — 2026-09-13
 
 - Deploy the exact full Git commit supplied by a webhook or build manifest. Fetch a requested revision even when its branch has advanced; refuse unavailable or invalid commits before replacing containers. Unpinned deployments continue to follow the selected branch.

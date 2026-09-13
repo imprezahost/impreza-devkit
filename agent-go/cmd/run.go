@@ -66,10 +66,8 @@ func runRun(cmd *cobra.Command, _ []string) error {
 		"state_dir", stateDir,
 	)
 
-	// Docker is the production executor. Unknown / not-yet-implemented
-	// command kinds (Update, Rollback, LogsTail, AgentUpgrade) fall
-	// back to Echo inside Docker.Execute so the command queue advances
-	// instead of getting stuck on a job the agent can't handle yet.
+	// Docker is the production executor. Unsupported commands return a
+	// terminal failure so the queue can advance without claiming success.
 	exec := executor.NewDocker(stateDir, log)
 
 	// Phase 9.11d v2: hand the agent's own credentials to the Caddy
