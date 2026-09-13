@@ -22,7 +22,7 @@ Real executors (Docker, systemd, Caddy) land in Phase 9.2+.
 ### Bring-your-own server (curl | sh)
 
 ```bash
-curl -fsSL https://impreza.host/agent/install.sh | \
+curl -fsSL https://raw.githubusercontent.com/imprezahost/agent-public/main/install.sh | \
   IMPREZA_BOOTSTRAP=bst_xxxxxxxxxxxxxxxx sh
 ```
 
@@ -40,7 +40,7 @@ true`. No manual step.
 ```bash
 # Linux x86_64
 curl -fsSL -o impreza-agent \
-  https://impreza.host/agent/releases/latest/impreza-agent-linux-amd64
+  https://raw.githubusercontent.com/imprezahost/agent-public/main/releases/stable/latest/impreza-agent-linux-amd64
 chmod +x impreza-agent
 sudo install -m 0755 impreza-agent /usr/local/bin/
 
@@ -83,3 +83,20 @@ impreza-agent --version
 ## License
 
 Proprietary — see [`../LICENSE`](../LICENSE).
+
+
+## Agent updates
+
+Existing installations can check for a new agent without registering again:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/imprezahost/agent-public/main/update.sh | sudo sh -s -- --check
+```
+
+After all deployment operations have finished, replace `--check` with `--apply`.
+The updater validates the release checksum and version, replaces the binary
+atomically and restarts only the agent. It restores the previous executable
+if startup fails. Configuration, identity and application containers are kept.
+Confirm the new version after the next heartbeat. Stable metadata and binaries
+are distributed from agent-public; this command also works with older agents
+that do not implement an upgrade command.

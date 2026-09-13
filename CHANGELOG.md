@@ -12,6 +12,12 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## Agent 0.6.0 — 2026-09-13
+
+Agent distribution only; Python SDK and CLI remain at 0.5.0.
+
+- Add a customer-initiated update script with checksum verification, atomic replacement and recovery if startup fails. Preserve registration and application containers. The installer directs existing installations to the updater.
+
 ### Added
 
 - Retained-release rollback for the agent. Restore a selected configuration
