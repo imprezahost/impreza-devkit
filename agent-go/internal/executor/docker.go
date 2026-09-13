@@ -177,6 +177,17 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		return failResult(cmd.ID, "manifest has empty compose_yaml")
 	}
 
+	if p.GitCommitSHA != "" {
+		if p.Manifest.Runtime.Build == nil || p.Manifest.Runtime.Build.Git == nil {
+			return failResult(cmd.ID, "requested Git commit requires a Git build context")
+		}
+		p.Manifest.Runtime.Build.Git.CommitSHA = p.GitCommitSHA
+	}
+	if p.Manifest.Runtime.Build != nil && p.Manifest.Runtime.Build.Git != nil {
+		if err := validateGitCommit(p.Manifest.Runtime.Build.Git.CommitSHA); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+	}
 	appDir := d.appDir(p.DeploymentID)
 	// A pre-existing compose.yaml means this deployment_id has been
 	// deployed before, i.e. this is a redeploy over live customer data
@@ -1806,6 +1817,9 @@ func gitCloneIntoBuildContext(
 		return errors.New("git build context has empty URL")
 	}
 
+	if err := validateGitCommit(g.CommitSHA); err != nil {
+		return err
+	}
 	ref := g.Ref
 	if ref == "" {
 		ref = "main"
@@ -1929,26 +1943,8 @@ func gitCloneIntoBuildContext(
 		return fmt.Errorf("git clone %s @ %s: %w\n%s", g.URL, ref, err, tail(out, 1024))
 	}
 
-	// Optional CommitSHA verification — Iteration B will harden this.
-	// For now log a discrepancy as a warning so operators have a
-	// breadcrumb if a force-push between webhook + agent-poll sneaks
-	// a different head in.
-	if g.CommitSHA != "" {
-		revCtx, revCancel := context.WithTimeout(ctx, 10*time.Second)
-		revCmd := exec.CommandContext(revCtx, "git", "rev-parse", "HEAD")
-		revCmd.Dir = destDir
-		revCmd.Env = cmd.Env
-		revOut, revErr := revCmd.Output()
-		revCancel()
-		if revErr == nil {
-			gotSha := strings.TrimSpace(string(revOut))
-			if !strings.EqualFold(gotSha, g.CommitSHA) {
-				log.Warn("docker deploy: cloned commit differs from expected",
-					"expected", g.CommitSHA,
-					"got", gotSha,
-				)
-			}
-		}
+	if err := checkoutGitCommit(cloneCtx, destDir, g.CommitSHA, env, preArgs); err != nil {
+		return err
 	}
 
 	return nil

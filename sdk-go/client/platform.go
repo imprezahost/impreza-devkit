@@ -25,12 +25,12 @@ import (
 // versions, evaluated vars, etc. — the agent does not need to fetch any
 // external repo to act on it.
 type AppManifest struct {
-	Name          string                  `json:"name"`
-	Version       string                  `json:"version"`
-	Runtime       ManifestRuntime         `json:"runtime"`
-	Lifecycle     ManifestLifecycle       `json:"lifecycle"`
-	Network       *ManifestNetwork        `json:"network,omitempty"`
-	Observability *ManifestObservability  `json:"observability,omitempty"`
+	Name          string                 `json:"name"`
+	Version       string                 `json:"version"`
+	Runtime       ManifestRuntime        `json:"runtime"`
+	Lifecycle     ManifestLifecycle      `json:"lifecycle"`
+	Network       *ManifestNetwork       `json:"network,omitempty"`
+	Observability *ManifestObservability `json:"observability,omitempty"`
 }
 
 // ManifestRuntime describes how the app actually runs on the host.
@@ -50,7 +50,7 @@ type AppManifest struct {
 // customer's footgun (Docker compose will pick `build:` and ignore
 // the image hint).
 type ManifestRuntime struct {
-	Type        string         `json:"type"`                 // docker-compose | docker | systemd | raw
+	Type        string         `json:"type"` // docker-compose | docker | systemd | raw
 	Isolated    bool           `json:"isolated,omitempty"`
 	ComposeYAML string         `json:"compose_yaml,omitempty"`
 	DataDir     *DataDirConfig `json:"data_dir,omitempty"`
@@ -105,15 +105,12 @@ type BuildContext struct {
 // then proceeds with the standard build path (compose `build:`
 // directive runs `docker build` against the cloned tree).
 //
-// CommitSHA is informational for v1 — the agent doesn't currently
-// verify HEAD matches, but the server records it on the deployment
-// row so `impreza platform deployments show` can surface what's
-// actually deployed. Iteration B will add a checksum gate so a
-// force-push between webhook-fire and agent-poll doesn't sneak a
-// different commit in.
+// CommitSHA pins a full commit object ID on agents 0.6.1 and later.
+// If supplied, the agent fetches and checks out exactly this revision or fails
+// before container replacement. An empty value follows the selected branch.
 type BuildContextGit struct {
-	URL       string `json:"url"`              // https://github.com/foo/bar.git
-	Ref       string `json:"ref,omitempty"`    // branch, tag, or commit; default "main"
+	URL       string `json:"url"`           // https://github.com/foo/bar.git
+	Ref       string `json:"ref,omitempty"` // branch, tag, or commit; default "main"
 	CommitSHA string `json:"commit_sha,omitempty"`
 }
 
@@ -147,8 +144,8 @@ type ManifestLifecycle struct {
 // ManifestNetwork carries the routing intent — exposed ports + how the
 // reverse-proxy should bind them.
 type ManifestNetwork struct {
-	Exposed      []ManifestPort  `json:"exposed,omitempty"`
-	ReverseProxy *ManifestRP     `json:"reverse_proxy,omitempty"`
+	Exposed      []ManifestPort `json:"exposed,omitempty"`
+	ReverseProxy *ManifestRP    `json:"reverse_proxy,omitempty"`
 }
 
 // ManifestPort identifies one exposed service.
@@ -160,7 +157,7 @@ type ManifestPort struct {
 
 // ManifestRP describes the reverse-proxy binding.
 type ManifestRP struct {
-	Enabled bool             `json:"enabled"`
+	Enabled bool              `json:"enabled"`
 	Routes  []ManifestRPRoute `json:"routes,omitempty"`
 }
 
@@ -184,8 +181,8 @@ type ManifestLogSource struct {
 
 // Route is a clearnet or onion binding for a deployment.
 type Route struct {
-	Hostname   string      `json:"hostname"`
-	TargetPort int         `json:"target_port,omitempty"`
+	Hostname   string `json:"hostname"`
+	TargetPort int    `json:"target_port,omitempty"`
 	// Upstream is the literal `container:port` string the agent's
 	// reverse proxy should forward this hostname to (Phase 9.4+).
 	// Server resolves any `{deployment_id}` placeholders before sending.
@@ -226,17 +223,17 @@ type RouteOnion struct {
 
 // App is a single entry in the public catalog.
 type App struct {
-	Name        string             `json:"name"`
-	DisplayName string             `json:"display_name"`
-	Version     string             `json:"version"`
-	Category    string             `json:"category"`
-	Tags        []string           `json:"tags,omitempty"`
-	Description string             `json:"description,omitempty"`
-	IconURL     string             `json:"icon_url,omitempty"`
-	ReadmeURL   string             `json:"readme_url,omitempty"`
-	ManifestURL string             `json:"manifest_url,omitempty"`
-	Requires    *AppRequirements   `json:"requirements,omitempty"`
-	Supports    *AppSupports       `json:"supports,omitempty"`
+	Name        string           `json:"name"`
+	DisplayName string           `json:"display_name"`
+	Version     string           `json:"version"`
+	Category    string           `json:"category"`
+	Tags        []string         `json:"tags,omitempty"`
+	Description string           `json:"description,omitempty"`
+	IconURL     string           `json:"icon_url,omitempty"`
+	ReadmeURL   string           `json:"readme_url,omitempty"`
+	ManifestURL string           `json:"manifest_url,omitempty"`
+	Requires    *AppRequirements `json:"requirements,omitempty"`
+	Supports    *AppSupports     `json:"supports,omitempty"`
 }
 
 // AppRequirements declares minimum-host requirements an app needs.
@@ -568,7 +565,7 @@ type CustomDeployment struct {
 // the public key to add to the repo as a read-only Deploy Key. The
 // secret itself is never returned.
 type GitAuthInfo struct {
-	Method      string `json:"method"`               // none | deploy_key | pat
+	Method      string `json:"method"` // none | deploy_key | pat
 	Fingerprint string `json:"fingerprint,omitempty"`
 	PublicKey   string `json:"public_key,omitempty"` // deploy_key only
 }
@@ -701,10 +698,10 @@ func (c *Client) PlatformUploadCustomDeployContext(ctx context.Context, tarball 
 type ServerOrigin string
 
 const (
-	OriginImprezaProxmox    ServerOrigin = "impreza-proxmox"
-	OriginImprezaCloud      ServerOrigin = "impreza-cloud"
-	OriginImprezaDedicated  ServerOrigin = "impreza-dedicated"
-	OriginExternal          ServerOrigin = "external"
+	OriginImprezaProxmox   ServerOrigin = "impreza-proxmox"
+	OriginImprezaCloud     ServerOrigin = "impreza-cloud"
+	OriginImprezaDedicated ServerOrigin = "impreza-dedicated"
+	OriginExternal         ServerOrigin = "external"
 )
 
 // AgentStatus is the connectivity state of a managed server.

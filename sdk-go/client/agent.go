@@ -202,6 +202,8 @@ func (c *Client) AgentPoll(ctx context.Context, req *PollRequest) (*PollCommand,
 
 // DeployPayload is the payload of a CommandDeploy.
 type DeployPayload struct {
+	// GitCommitSHA pins the source revision supplied by a Git webhook.
+	GitCommitSHA string         `json:"git_commit_sha,omitempty"`
 	DeploymentID string         `json:"deployment_id"`
 	Manifest     AppManifest    `json:"manifest"`
 	Vars         map[string]any `json:"vars,omitempty"`

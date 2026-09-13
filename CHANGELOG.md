@@ -12,6 +12,11 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## Agent 0.6.1 — 2026-09-13
+
+- Deploy the exact full Git commit supplied by a webhook or build manifest. Fetch a requested revision even when its branch has advanced; refuse unavailable or invalid commits before replacing containers. Unpinned deployments continue to follow the selected branch.
+- Consume the webhook commit field in the Go agent payload. Python SDK and CLI are unchanged.
+
 ## Agent 0.6.0 — 2026-09-13
 
 Agent distribution only; Python SDK and CLI remain at 0.5.0.

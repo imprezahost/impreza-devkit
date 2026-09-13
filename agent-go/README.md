@@ -100,3 +100,7 @@ if startup fails. Configuration, identity and application containers are kept.
 Confirm the new version after the next heartbeat. Stable metadata and binaries
 are distributed from agent-public; this command also works with older agents
 that do not implement an upgrade command.
+
+## Git revision integrity
+
+Agents 0.6.1 and later honor the full Git commit supplied by a push webhook or manifest build context. If the branch has advanced, the agent fetches and checks out the requested commit. Invalid or unavailable commits fail before container replacement; the current application remains running. When no commit is supplied, deployment follows the selected branch. This does not pin external image tags, dependencies or database state.
