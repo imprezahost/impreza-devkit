@@ -105,9 +105,6 @@ that do not implement an upgrade command.
 
 Agents 0.6.1 and later honor the full Git commit supplied by a push webhook or manifest build context. If the branch has advanced, the agent fetches and checks out the requested commit. Invalid or unavailable commits fail before container replacement; the current application remains running. When no commit is supplied, deployment follows the selected branch. This does not pin external image tags, dependencies or database state.
 
-## Unsupported commands (unreleased)
+## Unsupported commands
 
-The development agent rejects unsupported command kinds with an explicit failed
-result and continues polling subsequent jobs. It does not perform an operation
-or echo the command payload. Queued agent upgrades remain unsupported; use the
-update command above. This change is not included in stable agent 0.6.1.
+Agents 0.6.2 and later reject unsupported command kinds with status failed and an explicit diagnostic, instead of reporting simulated success. No operation is performed and the polling loop continues with subsequent commands. Queued agent_upgrade remains unsupported; use the customer-initiated update command. A failed command report does not itself mean the running application is unhealthy.

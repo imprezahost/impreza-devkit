@@ -12,6 +12,8 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## Agent 0.6.2 — 2026-09-13
+
 ### Fixed
 
 - Reject unsupported agent commands with an explicit failure instead of simulated success. Continue polling subsequent jobs. Queued agent upgrades remain unsupported; use the customer-initiated update command.
