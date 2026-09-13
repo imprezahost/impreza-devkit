@@ -46,9 +46,8 @@ const (
 	// keep the others tight so an agent doesn't sit on a stuck command.
 	composePullTimeout = 5 * time.Minute
 	composeUpTimeout   = 2 * time.Minute
-	// Build-mode (Dockerfile / git) `up --build` runs `docker build`
-	// inline, which for a real app (npm/pip/go, cold layers) easily
-	// outruns the 2-minute plain-up budget. Give it a much wider window.
+	// Build preparation has its own budget before container replacement.
+	// Cold npm/pip/go layers can easily outrun the plain-up budget.
 	composeBuildTimeout = 10 * time.Minute
 	// Teardown now also unlinks image layers (`down --rmi all`), so it
 	// does real I/O on multi-GB stacks — 2 minutes was cutting it close.
@@ -134,6 +133,8 @@ func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) sdkcli
 	switch cmd.Kind {
 	case sdkclient.CommandDeploy:
 		return d.deploy(ctx, cmd)
+	case sdkclient.CommandRollback:
+		return d.rollbackRelease(ctx, cmd)
 	case sdkclient.CommandUninstall:
 		return d.uninstall(ctx, cmd)
 	case sdkclient.CommandRestart:
@@ -145,7 +146,7 @@ func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) sdkcli
 	case sdkclient.CommandUpdateRoutes:
 		return d.updateRoutes(ctx, cmd)
 	default:
-		// Kinds we haven't implemented yet (Update, Rollback,
+		// Kinds we haven't implemented yet (Update,
 		// AgentUpgrade) fall back to the echo path so the command
 		// queue advances and operators get a clear "no-op" in the
 		// result rather than a server-side stuck job.
@@ -157,7 +158,7 @@ func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) sdkcli
 // deploy
 // ─────────────────────────────────────────────────────────────────────
 
-func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) sdkclient.DeployResult {
+func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result sdkclient.DeployResult) {
 	var p sdkclient.DeployPayload
 	if err := cmd.As(&p); err != nil {
 		return failResult(cmd.ID, "decode deploy payload: "+err.Error())
@@ -182,6 +183,30 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) sdkclie
 	// rather than a first install. The failure-rollback path below is
 	// deliberately gentler in that case — see rollbackFailedDeploy.
 	isRedeploy := exists(filepath.Join(appDir, "compose.yaml"))
+	// Preparation may change configuration on disk, but must never replace
+	// the running containers. Restore their configuration if preparation fails.
+	previous, err := captureDeployConfig(appDir, isRedeploy)
+	if err != nil {
+		return failResult(cmd.ID, "capture current deployment configuration: "+err.Error())
+	}
+	var previousRelease *runtimeRelease
+	if isRedeploy {
+		previousRelease, err = d.captureRelease(ctx, appDir, p.DeploymentID)
+		if err != nil {
+			return failResult(cmd.ID, "capture previous release before replacement: "+err.Error())
+		}
+	}
+	runtimeStarted := false
+	defer func() {
+		if !isRedeploy || runtimeStarted || result.Status == "success" {
+			return
+		}
+		if err := previous.restore(appDir); err != nil {
+			result.Error += "\nPrevious containers were not replaced, but restoring their configuration failed: " + err.Error()
+		} else {
+			result.Error += "\nPreparation failed before container replacement; previous containers and configuration were preserved."
+		}
+	}()
 	dataDir := filepath.Join(appDir, "data")
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return failResult(cmd.ID, "mkdir state dir: "+err.Error())
@@ -298,47 +323,36 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) sdkclie
 			"deployment_id", p.DeploymentID, "onion", addr)
 	}
 
-	// 1. Pull (long).
-	//
-	// A failed pull used to return straight out, leaving whatever layers
-	// already downloaded plus the state dir on the customer's disk with
-	// nothing in the panel pointing at them. Roll back before reporting.
-	d.Log.Info("docker deploy: pulling images", "deployment_id", p.DeploymentID)
-	pullCtx, cancelPull := context.WithTimeout(ctx, composePullTimeout)
-	defer cancelPull()
-	if out, err := d.compose(pullCtx, appDir, "pull"); err != nil {
-		d.rollbackFailedDeploy(ctx, appDir, p.DeploymentID, isRedeploy, "compose pull failed")
-		return failResult(cmd.ID, fmt.Sprintf("docker compose pull: %v\n%s", err, tail(out, 1536)))
+	// 1. Validate, pull and build without replacing running containers.
+	// Failed preparation restores the previous Compose and environment files.
+	d.Log.Info("docker deploy: preparing images", "deployment_id", p.DeploymentID)
+	if err := prepareDeployImages(ctx, func(ctx context.Context, args ...string) ([]byte, error) {
+		return d.compose(ctx, appDir, args...)
+	}); err != nil {
+		return failResult(cmd.ID, err.Error())
 	}
 
-	// 2. Up -d. Build-mode deploys (Dockerfile / git) force a rebuild:
-	//    the build context was just re-fetched (fresh git HEAD / uploaded
-	//    tarball), and a plain `up -d` reuses the EXISTING image — so on a
-	//    redeploy new commits would never ship (a silent no-op deploy the
-	//    panel still reports as "updated"). `--build` runs `docker build`
-	//    against the fresh context; unchanged layers still hit the cache.
-	//    Catalog / image deploys (Build == nil) skip --build (nothing to
-	//    build) and keep the tight 2-min budget; build-mode gets the wider
-	//    build budget.
-	//
-	//    On failure: a partially-successful `up` leaves the services that
-	//    DID start running. Capture their logs for the failure report,
-	//    then tear the stack down so a failed install doesn't bill the
-	//    customer's disk and CPU indefinitely.
-	upArgs := []string{"up", "-d"}
+	// 2. Replace containers only after all image preparation succeeds.
+	// Startup failures restore a verified previous release when available.
+	// First installs and already-broken runtimes retain the teardown policy.
+	// Images are ready. No build or registry access is allowed during the
+	// replacement phase, including for customer-authored Compose manifests.
+	upArgs := []string{"up", "-d", "--no-build", "--pull", "never"}
 	upTimeout := composeUpTimeout
-	if p.Manifest.Runtime.Build != nil {
-		upArgs = append(upArgs, "--build")
-		upTimeout = composeBuildTimeout
-	}
 	d.Log.Info("docker deploy: bringing stack up",
 		"deployment_id", p.DeploymentID, "build", p.Manifest.Runtime.Build != nil)
 	upCtx, cancelUp := context.WithTimeout(ctx, upTimeout)
 	defer cancelUp()
+	failStartup := func(reason string) sdkclient.DeployResult {
+		r := d.recoverStartup(ctx, appDir, p.DeploymentID, previousRelease, isRedeploy, reason)
+		r.CommandID = cmd.ID
+		r.DeploymentID = p.DeploymentID
+		return r
+	}
+	runtimeStarted = true
 	if out, err := d.compose(upCtx, appDir, upArgs...); err != nil {
 		failLogs := d.grabFailureLogs(ctx, appDir)
-		d.rollbackFailedDeploy(ctx, appDir, p.DeploymentID, isRedeploy, "compose up failed")
-		return failResult(cmd.ID, fmt.Sprintf(
+		return failStartup(fmt.Sprintf(
 			"docker compose up: %v\n%s\n%s", err, tail(out, 1536), failLogs,
 		))
 	}
@@ -350,9 +364,9 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) sdkclie
 	//     traffic, and leaving it costs the customer CPU and disk
 	//     indefinitely (this is the dead-container-in-the-VPS case).
 	//
-	//     Anything less certain stays advisory on purpose. Tearing down a
-	//     running app because a HEALTHCHECK was still warming up would be
-	//     a far worse bug than the one being fixed.
+	//     With a verified previous release, an unsettled replacement is a
+	//     failure and triggers recovery. Without a recovery target, the
+	//     legacy advisory policy remains for slow first installations.
 	settleStart := time.Now()
 	verdict, detail := d.awaitStackSettled(ctx, p.DeploymentID)
 	switch verdict {
@@ -361,11 +375,13 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) sdkclie
 			"deployment_id", p.DeploymentID, "detail", detail,
 			"waited", time.Since(settleStart).Round(time.Second))
 		failLogs := d.grabFailureLogs(ctx, appDir)
-		d.rollbackFailedDeploy(ctx, appDir, p.DeploymentID, isRedeploy, "stack crash-looping after up")
-		return failResult(cmd.ID, fmt.Sprintf(
+		return failStartup(fmt.Sprintf(
 			"deploy did not produce a working app: %s\n%s", detail, failLogs,
 		))
 	case settleUnsettled:
+		if previousRelease != nil {
+			return failStartup("new release did not pass startup checks before the deadline: " + detail)
+		}
 		d.Log.Warn("docker deploy: stack not confirmed healthy, proceeding anyway",
 			"deployment_id", p.DeploymentID, "detail", detail,
 			"waited", time.Since(settleStart).Round(time.Second))
@@ -393,7 +409,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) sdkclie
 		out, err := d.runShellScript(instCtx, appDir, p.Vars, installScript)
 		cancelInst()
 		if err != nil {
-			return failResult(cmd.ID, fmt.Sprintf("lifecycle.install: %v\n%s", err, tail(out, 4096)))
+			return failStartup(fmt.Sprintf("lifecycle.install: %v\n%s", err, tail(out, 4096)))
 		}
 		d.Log.Info("docker deploy: lifecycle.install complete",
 			"deployment_id", p.DeploymentID, "bytes_out", len(out))
@@ -540,6 +556,14 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) sdkclie
 	logOut, _ := d.compose(logsCtx, appDir, "logs", "--tail=20", "--no-color")
 
 	d.Log.Info("docker deploy: success", "deployment_id", p.DeploymentID, "onion", primaryOnion)
+	var releaseMetadata *sdkclient.DeploymentRelease
+	if verdict == settleHealthy {
+		if release, err := d.captureRelease(ctx, appDir, p.DeploymentID); err != nil {
+			settleNote += "\nRelease history could not be recorded: " + err.Error()
+		} else if release != nil {
+			releaseMetadata = &release.Metadata
+		}
+	}
 	// Lead the tail with the settle/readiness summary. On an advisory
 	// miss this is the only place an operator finds out the app was never
 	// confirmed healthy, so it goes above the log tail rather than being
@@ -550,6 +574,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) sdkclie
 		DeploymentID: p.DeploymentID,
 		Domain:       envValue(p.Vars, "DOMAIN_URL"),
 		Onion:        primaryOnion,
+		Release:      releaseMetadata,
 		LogsTail:     "health: " + settleNote + "\n\n" + tail(logOut, 4096),
 	}
 }
@@ -607,6 +632,10 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 		d.forceRemoveProjectContainers(ctx, p.DeploymentID)
 	}
 
+	// Release archives also contain secrets, and their private image tags
+	// must not keep old images alive after this deployment is uninstalled.
+	d.pruneReleases(ctx, filepath.Join(appDir, "releases"), 0)
+
 	// On-disk cleanup runs whether or not `down` succeeded.
 	//
 	// purge_data=true (what the panel's Uninstall button sends) removes
@@ -621,7 +650,7 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 			d.Log.Warn("removeAll state dir failed", "deployment_id", p.DeploymentID, "err", err)
 		}
 	} else {
-		for _, leftover := range []string{"compose.yaml", ".env", "build-ctx"} {
+		for _, leftover := range []string{"compose.yaml", ".env", "build-ctx", "releases"} {
 			if err := os.RemoveAll(filepath.Join(appDir, leftover)); err != nil {
 				d.Log.Warn("uninstall: removing transient artifact failed",
 					"deployment_id", p.DeploymentID, "path", leftover, "err", err)

@@ -12,7 +12,26 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- Retained-release rollback for the agent. Restore a selected configuration
+  snapshot using its exact local image IDs, with startup checks and recovery
+  of the current healthy runtime if the selected release fails. The agent
+  retains five snapshots and refuses incompatible ports, storage or routing.
+- Release and recovery metadata in Go SDK deployment results.
+
+### Fixed
+
+- Prepare Compose configuration, image pulls and builds before replacing
+  running containers. A preparation failure preserves the existing runtime
+  and restores its configuration.
+- Recover a healthy previous release when replacement, startup health checks
+  or installation hooks fail. A recovered runtime does not turn a failed
+  deployment attempt into a successful one.
+
+These changes require an updated agent and compatible API support. Rollback
+can interrupt traffic and does not revert databases, mutable data or external
+side effects. Agent binary distribution is separate from this source update.
 
 ## [0.5.0] — 2026-09-09
 

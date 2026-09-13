@@ -343,14 +343,31 @@ func (c *Client) AgentReport(ctx context.Context, r AgentReport) error {
 // any command (deploy, update, rollback, uninstall, restart, etc.).
 // Idempotent on CommandID — re-posting the same result is a no-op.
 type DeployResult struct {
-	CommandID        string            `json:"command_id"`
-	Status           string            `json:"status"` // success | failed | timeout | partial
-	DeploymentID     string            `json:"deployment_id,omitempty"`
-	Domain           string            `json:"domain,omitempty"`
-	Onion            string            `json:"onion,omitempty"`
-	AdminCredentials map[string]string `json:"admin_credentials,omitempty"`
-	Error            string            `json:"error,omitempty"`
-	LogsTail         string            `json:"logs_tail,omitempty"`
+	CommandID        string              `json:"command_id"`
+	Status           string              `json:"status"` // success | failed | timeout | partial
+	DeploymentID     string              `json:"deployment_id,omitempty"`
+	Domain           string              `json:"domain,omitempty"`
+	Onion            string              `json:"onion,omitempty"`
+	AdminCredentials map[string]string   `json:"admin_credentials,omitempty"`
+	Error            string              `json:"error,omitempty"`
+	LogsTail         string              `json:"logs_tail,omitempty"`
+	Release          *DeploymentRelease  `json:"release,omitempty"`
+	Rollback         *DeploymentRollback `json:"rollback,omitempty"`
+}
+
+// DeploymentRelease describes local immutable runtime configuration, never secrets.
+type DeploymentRelease struct {
+	RollbackProtocol string            `json:"rollback_protocol,omitempty"`
+	ID               string            `json:"id"`
+	CreatedAt        string            `json:"created_at"`
+	ImageIDs         map[string]string `json:"image_ids"`
+}
+
+// Recovery does not turn a failed deployment attempt into a successful one.
+type DeploymentRollback struct {
+	Status       string `json:"status"` // restored | failed
+	ReleaseID    string `json:"release_id"`
+	RuntimeState string `json:"runtime_state"` // healthy | unknown
 }
 
 // AgentDeployResult reports the outcome of a command back to the
