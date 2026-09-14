@@ -29,6 +29,7 @@ type Poller struct {
 	agentVersion string
 	journal      *commandJournal
 	active       *commandRecord
+	journalErr   error
 }
 
 // New constructs a Poller for the given config + executor. The SDK
@@ -63,6 +64,7 @@ func New(cfg *config.Config, exec executor.Executor, agentVersion string, log *s
 	if docker, ok := exec.(*executor.Docker); ok {
 		p.journal = &commandJournal{dir: filepath.Join(docker.StateDir, "operations")}
 		docker.Progress = p.observeProgress
+		docker.SavePreparation = p.savePreparation
 	}
 	return p, nil
 }
@@ -157,6 +159,12 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 				return errors.New("unsupported operation recovery protocol")
 			}
 			p.active = &commandRecord{Version: 1, AgentID: p.cfg.AgentID, ControlPlaneURL: p.cfg.ControlPlaneURL, CommandID: cmd.ID, ControlToken: cmd.ControlToken, ProgressProtocol: cmd.ProgressProtocol, Step: "preparing"}
+
+			if !cmd.ResumeOnly && cmd.Kind == sdkclient.CommandDeploy {
+				if _, ok := p.exec.(*executor.Docker); ok {
+					p.active.Preparation = &executor.PreparationRecovery{Version: 1, Phase: "unstarted"}
+				}
+			}
 			if err := p.journal.save(p.active); err != nil {
 				return fmt.Errorf("persist operation before execution: %w", err)
 			}
@@ -167,7 +175,11 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 				continue
 			}
 		}
+		p.journalErr = nil
 		result := p.exec.Execute(ctx, cmd)
+		if p.journalErr != nil {
+			return fmt.Errorf("preparation journal failed; execution stopped: %w", p.journalErr)
+		}
 		result.ControlToken = cmd.ControlToken
 		if p.active != nil {
 			if result.CommandID != cmd.ID {

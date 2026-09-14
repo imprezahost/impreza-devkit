@@ -2,7 +2,9 @@ package poll
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/executor"
 	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 	"time"
 )
@@ -34,8 +36,18 @@ func (p *Poller) resumeRecord(ctx context.Context) error {
 		_, _ = p.reportProgress(ctx, "resending_result")
 		return p.sendSavedResult(ctx)
 	}
+
 	p.log.Error("interrupted operation has no saved result; execution will not be repeated", "command_id", p.active.CommandID)
 	for ctx.Err() == nil {
+		if p.active.Preparation.Recoverable() {
+			if docker, ok := p.exec.(*executor.Docker); ok {
+				if err := p.reconcilePreparation(ctx, docker); err == nil {
+					return nil
+				} else {
+					p.log.Warn("automatic preparation reconciliation not confirmed", "command_id", p.active.CommandID, "err", err)
+				}
+			}
+		}
 		response, err := p.reportProgress(ctx, "interrupted")
 		if err == nil && response.Terminal {
 			if err := p.journal.clear(); err != nil {
@@ -66,4 +78,70 @@ func (p *Poller) sendSavedResult(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (p *Poller) savePreparation(cmd *sdkclient.PollCommand, state *executor.PreparationRecovery) error {
+	if p.journalErr != nil {
+		return p.journalErr
+	}
+	if p.active == nil || p.active.CommandID != cmd.ID || p.active.ControlToken != cmd.ControlToken {
+		p.journalErr = errors.New("preparation checkpoint belongs to another operation")
+		return p.journalErr
+	}
+	if err := state.Validate(); err != nil {
+		p.journalErr = err
+		return err
+	}
+	next := *p.active
+	copyState := *state
+	next.Preparation = &copyState
+	if err := p.journal.save(&next); err != nil {
+		p.journalErr = err
+		return err
+	}
+	p.active = &next
+	return nil
+}
+func (p *Poller) reconcilePreparation(ctx context.Context, docker *executor.Docker) error {
+	response, err := p.reportProgress(ctx, "interrupted")
+	if err != nil {
+		return err
+	}
+	if response.Terminal {
+		if err := p.journal.clear(); err != nil {
+			return err
+		}
+		p.active = nil
+		return nil
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	control, err := p.client.AgentCommandControl(checkCtx, sdkclient.DeploymentControl{CommandID: p.active.CommandID, ControlToken: p.active.ControlToken, Phase: "preparing"})
+	if err != nil {
+		return err
+	}
+	if control.CommandID != p.active.CommandID || control.Phase != "preparing" {
+		return errors.New("server did not confirm preparation identity and phase")
+	}
+	// Older control planes may not know this display step. Failure to display it
+	// does not bypass the authenticated phase check or local recovery validation.
+	_, _ = p.reportProgress(ctx, "reconciling_preparation")
+	if err := docker.ReconcilePreparation(ctx, p.active.Preparation); err != nil {
+		return err
+	}
+	result := sdkclient.DeployResult{CommandID: p.active.CommandID, ControlToken: p.active.ControlToken, DeploymentID: p.active.Preparation.DeploymentID, Status: "failed", PreparationRestored: true, Error: "Agent interrupted before container replacement. The completed preparation checkpoint was verified and previous configuration restored. Deployment was not repeated; retry explicitly when ready."}
+	if control.CancelRequested {
+		result.Status = "cancelled"
+		result.Error = "Requested cancellation confirmed after interrupted preparation was reconciled. Deployment was not repeated."
+	}
+	if p.active.Preparation.Phase == "unstarted" {
+		result.Error = "Agent interrupted before deployment execution started. No deployment work was repeated."
+	}
+	next := *p.active
+	next.Result = &result
+	if err := p.journal.save(&next); err != nil {
+		return err
+	}
+	p.active = &next
+	return p.sendSavedResult(ctx)
 }

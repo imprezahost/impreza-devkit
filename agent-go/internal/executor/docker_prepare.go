@@ -47,13 +47,16 @@ func captureDeployConfig(dir string, enabled bool) (deployConfigSnapshot, error)
 	var snapshot deployConfigSnapshot
 	for _, name := range []string{"compose.yaml", ".env", "startup.json"} {
 		path := filepath.Join(dir, name)
-		info, err := os.Stat(path)
+		info, err := os.Lstat(path)
 		if errors.Is(err, os.ErrNotExist) {
 			snapshot = append(snapshot, deployConfigFile{name: name})
 			continue
 		}
 		if err != nil {
 			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, errors.New("deployment configuration must be a regular file")
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -79,6 +82,11 @@ func (snapshot deployConfigSnapshot) restore(dir string) error {
 		}
 		if err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", file.name, err))
+		}
+	}
+	if len(failures) == 0 {
+		if err := syncRecoveryDirectory(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+			failures = append(failures, err)
 		}
 	}
 	return errors.Join(failures...)

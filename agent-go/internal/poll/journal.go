@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/executor"
 	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 	"io"
 	"os"
@@ -13,14 +14,15 @@ import (
 // Only one outstanding controlled operation is allowed. The receipt can contain
 // generated credentials; keep it private and delete only after acknowledgement.
 type commandRecord struct {
-	Version          int                     `json:"version"`
-	AgentID          string                  `json:"agent_id"`
-	ControlPlaneURL  string                  `json:"control_plane_url"`
-	CommandID        string                  `json:"command_id"`
-	ControlToken     string                  `json:"control_token"`
-	ProgressProtocol string                  `json:"progress_protocol"`
-	Step             string                  `json:"step"`
-	Result           *sdkclient.DeployResult `json:"result,omitempty"`
+	Version          int                           `json:"version"`
+	AgentID          string                        `json:"agent_id"`
+	ControlPlaneURL  string                        `json:"control_plane_url"`
+	CommandID        string                        `json:"command_id"`
+	ControlToken     string                        `json:"control_token"`
+	ProgressProtocol string                        `json:"progress_protocol"`
+	Step             string                        `json:"step"`
+	Preparation      *executor.PreparationRecovery `json:"preparation,omitempty"`
+	Result           *sdkclient.DeployResult       `json:"result,omitempty"`
 }
 type commandJournal struct{ dir string }
 
@@ -84,6 +86,11 @@ func (j *commandJournal) load() (*commandRecord, error) {
 	}
 	if record.Version != 1 || record.AgentID == "" || record.ControlPlaneURL == "" || record.CommandID == "" || record.ControlToken == "" || record.ProgressProtocol != sdkclient.DeploymentProgressProtocol {
 		return nil, errors.New("operation journal identity or protocol is invalid")
+	}
+	if record.Preparation != nil {
+		if err := record.Preparation.Validate(); err != nil {
+			return nil, err
+		}
 	}
 	if r := record.Result; r != nil {
 		if r.CommandID != record.CommandID || r.ControlToken != record.ControlToken {

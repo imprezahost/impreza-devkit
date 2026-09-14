@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/config"
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/executor"
 	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 	"io"
 	"log/slog"
@@ -215,5 +216,112 @@ func TestChangedAgentIdentityBlocksReplay(t *testing.T) {
 	}
 	if e.calls.Load() != 0 {
 		t.Fatal("unexpected execution")
+	}
+}
+
+func TestUnstartedRecoveryVerifiesControlAndPersistsOutcome(t *testing.T) {
+	for _, mode := range []string{"failed", "cancelled", "wrong-command", "replacement"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, stop := context.WithTimeout(context.Background(), 3*time.Second)
+			defer stop()
+			var posts, controls, interrupts atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/v1/agent/poll":
+					stop()
+					w.WriteHeader(204)
+				case "/v1/agent/report":
+					w.WriteHeader(204)
+				case "/v1/agent/command-progress":
+					var b sdkclient.DeploymentProgress
+					json.NewDecoder(r.Body).Decode(&b)
+					if b.Step == "interrupted" && interrupts.Add(1) > 1 {
+						stop()
+					}
+					fmt.Fprint(w, "{\"success\":true,\"data\":{\"command_id\":\"cmd_unstarted\",\"terminal\":false,\"status\":\"in_progress\"}}")
+				case "/v1/agent/command-control":
+					controls.Add(1)
+					var b sdkclient.DeploymentControl
+					json.NewDecoder(r.Body).Decode(&b)
+					if b.CommandID != "cmd_unstarted" || b.ControlToken != "private" || b.Phase != "preparing" {
+						t.Error("wrong control identity")
+					}
+					id, phase := "cmd_unstarted", "preparing"
+					if mode == "wrong-command" {
+						id = "cmd_other"
+					}
+					if mode == "replacement" {
+						phase = "replacing"
+					}
+					fmt.Fprintf(w, "{\"success\":true,\"data\":{\"command_id\":%q,\"phase\":%q,\"cancel_requested\":%t}}", id, phase, mode == "cancelled")
+				case "/v1/agent/deploy-result":
+					posts.Add(1)
+					var b sdkclient.DeployResult
+					json.NewDecoder(r.Body).Decode(&b)
+					if b.Status != mode || !b.PreparationRestored || b.CommandID != "cmd_unstarted" || b.ControlToken != "private" {
+						t.Error("incorrect reconciled result")
+					}
+					w.WriteHeader(204)
+				default:
+					t.Error("unexpected execution or poll: " + r.URL.Path)
+					w.WriteHeader(500)
+					stop()
+				}
+			}))
+			defer server.Close()
+			cfg := &config.Config{AgentID: "agt_fixture", AgentSecret: "fixture", ControlPlaneURL: server.URL, HeartbeatSeconds: 60, BackoffMinSeconds: 1, BackoffMaxSeconds: 1}
+			d := &executor.Docker{StateDir: t.TempDir(), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			p, err := New(cfg, d, "test", d.Log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lock, err := p.journal.open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = p.journal.save(&commandRecord{Version: 1, AgentID: cfg.AgentID, ControlPlaneURL: cfg.ControlPlaneURL, CommandID: "cmd_unstarted", ControlToken: "private", ProgressProtocol: sdkclient.DeploymentProgressProtocol, Preparation: &executor.PreparationRecovery{Version: 1, Phase: "unstarted"}})
+			lock.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = p.Run(ctx); err != nil {
+				t.Fatal(err)
+			}
+			want := int32(1)
+			if mode == "wrong-command" || mode == "replacement" {
+				want = 0
+			}
+			if posts.Load() != want || controls.Load() != 1 {
+				t.Fatalf("posts=%d controls=%d", posts.Load(), controls.Load())
+			}
+			record, err := p.journal.load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (record == nil) != (want == 1) {
+				t.Fatal("uncertain journal cleared or acknowledged result retained")
+			}
+			if _, err := os.Stat(filepath.Join(d.StateDir, "apps")); !os.IsNotExist(err) {
+				t.Fatal("unstarted recovery modified app state")
+			}
+		})
+	}
+}
+func TestPreparationPersistenceFailureIsSticky(t *testing.T) {
+	p := testPoller(t, "http://127.0.0.1:1", t.TempDir(), &receiptExecutor{})
+	state := &executor.PreparationRecovery{Version: 1, Phase: "unstarted"}
+	original := &commandRecord{CommandID: "cmd_test", ControlToken: "private", Preparation: state}
+	p.active = original
+	cmd := &sdkclient.PollCommand{ID: "cmd_test", ControlToken: "private"}
+	if err := p.savePreparation(cmd, state); err == nil || p.journalErr == nil {
+		t.Fatal("missing directory did not stop persistence")
+	}
+	if p.active != original {
+		t.Fatal("unpersisted checkpoint became current")
+	}
+	os.MkdirAll(p.journal.dir, 0700)
+	if err := p.savePreparation(cmd, state); err == nil {
+		t.Fatal("persistence failure was forgotten")
 	}
 }

@@ -102,11 +102,12 @@ const (
 
 // Docker is the runtime executor. Build with NewDocker.
 type Docker struct {
-	StateDir string // absolute path; agent passes this from internal/state.
-	Progress func(context.Context, *sdkclient.PollCommand, string)
-	Log      *slog.Logger
-	Proxy    *proxy.Caddy // optional — when nil, routes are ignored
-	Tor      *proxy.Tor   // optional — when nil, onion is ignored
+	StateDir        string // absolute path; agent passes this from internal/state.
+	Progress        func(context.Context, *sdkclient.PollCommand, string)
+	SavePreparation func(*sdkclient.PollCommand, *PreparationRecovery) error
+	Log             *slog.Logger
+	Proxy           *proxy.Caddy // optional — when nil, routes are ignored
+	Tor             *proxy.Tor   // optional — when nil, onion is ignored
 
 	// Client is the SDK client used to ship log chunks back to the
 	// control plane (for the logs_tail command kind). When nil, the
@@ -206,6 +207,41 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	previous, err := captureDeployConfig(appDir, true)
 	if err != nil {
 		return failResult(cmd.ID, "capture current deployment configuration: "+err.Error())
+	}
+
+	var recovery *PreparationRecovery
+	if cmd.ProgressProtocol == sdkclient.DeploymentProgressProtocol && d.SavePreparation != nil {
+		recovery, err = d.capturePreparation(ctx, p.DeploymentID, previous)
+		if err != nil {
+			return failResult(cmd.ID, "capture preparation checkpoint: "+err.Error())
+		}
+		// Recursive data ownership changes and onion provisioning are not covered by
+		// configuration-only recovery. Retain explicit reconciliation for these jobs.
+		if p.Manifest.Runtime.DataDir != nil {
+			recovery.Phase = "blocked"
+		}
+		for _, route := range p.Routes {
+			if route.Onion != nil && route.Onion.Enabled {
+				recovery.Phase = "blocked"
+			}
+		}
+		if err = d.SavePreparation(cmd, recovery); err != nil {
+			return failResult(cmd.ID, "persist preparation checkpoint: "+err.Error())
+		}
+	}
+	savePreparation := func(phase string) error {
+		if recovery == nil {
+			return nil
+		}
+		next := *recovery
+		if next.Phase != "blocked" {
+			next.Phase = phase
+		}
+		if err := d.SavePreparation(cmd, &next); err != nil {
+			return err
+		}
+		recovery = &next
+		return nil
 	}
 	var previousRelease *runtimeRelease
 	if isRedeploy {
@@ -350,19 +386,39 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 
 	// 1. Validate, pull and build without replacing running containers.
 	// Failed preparation restores the previous Compose and environment files.
+
+	if err := savePreparation("ready"); err != nil {
+		return failResult(cmd.ID, "persist completed preparation: "+err.Error())
+	}
 	d.Log.Info("docker deploy: preparing images", "deployment_id", p.DeploymentID)
 	if err := prepareDeployImages(ctx, func(ctx context.Context, args ...string) ([]byte, error) {
 		if err := d.deploymentCheckpoint(ctx, cmd, "preparing"); err != nil {
 			return nil, err
 		}
+
+		if err := savePreparation("busy"); err != nil {
+			return nil, err
+		}
 		d.deploymentProgress(ctx, cmd, map[string]string{"config": "validating", "pull": "pulling", "build": "building"}[args[0]])
-		return d.compose(ctx, appDir, args...)
+		out, err := d.compose(ctx, appDir, args...)
+		if err == nil {
+			err = savePreparation("ready")
+		}
+		return out, err
 	}); err != nil {
 		return preparationResult(cmd.ID, err)
 	}
 
+	d.deploymentProgress(ctx, cmd, "preparation_ready")
+
 	// This transaction decides the race with a customer's cancellation request.
 	// No replacement starts unless the server explicitly grants this phase.
+
+	// Persist the irreversible boundary before sending the grant request: a lost
+	// response must not leave a locally recoverable checkpoint behind.
+	if err := savePreparation("replacing"); err != nil {
+		return failResult(cmd.ID, "persist replacement boundary: "+err.Error())
+	}
 	if err := d.deploymentCheckpoint(ctx, cmd, "replacing"); err != nil {
 		return preparationResult(cmd.ID, err)
 	}
