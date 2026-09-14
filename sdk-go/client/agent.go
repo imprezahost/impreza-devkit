@@ -173,11 +173,13 @@ type PollRequest struct {
 // concrete payload type depends on Kind — use the typed accessors
 // (DeployPayload, UpdatePayload, etc.) to decode it.
 type PollCommand struct {
-	ControlToken string          `json:"control_token,omitempty"`
-	ID           string          `json:"id"`
-	Kind         CommandKind     `json:"kind"`
-	Payload      json.RawMessage `json:"payload"`
-	Deadline     *time.Time      `json:"deadline,omitempty"`
+	ProgressProtocol string          `json:"progress_protocol,omitempty"`
+	ResumeOnly       bool            `json:"resume_only,omitempty"`
+	ControlToken     string          `json:"control_token,omitempty"`
+	ID               string          `json:"id"`
+	Kind             CommandKind     `json:"kind"`
+	Payload          json.RawMessage `json:"payload"`
+	Deadline         *time.Time      `json:"deadline,omitempty"`
 }
 
 // AgentPoll blocks up to ~55s waiting for a command. The (nil, false,

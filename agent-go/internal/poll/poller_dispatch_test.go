@@ -34,7 +34,7 @@ func TestPollReportsUnsupportedAndContinues(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/agent/poll":
 			var request sdkclient.PollRequest
-			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.Capabilities) != 2 || request.Capabilities[0] != "startup-health-v1" || request.Capabilities[1] != "deploy-cancel-v1" {
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.Capabilities) != 3 || request.Capabilities[0] != "startup-health-v1" || request.Capabilities[1] != "deploy-cancel-v1" || request.Capabilities[2] != sdkclient.DeploymentProgressProtocol {
 				t.Error("missing startup capability")
 				http.Error(w, "capability missing", 400)
 				return
@@ -116,7 +116,7 @@ func TestPollReportsUnsupportedAndContinues(t *testing.T) {
 		t.Fatal("state changed")
 	}
 	entries, err := os.ReadDir(root)
-	if err != nil || len(entries) != 1 {
+	if err != nil || len(entries) != 2 || entries[0].Name() != "operations" || entries[1].Name() != "state" {
 		t.Fatal("unexpected filesystem changes")
 	}
 }

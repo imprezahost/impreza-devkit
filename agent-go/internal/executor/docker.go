@@ -103,6 +103,7 @@ const (
 // Docker is the runtime executor. Build with NewDocker.
 type Docker struct {
 	StateDir string // absolute path; agent passes this from internal/state.
+	Progress func(context.Context, *sdkclient.PollCommand, string)
 	Log      *slog.Logger
 	Proxy    *proxy.Caddy // optional — when nil, routes are ignored
 	Tor      *proxy.Tor   // optional — when nil, onion is ignored
@@ -157,6 +158,7 @@ func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) sdkcli
 // ─────────────────────────────────────────────────────────────────────
 
 func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result sdkclient.DeployResult) {
+	d.deploymentProgress(ctx, cmd, "preparing")
 	if err := d.deploymentCheckpoint(ctx, cmd, "preparing"); err != nil {
 		return preparationResult(cmd.ID, err)
 	}
@@ -217,6 +219,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		if runtimeStarted || result.Status == "success" {
 			return
 		}
+		d.deploymentProgress(ctx, cmd, "restoring_configuration")
 		if err := previous.restore(appDir); err != nil {
 			result.Status = "failed"
 			result.PreparationRestored = false
@@ -247,6 +250,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	// against the extracted context. Catalog / image / manifest
 	// deploys have Build=nil and skip this entire branch.
 	if d.Client != nil && p.Manifest.Runtime.Build != nil {
+		d.deploymentProgress(ctx, cmd, "fetching_source")
 		buildDir := filepath.Join(appDir, "build-ctx")
 		if err := fetchAndExtractBuildContext(ctx, d.Client, d.Log, p.Manifest.Runtime.Build, buildDir, p.GitAuthMethod, p.DeploymentID); err != nil {
 			return failResult(cmd.ID, "fetch build context: "+err.Error())
@@ -351,6 +355,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		if err := d.deploymentCheckpoint(ctx, cmd, "preparing"); err != nil {
 			return nil, err
 		}
+		d.deploymentProgress(ctx, cmd, map[string]string{"config": "validating", "pull": "pulling", "build": "building"}[args[0]])
 		return d.compose(ctx, appDir, args...)
 	}); err != nil {
 		return preparationResult(cmd.ID, err)
@@ -362,6 +367,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		return preparationResult(cmd.ID, err)
 	}
 
+	d.deploymentProgress(ctx, cmd, "replacing")
 	// 2. Replace containers only after all image preparation succeeds.
 	// Startup failures restore a verified previous release when available.
 	// First installs and already-broken runtimes retain the teardown policy.
@@ -374,6 +380,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	upCtx, cancelUp := context.WithTimeout(ctx, upTimeout)
 	defer cancelUp()
 	failStartup := func(reason string) sdkclient.DeployResult {
+		d.deploymentProgress(ctx, cmd, "recovering")
 		r := d.recoverStartup(ctx, appDir, p.DeploymentID, previousRelease, isRedeploy, reason)
 		r.CommandID = cmd.ID
 		r.DeploymentID = p.DeploymentID
@@ -397,6 +404,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	//     With a verified previous release, an unsettled replacement is a
 	//     failure and triggers recovery. Without a recovery target, the
 	//     legacy advisory policy remains unless healthy startup was required.
+	d.deploymentProgress(ctx, cmd, "checking_health")
 	settleStart := time.Now()
 	verdict, detail := d.awaitStackSettledPolicy(ctx, p.DeploymentID, policy)
 	switch verdict {
@@ -434,6 +442,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	//     env vars. 3-minute budget covers a slow first-boot of e.g.
 	//     n8n or Synapse.
 	if installScript := strings.TrimSpace(p.Manifest.Lifecycle.Install); installScript != "" {
+		d.deploymentProgress(ctx, cmd, "installing")
 		d.Log.Info("docker deploy: running lifecycle.install", "deployment_id", p.DeploymentID)
 		instCtx, cancelInst := context.WithTimeout(ctx, 3*time.Minute)
 		out, err := d.runShellScript(instCtx, appDir, p.Vars, installScript)
@@ -461,6 +470,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	//    re-provision — ProvisionHiddenService is idempotent on the
 	//    deployment_id but there's no reason to round-trip it twice.
 	if d.Proxy != nil && len(p.Routes) > 0 {
+		d.deploymentProgress(ctx, cmd, "routing")
 		// Decide if Tor is needed.
 		needTor := false
 		for _, r := range p.Routes {
@@ -564,6 +574,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	//     probe written against an older version). The crash-loop gate is
 	//     what fails a deploy; this only annotates the result.
 	if healthScript := strings.TrimSpace(p.Manifest.Lifecycle.Health); healthScript != "" {
+		d.deploymentProgress(ctx, cmd, "checking_readiness")
 		hCtx, cancelH := context.WithTimeout(ctx, composeQueryTimeout)
 		hOut, hErr := d.runShellScript(hCtx, appDir, p.Vars, healthScript)
 		cancelH()

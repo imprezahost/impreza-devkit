@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/config"
@@ -26,6 +27,8 @@ type Poller struct {
 
 	// Static metadata included in every heartbeat. Set at construction.
 	agentVersion string
+	journal      *commandJournal
+	active       *commandRecord
 }
 
 // New constructs a Poller for the given config + executor. The SDK
@@ -50,19 +53,41 @@ func New(cfg *config.Config, exec executor.Executor, agentVersion string, log *s
 		docker.Client = c
 	}
 
-	return &Poller{
+	p := &Poller{
 		cfg:          cfg,
 		client:       c,
 		exec:         exec,
 		log:          log,
 		agentVersion: agentVersion,
-	}, nil
+	}
+	if docker, ok := exec.(*executor.Docker); ok {
+		p.journal = &commandJournal{dir: filepath.Join(docker.StateDir, "operations")}
+		docker.Progress = p.observeProgress
+	}
+	return p, nil
 }
 
 // Run blocks until ctx is cancelled, then returns nil. The poll loop
 // is in the foreground; the heartbeat runs in a goroutine that exits
 // when ctx is cancelled.
 func (p *Poller) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if p.journal != nil {
+		lock, err := p.journal.open()
+		if err != nil {
+			return err
+		}
+		defer lock.Close()
+		record, err := p.journal.load()
+		if err != nil {
+			return err
+		}
+		if record != nil && (record.AgentID != p.cfg.AgentID || record.ControlPlaneURL != p.cfg.ControlPlaneURL) {
+			return errors.New("saved operation belongs to a different agent or control plane; reconciliation required")
+		}
+		p.active = record
+	}
 	hbDone := make(chan struct{})
 	go func() {
 		defer close(hbDone)
@@ -72,6 +97,7 @@ func (p *Poller) Run(ctx context.Context) error {
 		// Wait for the heartbeat goroutine to wind down so caller
 		// teardown (e.g. writing PID files, closing logs) sees a
 		// truly idle agent.
+		cancel()
 		<-hbDone
 	}()
 
@@ -82,6 +108,15 @@ func (p *Poller) Run(ctx context.Context) error {
 // or an error on a configuration problem the loop can't recover from
 // (e.g. invalid base URL).
 func (p *Poller) pollLoop(ctx context.Context) error {
+	if p.active != nil {
+		if err := p.resumeRecord(ctx); err != nil {
+			return err
+		}
+	}
+	capabilities := []string{"startup-health-v1", "deploy-cancel-v1"}
+	if p.journal != nil {
+		capabilities = append(capabilities, sdkclient.DeploymentProgressProtocol)
+	}
 	backoff := time.Duration(p.cfg.BackoffMinSeconds) * time.Second
 	maxBackoff := time.Duration(p.cfg.BackoffMaxSeconds) * time.Second
 
@@ -91,7 +126,7 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 			return nil
 		}
 
-		cmd, ok, err := p.client.AgentPoll(ctx, &sdkclient.PollRequest{Capabilities: []string{"startup-health-v1", "deploy-cancel-v1"}})
+		cmd, ok, err := p.client.AgentPoll(ctx, &sdkclient.PollRequest{Capabilities: capabilities})
 		if err != nil {
 			// Distinguish auth from transport so we surface bad
 			// credentials immediately instead of silently looping.
@@ -117,8 +152,37 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 		}
 
 		p.log.Info("poll: received command", "id", cmd.ID, "kind", cmd.Kind)
+		if cmd.ResumeOnly || cmd.ProgressProtocol != "" {
+			if cmd.ProgressProtocol != sdkclient.DeploymentProgressProtocol || cmd.ControlToken == "" || p.journal == nil {
+				return errors.New("unsupported operation recovery protocol")
+			}
+			p.active = &commandRecord{Version: 1, AgentID: p.cfg.AgentID, ControlPlaneURL: p.cfg.ControlPlaneURL, CommandID: cmd.ID, ControlToken: cmd.ControlToken, ProgressProtocol: cmd.ProgressProtocol, Step: "preparing"}
+			if err := p.journal.save(p.active); err != nil {
+				return fmt.Errorf("persist operation before execution: %w", err)
+			}
+			if cmd.ResumeOnly {
+				if err := p.resumeRecord(ctx); err != nil {
+					return err
+				}
+				continue
+			}
+		}
 		result := p.exec.Execute(ctx, cmd)
 		result.ControlToken = cmd.ControlToken
+		if p.active != nil {
+			if result.CommandID != cmd.ID {
+				return errors.New("executor returned a result for another command")
+			}
+			p.active.Result = &result
+			if err := p.journal.save(p.active); err != nil {
+				return fmt.Errorf("persist final result before reporting: %w", err)
+			}
+			p.observeProgress(ctx, cmd, "reporting_result")
+			if err := p.sendSavedResult(ctx); err != nil {
+				return err
+			}
+			continue
+		}
 
 		for cmd.ControlToken != "" && ctx.Err() == nil {
 			if err := p.client.AgentDeployResult(ctx, result); err == nil {

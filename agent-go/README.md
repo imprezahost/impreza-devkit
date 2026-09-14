@@ -123,3 +123,7 @@ Agent 0.6.4 adds bounded Docker runtime observations to heartbeats. The portal, 
 ## Deployment cancellation
 
 Agent 0.6.5 supports deployment cancellation at preparation checkpoints. Queued jobs can be cancelled immediately. During source preparation, image pull or build, cancellation is requested first and confirmed only after the current step finishes and configuration is restored. Existing app containers are not replaced. Replacement and recovery cannot be cancelled. A running build is not force-killed. Update the agent explicitly before the next deploy; an interrupted agent requires operation reconciliation before retry. See [deployment cancellation](https://docs.imprezahost.com/deployment-cancellation.html).
+
+## Deployment progress and persistent results
+
+Agent 0.6.6+ reports deployment steps and persists final results before delivery. After restart, a saved receipt is resent without repeating the deployment. Interrupted execution without a saved final result requires support reconciliation and blocks new commands. Preserve the private agent state directory; do not remove its operation record to bypass the gate. This does not resume or kill an interrupted Docker build. Update existing agents explicitly before the next deploy. See [deployment progress](https://docs.imprezahost.com/deployment-progress.html).
