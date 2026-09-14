@@ -39,6 +39,10 @@ func (d *Docker) deploymentCheckpoint(ctx context.Context, cmd *sdkclient.PollCo
 }
 func preparationResult(commandID string, err error) sdkclient.DeployResult {
 	result := failResult(commandID, err.Error())
+	if errors.Is(err, ErrPreparationPending) {
+		result.Status = PreparationPendingStatus
+		return result
+	}
 	if errors.Is(err, errDeployCancelled) {
 		result.Status = "cancelled"
 		result.PreparationRestored = true

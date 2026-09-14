@@ -13,13 +13,15 @@ import (
 
 // PreparationRecovery is private journal data, not a command to replay. A ready
 // checkpoint proves all preceding external operations returned successfully.
-// Busy/blocked/replacing checkpoints never authorize automatic reconciliation.
+// Busy checkpoints need a verified worker receipt before becoming ready.
+// Blocked/replacing checkpoints never authorize automatic reconciliation.
 type PreparationRecovery struct {
 	Version      int               `json:"version"`
 	Phase        string            `json:"phase"`
 	DeploymentID string            `json:"deployment_id,omitempty"`
 	Files        []PreparationFile `json:"files,omitempty"`
 	Containers   []string          `json:"containers,omitempty"`
+	Work         *PreparationWork  `json:"work,omitempty"`
 }
 type PreparationFile struct {
 	Name   string `json:"name"`
@@ -35,7 +37,15 @@ func (r *PreparationRecovery) Validate() error {
 	if r == nil || r.Version != 1 {
 		return errors.New("invalid preparation recovery version")
 	}
-	if r.Phase == "unstarted" && r.DeploymentID == "" && len(r.Files) == 0 && len(r.Containers) == 0 {
+	if r.Work != nil {
+		if err := r.Work.validate(); err != nil {
+			return err
+		}
+		if r.Phase != "busy" && r.Phase != "ready" {
+			return errors.New("worker outside preparation phase")
+		}
+	}
+	if r.Phase == "unstarted" && r.Work == nil && r.DeploymentID == "" && len(r.Files) == 0 && len(r.Containers) == 0 {
 		return nil
 	}
 	if !slices.Contains([]string{"ready", "busy", "blocked", "replacing"}, r.Phase) || !recoveryDeploymentID.MatchString(r.DeploymentID) || len(r.Files) != 3 {

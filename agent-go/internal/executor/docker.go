@@ -102,12 +102,13 @@ const (
 
 // Docker is the runtime executor. Build with NewDocker.
 type Docker struct {
-	StateDir        string // absolute path; agent passes this from internal/state.
-	Progress        func(context.Context, *sdkclient.PollCommand, string)
-	SavePreparation func(*sdkclient.PollCommand, *PreparationRecovery) error
-	Log             *slog.Logger
-	Proxy           *proxy.Caddy // optional — when nil, routes are ignored
-	Tor             *proxy.Tor   // optional — when nil, onion is ignored
+	StateDir             string // absolute path; agent passes this from internal/state.
+	Progress             func(context.Context, *sdkclient.PollCommand, string)
+	SavePreparation      func(*sdkclient.PollCommand, *PreparationRecovery) error
+	SupervisePreparation bool
+	Log                  *slog.Logger
+	Proxy                *proxy.Caddy // optional — when nil, routes are ignored
+	Tor                  *proxy.Tor   // optional — when nil, onion is ignored
 
 	// Client is the SDK client used to ship log chunks back to the
 	// control plane (for the logs_tail command kind). When nil, the
@@ -121,10 +122,11 @@ type Docker struct {
 // manager for onion routes (engaged only when a route requests it).
 func NewDocker(stateDir string, log *slog.Logger) *Docker {
 	return &Docker{
-		StateDir: stateDir,
-		Log:      log,
-		Proxy:    proxy.New(stateDir, log),
-		Tor:      proxy.NewTor(stateDir, log),
+		StateDir:             stateDir,
+		SupervisePreparation: supportsPreparationWorkers(),
+		Log:                  log,
+		Proxy:                proxy.New(stateDir, log),
+		Tor:                  proxy.NewTor(stateDir, log),
 	}
 }
 
@@ -234,6 +236,10 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 			return nil
 		}
 		next := *recovery
+		oldWork := next.Work
+		if phase != "ready" {
+			next.Work = nil
+		}
 		if next.Phase != "blocked" {
 			next.Phase = phase
 		}
@@ -241,6 +247,9 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 			return err
 		}
 		recovery = &next
+		if phase != "ready" && oldWork != nil {
+			_ = d.ForgetPreparationWork(oldWork)
+		}
 		return nil
 	}
 	var previousRelease *runtimeRelease
@@ -252,7 +261,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	}
 	runtimeStarted := false
 	defer func() {
-		if runtimeStarted || result.Status == "success" {
+		if runtimeStarted || result.Status == "success" || result.Status == PreparationPendingStatus {
 			return
 		}
 		d.deploymentProgress(ctx, cmd, "restoring_configuration")
@@ -400,7 +409,26 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 			return nil, err
 		}
 		d.deploymentProgress(ctx, cmd, map[string]string{"config": "validating", "pull": "pulling", "build": "building"}[args[0]])
-		out, err := d.compose(ctx, appDir, args...)
+		var out []byte
+		var err error
+		if d.SupervisePreparation && recovery != nil && recovery.Phase == "busy" && (args[0] == "pull" || args[0] == "build") {
+			work, createErr := d.createPreparationWork(cmd, p.DeploymentID, args[0])
+			if createErr != nil {
+				return nil, createErr
+			}
+			next := *recovery
+			next.Work = work
+			if err = d.SavePreparation(cmd, &next); err != nil {
+				return nil, err
+			}
+			recovery = &next
+			if err = d.launchPreparationWork(ctx, work); err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrPreparationPending, err)
+			}
+			out, err = d.waitPreparationWork(ctx, work, p.DeploymentID)
+		} else {
+			out, err = d.compose(ctx, appDir, args...)
+		}
 		if err == nil {
 			err = savePreparation("ready")
 		}

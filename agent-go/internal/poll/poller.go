@@ -180,6 +180,15 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 		if p.journalErr != nil {
 			return fmt.Errorf("preparation journal failed; execution stopped: %w", p.journalErr)
 		}
+		if result.Status == executor.PreparationPendingStatus {
+			if p.active == nil {
+				return errors.New("supervised preparation lost its journal")
+			}
+			if err := p.resumeRecord(ctx); err != nil {
+				return err
+			}
+			continue
+		}
 		result.ControlToken = cmd.ControlToken
 		if p.active != nil {
 			if result.CommandID != cmd.ID {

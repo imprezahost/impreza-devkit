@@ -39,6 +39,32 @@ func (p *Poller) resumeRecord(ctx context.Context) error {
 
 	p.log.Error("interrupted operation has no saved result; execution will not be repeated", "command_id", p.active.CommandID)
 	for ctx.Err() == nil {
+		if r := p.active.Preparation; r != nil && r.Phase == "busy" && r.Work != nil {
+			docker, ok := p.exec.(*executor.Docker)
+			if !ok {
+				return errors.New("supervised preparation requires Docker executor")
+			}
+			ready, err := docker.CompletedPreparationWork(r, p.active.CommandID)
+			if err == nil {
+				command := &sdkclient.PollCommand{ID: p.active.CommandID, ControlToken: p.active.ControlToken}
+				if err = p.savePreparation(command, ready); err != nil {
+					return err
+				}
+			} else {
+				// Even a server-side terminal state cannot authorize a new local command
+				// while this worker might still be changing images. Never relaunch it.
+				step := "interrupted"
+				if errors.Is(err, executor.ErrPreparationPending) {
+					step = "reconciling_preparation"
+				}
+				_, _ = p.reportProgress(ctx, step)
+				p.log.Warn("supervised preparation awaiting verified completion", "command_id", p.active.CommandID, "err", err)
+				if !sleepCtx(ctx, 15*time.Second) {
+					break
+				}
+				continue
+			}
+		}
 		if p.active.Preparation.Recoverable() {
 			if docker, ok := p.exec.(*executor.Docker); ok {
 				if err := p.reconcilePreparation(ctx, docker); err == nil {
@@ -65,6 +91,7 @@ func (p *Poller) resumeRecord(ctx context.Context) error {
 func (p *Poller) sendSavedResult(ctx context.Context) error {
 	for ctx.Err() == nil {
 		if err := p.client.AgentDeployResult(ctx, *p.active.Result); err == nil {
+			p.forgetPreparationWork()
 			if err := p.journal.clear(); err != nil {
 				return fmt.Errorf("remove acknowledged receipt: %w", err)
 			}
@@ -108,6 +135,7 @@ func (p *Poller) reconcilePreparation(ctx context.Context, docker *executor.Dock
 		return err
 	}
 	if response.Terminal {
+		p.forgetPreparationWork()
 		if err := p.journal.clear(); err != nil {
 			return err
 		}
@@ -144,4 +172,14 @@ func (p *Poller) reconcilePreparation(ctx context.Context, docker *executor.Dock
 	}
 	p.active = &next
 	return p.sendSavedResult(ctx)
+}
+
+func (p *Poller) forgetPreparationWork() {
+	if p.active.Preparation != nil && p.active.Preparation.Work != nil {
+		if docker, ok := p.exec.(*executor.Docker); ok {
+			if err := docker.ForgetPreparationWork(p.active.Preparation.Work); err != nil {
+				p.log.Warn("completed preparation files retained", "err", err)
+			}
+		}
+	}
 }
