@@ -1,8 +1,8 @@
 package client
 
 // Agent-realm client surface — the `/v1/agent/*` endpoints consumed by
-// the impreza-agent daemon. See the published OpenAPI spec for the
-// canonical contract.
+// the impreza-agent daemon. See `../../specs/openapi-platform.yaml` in
+// `impreza/impreza-platform` for the canonical contract.
 //
 // Two distinct flows live here:
 //
@@ -328,8 +328,36 @@ type RunningDeployment struct {
 	ContainerHealth string `json:"container_health"`
 }
 
+// RuntimeSnapshot contains only bounded container counts, never logs or environment.
+type RuntimeSnapshot struct {
+	Protocol    string               `json:"protocol"`
+	Deployments []RuntimeObservation `json:"deployments"`
+	Complete    bool                 `json:"complete"`
+}
+
+type RuntimeObservation struct {
+	DeploymentID string        `json:"deployment_id"`
+	ObservedAt   time.Time     `json:"observed_at"`
+	State        string        `json:"state"`
+	Reason       string        `json:"reason,omitempty"`
+	Counts       RuntimeCounts `json:"counts"`
+}
+
+type RuntimeCounts struct {
+	Total            int `json:"total"`
+	Running          int `json:"running"`
+	Healthy          int `json:"healthy"`
+	Unhealthy        int `json:"unhealthy"`
+	Starting         int `json:"starting"`
+	Stopped          int `json:"stopped"`
+	Failed           int `json:"failed"`
+	ExpectedServices int `json:"expected_services"`
+	MissingServices  int `json:"missing_services"`
+}
+
 // AgentReport is the heartbeat body POSTed every ~30s.
 type AgentReport struct {
+	Runtime            *RuntimeSnapshot    `json:"runtime,omitempty"`
 	ReportedAt         time.Time           `json:"reported_at"`
 	Version            string              `json:"version,omitempty"`
 	Load               *AgentLoad          `json:"load,omitempty"`

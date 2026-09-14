@@ -180,8 +180,11 @@ func (p *Poller) sendHeartbeat(ctx context.Context) {
 		report.Load = load
 	}
 
-	// Future: report.RunningDeployments from the executor's
-	// snapshot of state.
+	if collector, ok := p.exec.(interface {
+		CollectRuntime(context.Context) *sdkclient.RuntimeSnapshot
+	}); ok {
+		report.Runtime = collector.CollectRuntime(ctx)
+	}
 
 	if err := p.client.AgentReport(ctx, report); err != nil {
 		p.log.Warn("heartbeat: report failed", "err", err)
