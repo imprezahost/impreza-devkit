@@ -34,7 +34,7 @@ func TestPollReportsUnsupportedAndContinues(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/agent/poll":
 			var request sdkclient.PollRequest
-			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.Capabilities) != 1 || request.Capabilities[0] != "startup-health-v1" {
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.Capabilities) != 2 || request.Capabilities[0] != "startup-health-v1" || request.Capabilities[1] != "deploy-cancel-v1" {
 				t.Error("missing startup capability")
 				http.Error(w, "capability missing", 400)
 				return

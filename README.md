@@ -204,3 +204,8 @@ Agent 0.6.3 supports opt-in required healthy startup. Generated Node deployments
 ## Runtime health observations
 
 Agent 0.6.4 adds bounded Docker runtime observations to heartbeats. The portal, REST API and MCP show current container state separately from the latest deployment operation, with timestamps and explicit unknown/stale/offline states. Running containers without a healthcheck are not declared healthy. This does not probe external URLs or automatically repair applications. Existing servers update only at the customer's request. See [runtime health](https://docs.imprezahost.com/runtime-health.html).
+
+
+## Deployment cancellation
+
+Agent 0.6.5 supports deployment cancellation at preparation checkpoints. Queued jobs can be cancelled immediately. During source preparation, image pull or build, cancellation is requested first and confirmed only after the current step finishes and configuration is restored. Existing app containers are not replaced. Replacement and recovery cannot be cancelled. A running build is not force-killed. Update the agent explicitly before the next deploy; an interrupted agent requires operation reconciliation before retry. See [deployment cancellation](https://docs.imprezahost.com/deployment-cancellation.html).

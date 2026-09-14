@@ -91,7 +91,7 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 			return nil
 		}
 
-		cmd, ok, err := p.client.AgentPoll(ctx, &sdkclient.PollRequest{Capabilities: []string{"startup-health-v1"}})
+		cmd, ok, err := p.client.AgentPoll(ctx, &sdkclient.PollRequest{Capabilities: []string{"startup-health-v1", "deploy-cancel-v1"}})
 		if err != nil {
 			// Distinguish auth from transport so we surface bad
 			// credentials immediately instead of silently looping.
@@ -118,7 +118,21 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 
 		p.log.Info("poll: received command", "id", cmd.ID, "kind", cmd.Kind)
 		result := p.exec.Execute(ctx, cmd)
+		result.ControlToken = cmd.ControlToken
 
+		for cmd.ControlToken != "" && ctx.Err() == nil {
+			if err := p.client.AgentDeployResult(ctx, result); err == nil {
+				break
+			} else {
+				p.log.Warn("controlled deployment result awaiting acknowledgement", "command_id", cmd.ID, "err", err)
+				if !sleepCtx(ctx, 5*time.Second) {
+					return nil
+				}
+			}
+		}
+		if cmd.ControlToken != "" {
+			continue
+		}
 		if err := p.client.AgentDeployResult(ctx, result); err != nil {
 			// command_id is the idempotency key — the server will
 			// tolerate a redelivery. Log and continue.

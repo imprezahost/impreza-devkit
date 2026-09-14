@@ -173,10 +173,11 @@ type PollRequest struct {
 // concrete payload type depends on Kind — use the typed accessors
 // (DeployPayload, UpdatePayload, etc.) to decode it.
 type PollCommand struct {
-	ID       string          `json:"id"`
-	Kind     CommandKind     `json:"kind"`
-	Payload  json.RawMessage `json:"payload"`
-	Deadline *time.Time      `json:"deadline,omitempty"`
+	ControlToken string          `json:"control_token,omitempty"`
+	ID           string          `json:"id"`
+	Kind         CommandKind     `json:"kind"`
+	Payload      json.RawMessage `json:"payload"`
+	Deadline     *time.Time      `json:"deadline,omitempty"`
 }
 
 // AgentPoll blocks up to ~55s waiting for a command. The (nil, false,
@@ -381,17 +382,19 @@ type DeploymentStartupCheck struct {
 // any command (deploy, update, rollback, uninstall, restart, etc.).
 // Idempotent on CommandID — re-posting the same result is a no-op.
 type DeployResult struct {
-	StartupCheck     *DeploymentStartupCheck `json:"startup_check,omitempty"`
-	CommandID        string                  `json:"command_id"`
-	Status           string                  `json:"status"` // success | failed | timeout | partial
-	DeploymentID     string                  `json:"deployment_id,omitempty"`
-	Domain           string                  `json:"domain,omitempty"`
-	Onion            string                  `json:"onion,omitempty"`
-	AdminCredentials map[string]string       `json:"admin_credentials,omitempty"`
-	Error            string                  `json:"error,omitempty"`
-	LogsTail         string                  `json:"logs_tail,omitempty"`
-	Release          *DeploymentRelease      `json:"release,omitempty"`
-	Rollback         *DeploymentRollback     `json:"rollback,omitempty"`
+	ControlToken        string                  `json:"control_token,omitempty"`
+	PreparationRestored bool                    `json:"preparation_restored,omitempty"`
+	StartupCheck        *DeploymentStartupCheck `json:"startup_check,omitempty"`
+	CommandID           string                  `json:"command_id"`
+	Status              string                  `json:"status"` // success | failed | timeout | partial
+	DeploymentID        string                  `json:"deployment_id,omitempty"`
+	Domain              string                  `json:"domain,omitempty"`
+	Onion               string                  `json:"onion,omitempty"`
+	AdminCredentials    map[string]string       `json:"admin_credentials,omitempty"`
+	Error               string                  `json:"error,omitempty"`
+	LogsTail            string                  `json:"logs_tail,omitempty"`
+	Release             *DeploymentRelease      `json:"release,omitempty"`
+	Rollback            *DeploymentRollback     `json:"rollback,omitempty"`
 }
 
 // DeploymentRelease describes local immutable runtime configuration, never secrets.

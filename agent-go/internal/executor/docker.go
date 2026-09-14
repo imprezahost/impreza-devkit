@@ -157,6 +157,9 @@ func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) sdkcli
 // ─────────────────────────────────────────────────────────────────────
 
 func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result sdkclient.DeployResult) {
+	if err := d.deploymentCheckpoint(ctx, cmd, "preparing"); err != nil {
+		return preparationResult(cmd.ID, err)
+	}
 	var p sdkclient.DeployPayload
 	if err := cmd.As(&p); err != nil {
 		return failResult(cmd.ID, "decode deploy payload: "+err.Error())
@@ -198,7 +201,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	isRedeploy := exists(filepath.Join(appDir, "compose.yaml"))
 	// Preparation may change configuration on disk, but must never replace
 	// the running containers. Restore their configuration if preparation fails.
-	previous, err := captureDeployConfig(appDir, isRedeploy)
+	previous, err := captureDeployConfig(appDir, true)
 	if err != nil {
 		return failResult(cmd.ID, "capture current deployment configuration: "+err.Error())
 	}
@@ -211,10 +214,12 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	}
 	runtimeStarted := false
 	defer func() {
-		if !isRedeploy || runtimeStarted || result.Status == "success" {
+		if runtimeStarted || result.Status == "success" {
 			return
 		}
 		if err := previous.restore(appDir); err != nil {
+			result.Status = "failed"
+			result.PreparationRestored = false
 			result.Error += "\nPrevious containers were not replaced, but restoring their configuration failed: " + err.Error()
 		} else {
 			result.Error += "\nPreparation failed before container replacement; previous containers and configuration were preserved."
@@ -343,9 +348,18 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	// Failed preparation restores the previous Compose and environment files.
 	d.Log.Info("docker deploy: preparing images", "deployment_id", p.DeploymentID)
 	if err := prepareDeployImages(ctx, func(ctx context.Context, args ...string) ([]byte, error) {
+		if err := d.deploymentCheckpoint(ctx, cmd, "preparing"); err != nil {
+			return nil, err
+		}
 		return d.compose(ctx, appDir, args...)
 	}); err != nil {
-		return failResult(cmd.ID, err.Error())
+		return preparationResult(cmd.ID, err)
+	}
+
+	// This transaction decides the race with a customer's cancellation request.
+	// No replacement starts unless the server explicitly grants this phase.
+	if err := d.deploymentCheckpoint(ctx, cmd, "replacing"); err != nil {
+		return preparationResult(cmd.ID, err)
 	}
 
 	// 2. Replace containers only after all image preparation succeeds.
