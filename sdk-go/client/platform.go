@@ -33,6 +33,13 @@ type AppManifest struct {
 	Observability *ManifestObservability `json:"observability,omitempty"`
 }
 
+// ManifestStartup opts into required Docker health checks, including first installs.
+// Requires agent 0.6.3; an omitted policy retains legacy startup behavior.
+type ManifestStartup struct {
+	RequireHealthy bool `json:"require_healthy"`
+	TimeoutSeconds int  `json:"timeout_seconds,omitempty"`
+}
+
 // ManifestRuntime describes how the app actually runs on the host.
 //
 // Build (Phase 12 Iteration 3) opts the deployment into the
@@ -50,11 +57,12 @@ type AppManifest struct {
 // customer's footgun (Docker compose will pick `build:` and ignore
 // the image hint).
 type ManifestRuntime struct {
-	Type        string         `json:"type"` // docker-compose | docker | systemd | raw
-	Isolated    bool           `json:"isolated,omitempty"`
-	ComposeYAML string         `json:"compose_yaml,omitempty"`
-	DataDir     *DataDirConfig `json:"data_dir,omitempty"`
-	Build       *BuildContext  `json:"build,omitempty"`
+	Startup     *ManifestStartup `json:"startup,omitempty"`
+	Type        string           `json:"type"` // docker-compose | docker | systemd | raw
+	Isolated    bool             `json:"isolated,omitempty"`
+	ComposeYAML string           `json:"compose_yaml,omitempty"`
+	DataDir     *DataDirConfig   `json:"data_dir,omitempty"`
+	Build       *BuildContext    `json:"build,omitempty"`
 }
 
 // BuildContext tells the agent to fetch + extract a build context

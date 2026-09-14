@@ -21,6 +21,7 @@ const retainedReleases = 5
 // Snapshots contain resolved environment values. Never return their contents
 // to the control plane; persist them only in the root-owned agent state dir.
 type runtimeRelease struct {
+	Startup   *sdkclient.ManifestStartup  `json:"startup,omitempty"`
 	Metadata  sdkclient.DeploymentRelease `json:"metadata"`
 	Compose   json.RawMessage             `json:"compose"`
 	Env       []byte                      `json:"env"`
@@ -63,11 +64,19 @@ func pinReleaseCompose(raw []byte, images map[string]string) ([]byte, error) {
 func (d *Docker) captureRelease(ctx context.Context, dir, id string, protected ...string) (*runtimeRelease, error) {
 	ctx, cancel := context.WithTimeout(ctx, composeQueryTimeout)
 	defer cancel()
+	startup, err := readStartupPolicy(dir)
+	if err != nil {
+		return nil, err
+	}
+	policy, err := resolveStartupPolicy(startup)
+	if err != nil {
+		return nil, err
+	}
 	states, err := d.inspectProjectContainers(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if len(states) == 0 {
+	if len(states) == 0 || (policy.RequireHealthy && !startupStatesOK(states, true)) {
 		return nil, nil
 	}
 	running := false
@@ -123,7 +132,7 @@ func (d *Docker) captureRelease(ctx context.Context, dir, id string, protected .
 		return nil, err
 	}
 	now := time.Now().UTC()
-	release := &runtimeRelease{Metadata: sdkclient.DeploymentRelease{ID: "rel_" + now.Format("20060102T150405.000000000") + "_" + hex.EncodeToString(nonce), CreatedAt: now.Format(time.RFC3339Nano), ImageIDs: images}, Compose: pinned}
+	release := &runtimeRelease{Metadata: sdkclient.DeploymentRelease{ID: "rel_" + now.Format("20060102T150405.000000000") + "_" + hex.EncodeToString(nonce), CreatedAt: now.Format(time.RFC3339Nano), ImageIDs: images}, Compose: pinned, Startup: startup}
 	release.Env, err = os.ReadFile(filepath.Join(dir, ".env"))
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -218,7 +227,7 @@ func (d *Docker) recoverStartup(ctx context.Context, dir, id string, previous *r
 	}
 	result.Rollback = &sdkclient.DeploymentRollback{Status: "failed", ReleaseID: previous.Metadata.ID, RuntimeState: "unknown"}
 	// Recovery needs its own bounded budget even if deployment timed out.
-	recovery, cancel := context.WithTimeout(context.WithoutCancel(ctx), composeUpTimeout+settleBudget+composeQueryTimeout)
+	recovery, cancel := context.WithTimeout(context.WithoutCancel(ctx), composeUpTimeout+releaseStartupBudget(previous)+composeQueryTimeout)
 	defer cancel()
 	err := d.restoreRelease(recovery, dir, id, previous)
 	if err != nil {
@@ -233,11 +242,18 @@ func (d *Docker) recoverStartup(ctx context.Context, dir, id string, previous *r
 }
 
 func (d *Docker) restoreRelease(ctx context.Context, dir, id string, previous *runtimeRelease) error {
+	policy, err := resolveStartupPolicy(previous.Startup)
+	if err != nil {
+		return err
+	}
 	// Verify all immutable images BEFORE writing config or touching containers.
 	for _, image := range previous.Metadata.ImageIDs {
 		if _, err := d.dockerCmd(ctx, "image", "inspect", image).Output(); err != nil {
 			return fmt.Errorf("previous image unavailable: %w", err)
 		}
+	}
+	if err := writeStartupPolicy(dir, previous.Startup); err != nil {
+		return err
 	}
 	if err := writeAtomic(filepath.Join(dir, "compose.yaml"), previous.Compose, 0600); err != nil {
 		return err
@@ -253,7 +269,7 @@ func (d *Docker) restoreRelease(ctx context.Context, dir, id string, previous *r
 	if out, err := d.compose(ctx, dir, "up", "-d", "--no-build", "--pull", "never", "--remove-orphans"); err != nil {
 		return fmt.Errorf("restore previous containers: %w\n%s", err, tail(out, 1024))
 	}
-	verdict, detail := d.awaitStackSettled(ctx, id)
+	verdict, detail := d.awaitStackSettledPolicy(ctx, id, policy)
 	if verdict != settleHealthy {
 		return fmt.Errorf("previous release did not pass startup checks: %s", detail)
 	}

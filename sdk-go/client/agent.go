@@ -162,10 +162,11 @@ func Bootstrap(ctx context.Context, token string, req BootstrapRequest, opts Boo
 // Long-poll: receive a command
 // ─────────────────────────────────────────────────────────────────────
 
-// PollRequest is the optional body of POST /v1/agent/poll. Used by
-// tests to shorten the long-poll wait; production agents pass nil.
+// PollRequest advertises supported command protocols and optionally shortens
+// the long-poll wait. Older agents omit the request body.
 type PollRequest struct {
-	WaitSeconds int `json:"wait_seconds,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	WaitSeconds  int      `json:"wait_seconds,omitempty"`
 }
 
 // PollCommand is the command envelope returned by /v1/agent/poll. The
@@ -341,20 +342,28 @@ func (c *Client) AgentReport(ctx context.Context, r AgentReport) error {
 	return c.Post(ctx, "/v1/agent/report", r, nil)
 }
 
+// DeploymentStartupCheck confirms the required startup policy completed.
+type DeploymentStartupCheck struct {
+	Protocol       string `json:"protocol"`
+	Status         string `json:"status"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+}
+
 // DeployResult is the result body POSTed by the agent when it finishes
 // any command (deploy, update, rollback, uninstall, restart, etc.).
 // Idempotent on CommandID — re-posting the same result is a no-op.
 type DeployResult struct {
-	CommandID        string              `json:"command_id"`
-	Status           string              `json:"status"` // success | failed | timeout | partial
-	DeploymentID     string              `json:"deployment_id,omitempty"`
-	Domain           string              `json:"domain,omitempty"`
-	Onion            string              `json:"onion,omitempty"`
-	AdminCredentials map[string]string   `json:"admin_credentials,omitempty"`
-	Error            string              `json:"error,omitempty"`
-	LogsTail         string              `json:"logs_tail,omitempty"`
-	Release          *DeploymentRelease  `json:"release,omitempty"`
-	Rollback         *DeploymentRollback `json:"rollback,omitempty"`
+	StartupCheck     *DeploymentStartupCheck `json:"startup_check,omitempty"`
+	CommandID        string                  `json:"command_id"`
+	Status           string                  `json:"status"` // success | failed | timeout | partial
+	DeploymentID     string                  `json:"deployment_id,omitempty"`
+	Domain           string                  `json:"domain,omitempty"`
+	Onion            string                  `json:"onion,omitempty"`
+	AdminCredentials map[string]string       `json:"admin_credentials,omitempty"`
+	Error            string                  `json:"error,omitempty"`
+	LogsTail         string                  `json:"logs_tail,omitempty"`
+	Release          *DeploymentRelease      `json:"release,omitempty"`
+	Rollback         *DeploymentRollback     `json:"rollback,omitempty"`
 }
 
 // DeploymentRelease describes local immutable runtime configuration, never secrets.

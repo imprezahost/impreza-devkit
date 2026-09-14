@@ -45,7 +45,7 @@ func captureDeployConfig(dir string, enabled bool) (deployConfigSnapshot, error)
 		return nil, nil
 	}
 	var snapshot deployConfigSnapshot
-	for _, name := range []string{"compose.yaml", ".env"} {
+	for _, name := range []string{"compose.yaml", ".env", "startup.json"} {
 		path := filepath.Join(dir, name)
 		info, err := os.Stat(path)
 		if errors.Is(err, os.ErrNotExist) {

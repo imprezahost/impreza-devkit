@@ -91,7 +91,7 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 			return nil
 		}
 
-		cmd, ok, err := p.client.AgentPoll(ctx, nil)
+		cmd, ok, err := p.client.AgentPoll(ctx, &sdkclient.PollRequest{Capabilities: []string{"startup-health-v1"}})
 		if err != nil {
 			// Distinguish auth from transport so we surface bad
 			// credentials immediately instead of silently looping.

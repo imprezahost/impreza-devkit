@@ -125,7 +125,7 @@ func (d *Docker) rollbackRelease(ctx context.Context, cmd *sdkclient.PollCommand
 	if err != nil || previous == nil {
 		return failResult(cmd.ID, "current runtime must pass startup checks before manual rollback; containers were not changed")
 	}
-	recovery, cancelRecovery := context.WithTimeout(ctx, composeUpTimeout+settleBudget+composeQueryTimeout)
+	recovery, cancelRecovery := context.WithTimeout(ctx, composeUpTimeout+releaseStartupBudget(target)+composeQueryTimeout)
 	defer cancelRecovery()
 	if err := d.restoreRelease(recovery, dir, payload.DeploymentID, target); err != nil {
 		result := d.recoverStartup(ctx, dir, payload.DeploymentID, previous, true, "manual rollback failed: "+err.Error())

@@ -108,3 +108,8 @@ Agents 0.6.1 and later honor the full Git commit supplied by a push webhook or m
 ## Unsupported commands
 
 Agents 0.6.2 and later reject unsupported command kinds with status failed and an explicit diagnostic, instead of reporting simulated success. No operation is performed and the polling loop continues with subsequent commands. Queued agent_upgrade remains unsupported; use the customer-initiated update command. A failed command report does not itself mean the running application is unhealthy.
+
+
+## Required healthy startup
+
+Agent 0.6.3 supports opt-in required healthy startup. Generated Node deployments can set `require_healthy_start: true` with an explicit `healthcheck_path` and `startup_timeout_seconds` from 30 to 600 (default 60). The first deployment fails if it does not become healthy; named volumes are preserved. Retained releases keep their own startup policy for automatic recovery and manual rollback. Older agents must be updated explicitly before using this option. See [deployment settings](https://docs.imprezahost.com/tutorials/agent-apps-panels.html#required-startup).

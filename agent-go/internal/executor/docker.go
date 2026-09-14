@@ -88,8 +88,8 @@ const (
 	// and nothing restarted while we watched.
 	settleHealthy settleVerdict = iota
 	// settleCrashLooping — a container is provably unable to stay up.
-	// This is the only verdict that fails a deploy, because it is the
-	// only one we can assert without guessing.
+	// This verdict always fails a deploy. Required startup also fails
+	// when the health deadline expires.
 	settleCrashLooping
 	// settleUnsettled — the budget ran out with the stack neither clearly
 	// good nor clearly broken. ADVISORY ONLY: a slow-booting app must not
@@ -186,6 +186,10 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 			return failResult(cmd.ID, err.Error())
 		}
 	}
+	policy, err := resolveStartupPolicy(p.Manifest.Runtime.Startup)
+	if err != nil {
+		return failResult(cmd.ID, err.Error())
+	}
 	appDir := d.appDir(p.DeploymentID)
 	// A pre-existing compose.yaml means this deployment_id has been
 	// deployed before, i.e. this is a redeploy over live customer data
@@ -255,6 +259,9 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 
 	d.Log.Info("docker deploy: writing state", "deployment_id", p.DeploymentID, "dir", appDir)
 
+	if err := writeStartupPolicy(appDir, p.Manifest.Runtime.Startup); err != nil {
+		return failResult(cmd.ID, "write startup policy: "+err.Error())
+	}
 	if err := writeAtomic(filepath.Join(appDir, "compose.yaml"), []byte(composeYAML+"\n"), 0o644); err != nil {
 		return failResult(cmd.ID, "write compose.yaml: "+err.Error())
 	}
@@ -369,15 +376,15 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	// 2.1 Settle gate. `up -d` exiting 0 means "containers created", not
 	//     "app works" — see the settleVerdict docs. A crash-looping
 	//     container is the one failure we can assert rather than guess,
-	//     so it fails the deploy AND gets torn down: it can never serve
+	//     so it fails the deploy and invokes recovery or teardown: it cannot serve
 	//     traffic, and leaving it costs the customer CPU and disk
 	//     indefinitely (this is the dead-container-in-the-VPS case).
 	//
 	//     With a verified previous release, an unsettled replacement is a
 	//     failure and triggers recovery. Without a recovery target, the
-	//     legacy advisory policy remains for slow first installations.
+	//     legacy advisory policy remains unless healthy startup was required.
 	settleStart := time.Now()
-	verdict, detail := d.awaitStackSettled(ctx, p.DeploymentID)
+	verdict, detail := d.awaitStackSettledPolicy(ctx, p.DeploymentID, policy)
 	switch verdict {
 	case settleCrashLooping:
 		d.Log.Warn("docker deploy: stack is crash-looping, tearing down",
@@ -388,8 +395,8 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 			"deploy did not produce a working app: %s\n%s", detail, failLogs,
 		))
 	case settleUnsettled:
-		if previousRelease != nil {
-			return failStartup("new release did not pass startup checks before the deadline: " + detail)
+		if previousRelease != nil || policy.RequireHealthy {
+			return failStartup("new release did not pass startup checks before the deadline: " + detail + "\n" + d.grabFailureLogs(ctx, appDir))
 		}
 		d.Log.Warn("docker deploy: stack not confirmed healthy, proceeding anyway",
 			"deployment_id", p.DeploymentID, "detail", detail,
@@ -578,6 +585,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	// confirmed healthy, so it goes above the log tail rather than being
 	// buried under 4KB of container output.
 	return sdkclient.DeployResult{
+		StartupCheck: policy.receipt(verdict),
 		CommandID:    cmd.ID,
 		Status:       "success",
 		DeploymentID: p.DeploymentID,
@@ -659,7 +667,7 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 			d.Log.Warn("removeAll state dir failed", "deployment_id", p.DeploymentID, "err", err)
 		}
 	} else {
-		for _, leftover := range []string{"compose.yaml", ".env", "build-ctx", "releases"} {
+		for _, leftover := range []string{"compose.yaml", ".env", "startup.json", "build-ctx", "releases"} {
 			if err := os.RemoveAll(filepath.Join(appDir, leftover)); err != nil {
 				d.Log.Warn("uninstall: removing transient artifact failed",
 					"deployment_id", p.DeploymentID, "path", leftover, "err", err)
@@ -841,7 +849,11 @@ func (d *Docker) inspectProjectContainers(ctx context.Context, deploymentID stri
 // DeployResult, so whoever reads the panel sees which container broke
 // and how, not just "deploy failed".
 func (d *Docker) awaitStackSettled(ctx context.Context, deploymentID string) (settleVerdict, string) {
-	deadline := time.Now().Add(settleBudget)
+	return d.awaitStackSettledPolicy(ctx, deploymentID, startupPolicy{Timeout: settleBudget})
+}
+
+func (d *Docker) awaitStackSettledPolicy(ctx context.Context, deploymentID string, policy startupPolicy) (settleVerdict, string) {
+	deadline := time.Now().Add(policy.Timeout)
 	stable := 0
 	// Restart counts from the first sample form the baseline. A redeploy
 	// over a long-lived container legitimately carries a non-zero count
@@ -922,13 +934,7 @@ func (d *Docker) awaitStackSettled(ctx context.Context, deploymentID string) (se
 			}
 		}
 
-		allOK := true
-		for _, s := range states {
-			if !s.ok() {
-				allOK = false
-				break
-			}
-		}
+		allOK := startupStatesOK(states, policy.RequireHealthy)
 		if allOK {
 			stable++
 			if stable >= settleStableSamples {
@@ -940,7 +946,7 @@ func (d *Docker) awaitStackSettled(ctx context.Context, deploymentID string) (se
 
 		if time.Now().After(deadline) {
 			return settleUnsettled, fmt.Sprintf(
-				"stack did not settle within %s: %s", settleBudget, describeStates(last))
+				"stack did not settle within %s: %s", policy.Timeout, describeStates(last))
 		}
 		select {
 		case <-ctx.Done():
