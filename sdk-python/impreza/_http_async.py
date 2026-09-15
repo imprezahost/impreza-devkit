@@ -65,6 +65,9 @@ class AsyncHttpClient:
                 "User-Agent": USER_AGENT,
             },
             proxy=proxy,
+            # See the sync twin in _http.py: credentials are custom headers, so a
+            # followed redirect would carry them to whatever host it names.
+            follow_redirects=False,
         )
 
     async def aclose(self) -> None:

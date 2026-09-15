@@ -12,6 +12,12 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-09-15
+
+### Security
+
+- Refuse HTTP redirects in the Python SDK, the Go SDK and the agent's health probe. Credentials travel as custom headers (`X-API-Key`/`X-API-Secret`, or the agent pair), which neither httpx nor Go's `http.Client` strips on a cross-host redirect the way they strip `Authorization` — and in the Go SDK the auth transport re-runs on every hop, so it would re-attach them to whatever host a 3xx named. The API never redirects, so following one bought nothing. The agent health probe carries no credentials, but it was measuring whether *some* host served a valid certificate rather than whether *this* one did.
+
 ## Agent 0.6.2 — 2026-09-13
 
 ### Fixed

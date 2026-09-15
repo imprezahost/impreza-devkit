@@ -68,6 +68,13 @@ class HttpClient:
                 "User-Agent": USER_AGENT,
             },
             proxy=proxy,
+            # The credentials above are CUSTOM headers set on the client, so httpx
+            # re-sends them on every hop of a redirect — including one that crosses
+            # to another host, where its Authorization-stripping rule does not
+            # apply. The API never redirects, so refusing is free. httpx already
+            # defaults to False; stating it makes the property ours rather than a
+            # library default that a major version could flip.
+            follow_redirects=False,
         )
 
     def close(self) -> None:

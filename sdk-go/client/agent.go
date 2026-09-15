@@ -101,7 +101,10 @@ func Bootstrap(ctx context.Context, token string, req BootstrapRequest, opts Boo
 	if timeout == 0 {
 		timeout = 60 * time.Second
 	}
-	httpClient := &http.Client{Transport: base, Timeout: timeout}
+	// Bootstrap carries the one-shot token in an Authorization header, and the
+	// response carries the permanent agent credentials. Same rule as every other
+	// client here: a redirect must not decide where either of those goes.
+	httpClient := &http.Client{Transport: base, Timeout: timeout, CheckRedirect: refuseRedirects}
 
 	baseURL := opts.BaseURL
 	if baseURL == "" {

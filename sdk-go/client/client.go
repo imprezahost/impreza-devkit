@@ -28,6 +28,23 @@ type Client struct {
 	HTTP    *http.Client
 }
 
+// refuseRedirects stops an HTTP redirect from being followed.
+//
+// Credentials here are CUSTOM headers (X-API-Key / X-API-Secret, or the agent
+// pair), injected by authTransport on every RoundTrip. Go's redirect handling
+// strips Authorization and Cookie when a redirect crosses to another host, but
+// it knows nothing about ours — and because the transport re-runs for each hop,
+// it would cheerfully re-attach them to whatever host the redirect names. One
+// 3xx from a compromised or misconfigured edge would hand the customer's key
+// and secret to a third party.
+//
+// The API never redirects — every endpoint answers JSON — so refusing outright
+// costs nothing real and removes the whole class. The caller sees the 3xx as an
+// error rather than as a silently-followed hop.
+func refuseRedirects(req *http.Request, via []*http.Request) error {
+	return fmt.Errorf("refusing to follow a redirect to %s: the API does not redirect, and credentials must not travel to another host", req.URL.Host)
+}
+
 // New returns a Client wired to the given context, using the standard
 // API-key auth realm (X-API-Key + X-API-Secret). Uses the retry
 // transport on top of auth-injecting transport. SOCKS5 proxy is
@@ -52,7 +69,8 @@ func New(ctx config.Context) (*Client, error) {
 	return &Client{
 		BaseURL: BaseURL(ctx),
 		HTTP: &http.Client{
-			Transport: retrying,
+			Transport:     retrying,
+			CheckRedirect: refuseRedirects,
 			// Cloud upstream operations (boot-order, resize, image
 			// create) sometimes take 60-120s to return; Proxmox reads
 			// are sub-second. 180s is the upper bound that still
@@ -120,8 +138,9 @@ func NewAgent(opts AgentOptions) (*Client, error) {
 	return &Client{
 		BaseURL: baseURL,
 		HTTP: &http.Client{
-			Transport: retrying,
-			Timeout:   timeout,
+			Transport:     retrying,
+			CheckRedirect: refuseRedirects,
+			Timeout:       timeout,
 		},
 	}, nil
 }

@@ -87,6 +87,13 @@ func ProbeHTTPS(ctx context.Context, host string, log *slog.Logger) bool {
 	// run should re-verify the cert as the customer's browser would.
 	client := &http.Client{
 		Timeout: probeTimeout,
+		// What is being measured is "THIS host serves a valid cert and answers".
+		// A followed redirect answers for some other host, which would let a
+		// misconfigured app report a healthy deploy on the strength of somebody
+		// else's TLS.
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 		Transport: &http.Transport{
 			// Verify the cert chain — the whole point of this probe
 			// is to catch the window where the cert ISN'T valid yet.
