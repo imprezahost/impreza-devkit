@@ -37,6 +37,9 @@ func (p *Poller) resumeRecord(ctx context.Context) error {
 		return p.sendSavedResult(ctx)
 	}
 
+	if p.active.Replacement != nil {
+		return p.resumeReplacement(ctx)
+	}
 	p.log.Error("interrupted operation has no saved result; execution will not be repeated", "command_id", p.active.CommandID)
 	for ctx.Err() == nil {
 		if r := p.active.Preparation; r != nil && r.Phase == "busy" && r.Work != nil {
@@ -92,6 +95,7 @@ func (p *Poller) sendSavedResult(ctx context.Context) error {
 	for ctx.Err() == nil {
 		if err := p.client.AgentDeployResult(ctx, *p.active.Result); err == nil {
 			p.forgetPreparationWork()
+			p.forgetReplacementWork()
 			if err := p.journal.clear(); err != nil {
 				return fmt.Errorf("remove acknowledged receipt: %w", err)
 			}

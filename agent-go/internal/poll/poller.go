@@ -65,6 +65,7 @@ func New(cfg *config.Config, exec executor.Executor, agentVersion string, log *s
 		p.journal = &commandJournal{dir: filepath.Join(docker.StateDir, "operations")}
 		docker.Progress = p.observeProgress
 		docker.SavePreparation = p.savePreparation
+		docker.SaveReplacement = p.saveReplacement
 	}
 	return p, nil
 }

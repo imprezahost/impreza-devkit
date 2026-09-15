@@ -14,6 +14,7 @@ import (
 // Only one outstanding controlled operation is allowed. The receipt can contain
 // generated credentials; keep it private and delete only after acknowledgement.
 type commandRecord struct {
+	Replacement      *executor.ReplacementWork     `json:"replacement,omitempty"`
 	Version          int                           `json:"version"`
 	AgentID          string                        `json:"agent_id"`
 	ControlPlaneURL  string                        `json:"control_plane_url"`
@@ -91,6 +92,9 @@ func (j *commandJournal) load() (*commandRecord, error) {
 		if err := record.Preparation.Validate(); err != nil {
 			return nil, err
 		}
+	}
+	if err := validateReplacementRecord(&record); err != nil {
+		return nil, err
 	}
 	if r := record.Result; r != nil {
 		if r.CommandID != record.CommandID || r.ControlToken != record.ControlToken {

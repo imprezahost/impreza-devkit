@@ -129,11 +129,14 @@ func (d *Docker) workDirectory(id string) (string, error) {
 	return dir, nil
 }
 func readWorkJSON(path string, value any) ([]byte, error) {
+	return readPrivateWorkJSON(path, value, 65536)
+}
+func readPrivateWorkJSON(path string, value any, limit int64) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Size() > 65536 || info.Mode().Perm()&0077 != 0 {
+	if !info.Mode().IsRegular() || info.Size() > limit || info.Mode().Perm()&0077 != 0 {
 		return nil, errors.New("invalid private preparation worker file")
 	}
 	raw, err := os.ReadFile(path)
@@ -152,11 +155,14 @@ func readWorkJSON(path string, value any) ([]byte, error) {
 	return raw, nil
 }
 func writeWorkJSON(dir, name string, value any) error {
+	return writePrivateWorkJSON(dir, name, value, 65536)
+}
+func writePrivateWorkJSON(dir, name string, value any, limit int) error {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	if len(raw) > 65536 {
+	if len(raw) > limit {
 		return errors.New("preparation worker record exceeds size limit")
 	}
 	if err = writeAtomic(filepath.Join(dir, name), raw, 0600); err != nil {
