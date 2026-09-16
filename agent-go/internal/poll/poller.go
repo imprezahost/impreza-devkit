@@ -129,7 +129,13 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 			return nil
 		}
 
-		cmd, ok, err := p.client.AgentPoll(ctx, &sdkclient.PollRequest{Capabilities: capabilities})
+		pollCapabilities := append([]string(nil), capabilities...)
+		if docker, ok := p.exec.(*executor.Docker); ok {
+			if enabled, err := docker.ControlledBuildsEnabled(); err == nil && enabled {
+				pollCapabilities = append(pollCapabilities, executor.ControlledBuildProtocol)
+			}
+		}
+		cmd, ok, err := p.client.AgentPoll(ctx, &sdkclient.PollRequest{Capabilities: pollCapabilities})
 		if err != nil {
 			// Distinguish auth from transport so we surface bad
 			// credentials immediately instead of silently looping.

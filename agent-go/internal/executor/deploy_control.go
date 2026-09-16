@@ -30,6 +30,9 @@ func (d *Docker) deploymentCheckpoint(ctx context.Context, cmd *sdkclient.PollCo
 		return errors.New("deployment checkpoint returned a different operation")
 	}
 	if answer.CancelRequested {
+		if answer.Phase != "preparing" {
+			return errors.New("cancellation did not confirm the preparing phase")
+		}
 		return errDeployCancelled
 	}
 	if answer.Phase != phase {

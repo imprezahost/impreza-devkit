@@ -47,6 +47,13 @@ func (p *Poller) resumeRecord(ctx context.Context) error {
 			if !ok {
 				return errors.New("supervised preparation requires Docker executor")
 			}
+			command := &sdkclient.PollCommand{ID: p.active.CommandID, ControlToken: p.active.ControlToken}
+			if _, controlErr := docker.InterruptPreparationWork(ctx, command, r.Work, r.DeploymentID); controlErr != nil {
+				p.log.Warn("active build interruption not confirmed", "command_id", p.active.CommandID, "err", controlErr)
+			}
+			if _, recoveryErr := docker.RecoverOwnedPreparation(ctx, command, r.Work, r.DeploymentID); recoveryErr != nil {
+				p.log.Warn("owned build recovery not confirmed", "command_id", p.active.CommandID, "err", recoveryErr)
+			}
 			ready, err := docker.CompletedPreparationWork(r, p.active.CommandID)
 			if err == nil {
 				command := &sdkclient.PollCommand{ID: p.active.CommandID, ControlToken: p.active.ControlToken}
@@ -166,7 +173,7 @@ func (p *Poller) reconcilePreparation(ctx context.Context, docker *executor.Dock
 	}
 	result := sdkclient.DeployResult{CommandID: p.active.CommandID, ControlToken: p.active.ControlToken, DeploymentID: p.active.Preparation.DeploymentID, Status: "failed", PreparationRestored: true, Error: "Agent interrupted before container replacement. The completed preparation checkpoint was verified and previous configuration restored. Deployment was not repeated; retry explicitly when ready."}
 	if p.active.Preparation.Phase == "aborted" {
-		result.Error = "Host reboot interrupted preparation without a completion receipt. The prior container identities were verified and configuration restored. No build or deployment was replayed; retry explicitly when ready."
+		result.Error = "Preparation was interrupted without a successful completion receipt. The prior container identities were verified and configuration restored. No build or deployment was replayed; retry explicitly when ready."
 	}
 	if control.CancelRequested {
 		result.Status = "cancelled"

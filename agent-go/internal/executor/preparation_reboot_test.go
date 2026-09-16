@@ -9,7 +9,7 @@ import (
 )
 
 func rebootWorkFixture(t *testing.T) (*Docker, *PreparationRecovery, string) {
-	d, r, bin := workFixture(t, "build", `if [ "$1" = context ]; then echo unix:///var/run/docker.sock; else echo 'docker default'; fi`)
+	d, r, bin := workFixture(t, "build", `if [ "$1" = context ]; then echo unix:///var/run/docker.sock; else echo '{"Current":true,"Name":"default","Driver":"docker","Nodes":[{"Name":"default","Endpoint":"default","Status":"running"}]}'; fi`)
 	dir, request, err := d.loadPreparationWork(r.Work, r.DeploymentID)
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +43,7 @@ func TestPreparationRebootNeedsBoundLocalInactiveWorker(t *testing.T) {
 	}
 }
 func TestPreparationRebootRejectsAmbiguousOrChangedState(t *testing.T) {
-	for _, kind := range []string{"same_boot", "legacy", "unproven_daemon", "remote", "builder", "drift", "receipt", "corrupt_receipt", "identity"} {
+	for _, kind := range []string{"owned", "same_boot", "legacy", "unproven_daemon", "remote", "builder", "drift", "receipt", "corrupt_receipt", "identity"} {
 		t.Run(kind, func(t *testing.T) {
 			d, r, bin := rebootWorkFixture(t)
 			dir, request, err := d.loadPreparationWork(r.Work, r.DeploymentID)
@@ -51,6 +51,8 @@ func TestPreparationRebootRejectsAmbiguousOrChangedState(t *testing.T) {
 				t.Fatal(err)
 			}
 			switch kind {
+			case "owned":
+				request.OwnedBuilder = true
 			case "same_boot":
 				request.BootID = currentBootID()
 			case "unproven_daemon":

@@ -19,6 +19,9 @@ func TestDeploymentCheckpointRequiresExactGrant(t *testing.T) {
 	}{
 		{"grant", 200, "cmd_test", "replacing", false, false, false},
 		{"cancel", 200, "cmd_test", "preparing", true, true, true},
+		{"cancel after replacement", 200, "cmd_test", "replacing", true, false, true},
+		{"cancel missing phase", 200, "cmd_test", "", true, false, true},
+		{"cancel terminal", 200, "cmd_test", "finished", true, false, true},
 		{"wrong command", 200, "cmd_other", "replacing", false, false, true},
 		{"wrong phase", 200, "cmd_test", "preparing", false, false, true},
 		{"outage", 503, "", "", false, false, true},

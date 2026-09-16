@@ -1,8 +1,13 @@
-# Agent 0.6.11
+# Agent 0.6.12
 
-- Support named build credentials fetched for the authenticated deployment operation, with private temporary files and cleanup.
-- Retain Compose runtime source files by archive identity and preserve them through rollback.
-- Reconcile interrupted preparation after a verified host reboot when the operation, local Docker endpoint and retained configuration satisfy the recovery checks. Uncertain outcomes still require reconciliation.
-- Build with Go 1.26.6 and updated network dependencies.
+Adds optional controlled builds on Ubuntu 24.04 amd64: explicit administrative
+preparation, checksum-pinned executor delivery, verified build cancellation and
+recovery after worker loss or host reboot without replay. Invalid or missing
+identity evidence still requires support. Legacy builds retain checkpoint
+cancellation; replacement, data rollback and automatic fleet upgrades are unchanged.
 
-Update explicitly after deployment operations finish. The updater verifies the artifact and embedded version, preserves configuration and applications, and restores the prior executable if startup fails. Immediate build interruption and automatic fleet updates are not included.
+After active deployments finish, update explicitly and follow the
+[controlled build guide](https://docs.imprezahost.com/deployment-cancellation.html#controlled-builds).
+The update preserves identity, configuration and applications. Activation is a
+separate administrator action. Trusted project code is required; this is not an
+egress sandbox or a fixed-time termination guarantee.

@@ -12,6 +12,19 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## Agent 0.6.12 and Go CLI 0.2.2 — 2026-09-16
+
+- Add explicit `builder prepare`, `builder status` and `builder disable` commands
+  for controlled builds on supported Ubuntu 24.04 amd64 servers.
+- Bind every controlled build to a verified executor identity; confirm cancellation
+  only after cleanup and configuration restoration. Recover verified interrupted
+  preparation without replaying builds, including after host reboot.
+- Verify executor downloads and retain operation receipts until the API acknowledges
+  the outcome. Existing servers opt in explicitly; legacy builds retain checkpoint
+  cancellation and uncertain identities require support review.
+- Make Go SDK retry waits obey context cancellation and bound `Retry-After` parsing.
+  The Go CLI incorporates this transport correction. Python packages are unchanged.
+
 ## [0.5.1] — 2026-09-15
 
 ### Security

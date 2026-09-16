@@ -1,0 +1,21 @@
+{
+  "artifact": "builder-linux-amd64.tar.gz",
+  "url": "https://github.com/imprezahost/agent-public/releases/download/builder-v0.33.0-1/builder-linux-amd64.tar.gz",
+  "sha256": "269034e5e619b4775d4e3899b66ccf440f6d2d615a7261c458664b557986d6ff",
+  "size": 81394127,
+  "platform": "linux/amd64",
+  "image_manifest": "sha256:b23a76710ddabde741ffb11d01a8c7e78f58226b330603742e62253133cf9397",
+  "image_config": "sha256:c3e646bcddcda539b2f6831d4b177f0dc339aa45310fb2568c59fdb7f79d751a",
+  "go": "1.26.6",
+  "audit_date": "2026-09-16",
+  "trivy": "0.74.0",
+  "govulncheck": "1.8.0",
+  "binary_audits": 8,
+  "applicable_findings": 0,
+  "module_level_advisory": {
+    "id": "GO-2026-5932",
+    "status": "not_affected",
+    "reason": "The deprecated golang.org/x/crypto/openpgp packages are absent from the exact dependency graphs and audited executables.",
+    "reference": "https://pkg.go.dev/vuln/GO-2026-5932"
+  }
+}

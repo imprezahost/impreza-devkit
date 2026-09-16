@@ -444,7 +444,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 			if err = d.launchPreparationWork(ctx, work); err != nil {
 				return nil, fmt.Errorf("%w: %v", ErrPreparationPending, err)
 			}
-			out, err = d.waitPreparationWork(ctx, work, p.DeploymentID)
+			out, err = d.waitPreparationWork(ctx, work, p.DeploymentID, cmd)
 		} else {
 			if hasBuildSecrets && args[0] == "build" {
 				out, err = d.privateBuild(ctx, appDir, args...)

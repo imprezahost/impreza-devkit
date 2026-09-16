@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,12 +42,12 @@ func localPreparationDaemon(request *preparationWorkRequest) error {
 		return errors.New("local Docker endpoint could not be verified")
 	}
 	if request.Step == "build" {
-		command = exec.CommandContext(ctx, request.Docker, "buildx", "inspect", "--format", "{{.Driver}} {{range .Nodes}}{{.Endpoint}} {{end}}")
+		command = exec.CommandContext(ctx, request.Docker, "buildx", "ls", "--format", "json")
 		command.Env = request.Env
 		out, err = command.Output()
 		if err == nil {
-			if strings.TrimSpace(string(out)) != "docker default" {
-				return errors.New("local built-in Docker builder could not be verified")
+			if err := verifyLocalBuilderListing(out); err != nil {
+				return err
 			}
 		} else {
 			// Ubuntu's Compose package can use the built-in daemon builder
@@ -71,10 +72,61 @@ func localPreparationDaemon(request *preparationWorkRequest) error {
 	return nil
 }
 
+// Buildx inspect has no --format option. Its supported JSON listing identifies
+// the selected builder explicitly; a failed/ambiguous listing is never absence.
+func verifyLocalBuilderListing(raw []byte) error {
+	if len(raw) > 1024*1024 {
+		return errors.New("builder listing exceeds limit")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	selected := 0
+	seen := map[string]bool{}
+	for count := 0; ; count++ {
+		var row struct {
+			Name, Driver string
+			Current      *bool
+			Error        json.RawMessage
+			Nodes        []struct {
+				Name, Endpoint, Status string
+				Error                  json.RawMessage
+			}
+		}
+		err := decoder.Decode(&row)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil || count >= 256 || row.Name == "" || seen[row.Name] || row.Current == nil {
+			return errors.New("invalid builder listing")
+		}
+		seen[row.Name] = true
+		if !*row.Current {
+			continue
+		}
+		selected++
+		noError := func(value json.RawMessage) bool {
+			return len(value) == 0 || string(value) == "null" || string(value) == `""`
+		}
+		if row.Name != "default" || row.Driver != "docker" || !noError(row.Error) || len(row.Nodes) != 1 {
+			return errors.New("selected builder is not the local built-in daemon")
+		}
+		node := row.Nodes[0]
+		if node.Name != "default" || (node.Endpoint != "default" && node.Endpoint != "unix:///var/run/docker.sock") || node.Status != "running" || !noError(node.Error) {
+			return errors.New("local builder node could not be verified")
+		}
+	}
+	if selected != 1 {
+		return errors.New("exactly one selected builder is required")
+	}
+	return nil
+}
+
 func (d *Docker) preparationAfterReboot(r *PreparationRecovery) (*PreparationRecovery, error) {
 	_, request, err := d.loadPreparationWork(r.Work, r.DeploymentID)
 	if err != nil {
 		return nil, err
+	}
+	if request.OwnedBuilder {
+		return nil, errors.New("owned builder requires authenticated executor recovery")
 	}
 	now := currentBootID()
 	if !request.LocalBootRecovery || request.BootID == "" || now == "" || request.BootID == now {

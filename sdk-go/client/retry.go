@@ -26,8 +26,6 @@ type retryTransport struct {
 	// Test hooks. Zero values mean "use sensible defaults".
 	maxAttempts int
 	baseDelay   time.Duration
-	now         func() time.Time
-	sleep       func(time.Duration)
 }
 
 func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -39,11 +37,6 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if baseDelay == 0 {
 		baseDelay = 1 * time.Second
 	}
-	sleep := t.sleep
-	if sleep == nil {
-		sleep = time.Sleep
-	}
-
 	// Buffer the body if non-nil so we can replay it across attempts.
 	// http.Request.Body is a one-shot Reader by spec; re-using it
 	// without buffering breaks retry.
@@ -60,6 +53,9 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var lastErr error
 	var lastResp *http.Response
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if err := req.Context().Err(); err != nil {
+			return nil, err
+		}
 		// Replay the body on every attempt.
 		if bodyBytes != nil {
 			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
@@ -69,8 +65,11 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		lastResp = resp
 		lastErr = err
 
-		if shouldStop(req.Context()) {
-			return resp, err
+		if cancelled := req.Context().Err(); cancelled != nil {
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			return nil, cancelled
 		}
 
 		// Network-level error: retry unless we're out of attempts.
@@ -78,7 +77,9 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			if attempt == maxAttempts-1 {
 				return nil, err
 			}
-			sleep(backoff(attempt, baseDelay, 0))
+			if err := waitRetry(req.Context(), backoff(attempt, baseDelay, 0)); err != nil {
+				return nil, err
+			}
 			continue
 		}
 
@@ -93,7 +94,9 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			// Drain + close so the connection can be reused.
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
-			sleep(delay)
+			if err := waitRetry(req.Context(), delay); err != nil {
+				return nil, err
+			}
 			continue
 		}
 
@@ -142,6 +145,13 @@ func parseRetryAfter(r *http.Response) time.Duration {
 	}
 	// Both seconds-since-now and HTTP-date forms are valid per RFC 9110.
 	if n, err := strconv.Atoi(v); err == nil {
+		// Clamp before multiplication to avoid overflowing time.Duration.
+		if n >= 60 {
+			return 60 * time.Second
+		}
+		if n <= 0 {
+			return 0
+		}
 		return time.Duration(n) * time.Second
 	}
 	if t, err := http.ParseTime(v); err == nil {
@@ -150,6 +160,15 @@ func parseRetryAfter(r *http.Response) time.Duration {
 	return 0
 }
 
-func shouldStop(ctx context.Context) bool {
-	return ctx.Err() != nil
+// Cancellation interrupts both exponential backoff and a server Retry-After.
+// The loop checks context again before sending another authenticated request.
+func waitRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return ctx.Err()
+	}
 }

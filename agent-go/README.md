@@ -7,15 +7,15 @@
 
 ## Status
 
-**MVP (Phase 9.1).** Surface implemented:
+Commands:
 
 - `bootstrap` — exchange a one-time token for permanent credentials.
 - `run` — long-poll loop + heartbeat.
 - `doctor` — diagnose config / network / credential issues.
 - `version` — print build version.
 
-**Executor:** `echo` only — every command returns `success` immediately.
-Real executors (Docker, systemd, Caddy) land in Phase 9.2+.
+The Docker executor deploys and manages applications. Unsupported commands fail
+explicitly. Existing installations update only at the customer’s request.
 
 ## Install
 
@@ -122,7 +122,7 @@ Agent 0.6.4 adds bounded Docker runtime observations to heartbeats. The portal, 
 
 ## Deployment cancellation
 
-Agent 0.6.5 supports deployment cancellation at preparation checkpoints. Queued jobs can be cancelled immediately. During source preparation, image pull or build, cancellation is requested first and confirmed only after the current step finishes and configuration is restored. Existing app containers are not replaced. Replacement and recovery cannot be cancelled. A running build is not force-killed. Update the agent explicitly before the next deploy; an interrupted agent requires operation reconciliation before retry. See [deployment cancellation](https://docs.imprezahost.com/deployment-cancellation.html).
+Agent 0.6.5 supports deployment cancellation at preparation checkpoints. Queued jobs can be cancelled immediately. During source preparation, image pull or build, cancellation is requested first and confirmed only after the current step finishes and configuration is restored. Existing app containers are not replaced. Replacement and recovery cannot be cancelled. Legacy builds wait for the current step; controlled builds are described below. Update the agent explicitly before the next deploy; an interrupted agent requires operation reconciliation before retry. See [deployment cancellation](https://docs.imprezahost.com/deployment-cancellation.html).
 
 ## Deployment progress and persistent results
 
@@ -131,9 +131,43 @@ Agent 0.6.6+ reports deployment steps and persists final results before delivery
 
 ## Supervised preparation
 
+These legacy worker rules remain in effect unless the administrator enables agent 0.6.12+ [controlled builds](https://docs.imprezahost.com/deployment-cancellation.html#controlled-builds), which add verified executor stop and recovery for new builds.
+
 Agent 0.6.8+: supported Linux/systemd deploys run image pull and build in a separate supervised process. If the agent restarts, it waits for the exact worker receipt without repeating that work. Only a durable successful receipt allows the existing preparation reconciliation: revalidate operation/phase and unchanged containers, restore previous configuration, and close as failed or confirm a previously requested cancellation. recovery=reconciling can include waiting for the original worker. Missing/invalid receipts, worker failure or timeout, host reboot before a receipt, legacy unsupervised work, replacement uncertainty, data ownership and onion preparation still require review. A process or service disappearing is never proof of completion. The customer must wait for the final result before retrying; no automatic deploy retry, immediate build termination, data rollback or runtime-health guarantee is added.
 
 
 ## Supervised replacement
 
 Agent 0.6.9+: new supported Linux/systemd deploys keep the authorized container replacement, startup checks, lifecycle hooks, routes and normal startup recovery in one supervised worker. If the agent restarts, recovery=reconciling with step=reconciling_replacement waits for that original worker. Its verified durable final receipt is delivered without repeating containers or hooks, including a failed deployment whose previous release was restored. Missing or invalid receipts, worker loss or timeout, host reboot before completion, legacy unsupervised operations, data ownership changes and onion provisioning still require support; keep the private journal and do not retry to unblock the queue. This does not add automatic deployment retries, database rollback or zero-downtime traffic switching. Update the agent explicitly before the next deploy.
+
+## Controlled builds
+
+Agent 0.6.12 adds an optional executor for builds on Ubuntu 24.04 amd64 with
+systemd, AppArmor, local Docker, Buildx and Compose supporting `--builder`.
+Update explicitly after active operations finish. A server administrator then runs:
+
+```sh
+sudo impreza-agent builder prepare
+sudo impreza-agent builder status
+```
+
+Preparation downloads a checksum-pinned executor archive and enables this mode
+only for future builds. `builder disable` disables future use; it preserves active
+operation recovery state. It does not install host packages, change host sysctls,
+rewrite credentials or update other servers.
+
+Cancel through the portal, REST API or MCP during preparation. The agent verifies
+the command and its owned executor, stops that executor, restores configuration
+and only then confirms cancellation. Legacy builds still wait for their current
+step. Image pulls, replacement and recovery are not made forcibly cancellable.
+
+After worker loss or host reboot, verified owned resources can be cleaned without
+replaying a build; missing or inconsistent identity receipts require support.
+Keep the private journal and wait for the final result before retrying. Existing
+application containers and named data volumes are not replaced by cancellation.
+
+The rootless executor has CPU, memory and process limits and disposable cache.
+Its scoped AppArmor profile and required seccomp/system-path exceptions do not
+provide a sandbox for hostile project code or an outbound network restriction.
+Build only trusted projects; build credentials can be read by that project's build.
+See [controlled builds](https://docs.imprezahost.com/deployment-cancellation.html#controlled-builds).

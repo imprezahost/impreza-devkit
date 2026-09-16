@@ -45,6 +45,7 @@ func (w *PreparationWork) validate() error {
 }
 
 type preparationWorkRequest struct {
+	OwnedBuilder      bool     `json:"owned_builder,omitempty"`
 	LocalBootRecovery bool     `json:"local_boot_recovery,omitempty"`
 	BootID            string   `json:"boot_id,omitempty"`
 	PrivateBuild      bool     `json:"private_build,omitempty"`
@@ -59,12 +60,14 @@ type preparationWorkRequest struct {
 	ConfigSHA256      string   `json:"config_sha256"`
 }
 type preparationWorkResult struct {
-	Version       int    `json:"version"`
-	ID            string `json:"id"`
-	RequestSHA256 string `json:"request_sha256"`
-	Completed     bool   `json:"completed"`
-	Success       bool   `json:"success"`
-	Output        string `json:"output,omitempty"`
+	RecoveryBootID string `json:"recovery_boot_id,omitempty"`
+	Interrupted    bool   `json:"interrupted,omitempty"`
+	Version        int    `json:"version"`
+	ID             string `json:"id"`
+	RequestSHA256  string `json:"request_sha256"`
+	Completed      bool   `json:"completed"`
+	Success        bool   `json:"success"`
+	Output         string `json:"output,omitempty"`
 }
 
 func workHash(data []byte) string { h := sha256.Sum256(data); return hex.EncodeToString(h[:]) }
@@ -208,6 +211,22 @@ func (d *Docker) createPreparationWork(cmd *sdkclient.PollCommand, id, step stri
 	if err != nil {
 		return nil, err
 	}
+	owned := false
+	if step == "build" {
+		var policyErr error
+		owned, policyErr = d.ControlledBuildsEnabled()
+		if policyErr != nil {
+			return nil, policyErr
+		}
+		if owned {
+			if cmd.ControlToken == "" || cmd.ProgressProtocol != sdkclient.DeploymentProgressProtocol {
+				return nil, errors.New("controlled builds require authenticated deployment control and durable progress")
+			}
+			if err := d.CheckControlledBuilds(context.Background()); err != nil {
+				return nil, err
+			}
+		}
+	}
 	var nonce [16]byte
 	if _, err = rand.Read(nonce[:]); err != nil {
 		return nil, err
@@ -231,7 +250,7 @@ func (d *Docker) createPreparationWork(cmd *sdkclient.PollCommand, id, step stri
 		}
 	}
 	privateBuild := step == "build" && payload.Manifest.Runtime.Build != nil && len(payload.Manifest.Runtime.Build.SecretNames) > 0
-	request := preparationWorkRequest{BootID: currentBootID(), PrivateBuild: privateBuild, Version: 1, ID: work.ID, CommandID: cmd.ID, DeploymentID: id, StateDir: d.StateDir, Step: step, Docker: docker, Env: preparationEnvironment(d), ConfigSHA256: hash}
+	request := preparationWorkRequest{OwnedBuilder: owned, BootID: currentBootID(), PrivateBuild: privateBuild, Version: 1, ID: work.ID, CommandID: cmd.ID, DeploymentID: id, StateDir: d.StateDir, Step: step, Docker: docker, Env: preparationEnvironment(d), ConfigSHA256: hash}
 	request.LocalBootRecovery = request.BootID != "" && localPreparationDaemon(&request) == nil
 	raw, err := json.Marshal(request)
 	if err != nil {
@@ -262,10 +281,13 @@ func (d *Docker) loadPreparationWork(w *PreparationWork, id string) (string, *pr
 	if (request.BootID != "" && !bootIDPattern.MatchString(request.BootID)) || workHash(raw) != w.RequestSHA256 || request.Version != 1 || request.ID != w.ID || request.CommandID != w.CommandID || request.DeploymentID != id || request.StateDir != d.StateDir || request.Step != w.Step {
 		return "", nil, errors.New("preparation worker request does not match operation")
 	}
+	if request.OwnedBuilder && (w.Step != "build" || !request.LocalBootRecovery || request.BootID == "") {
+		return "", nil, errors.New("owned builder requires a bound local build request")
+	}
 	return dir, &request, nil
 }
 func (d *Docker) preparationWorkResult(w *PreparationWork, id string) (*preparationWorkResult, error) {
-	dir, _, err := d.loadPreparationWork(w, id)
+	dir, request, err := d.loadPreparationWork(w, id)
 	if err != nil {
 		return nil, err
 	}
@@ -279,6 +301,25 @@ func (d *Docker) preparationWorkResult(w *PreparationWork, id string) (*preparat
 	}
 	if result.Version != 1 || result.ID != w.ID || result.RequestSHA256 != w.RequestSHA256 || (result.Success && !result.Completed) {
 		return nil, errors.New("preparation receipt belongs to another worker or is invalid")
+	}
+	if result.RecoveryBootID != "" {
+		if !request.OwnedBuilder || !bootIDPattern.MatchString(result.RecoveryBootID) || !result.Completed || result.Success || result.Interrupted {
+			return nil, errors.New("invalid recovered preparation receipt")
+		}
+		if err := d.confirmOwnedRecovery(w, id, result.RecoveryBootID); err != nil {
+			return nil, err
+		}
+	} else if result.Interrupted {
+		if !request.OwnedBuilder || !result.Completed || result.Success {
+			return nil, errors.New("invalid interrupted preparation receipt")
+		}
+		if err := d.confirmOwnedPreparationStopped(w, id); err != nil {
+			return nil, err
+		}
+	} else if request.OwnedBuilder && result.Completed {
+		if err := d.confirmOwnedPreparationPhase(w, id, "finished"); err != nil {
+			return nil, err
+		}
 	}
 	return &result, nil
 }
@@ -307,6 +348,11 @@ func (d *Docker) CompletedPreparationWork(r *PreparationRecovery, commandID stri
 	if err != nil {
 		return nil, err
 	}
+	if result.Interrupted || result.RecoveryBootID != "" {
+		next := *r
+		next.Phase = "aborted"
+		return &next, next.Validate()
+	}
 	if !result.Completed || !result.Success {
 		return nil, errors.New("preparation worker did not record successful completion; review required")
 	}
@@ -329,15 +375,19 @@ func (d *Docker) launchPreparationWork(ctx context.Context, w *PreparationWork) 
 	}
 	return nil
 }
-func (d *Docker) waitPreparationWork(ctx context.Context, w *PreparationWork, id string) ([]byte, error) {
+func (d *Docker) waitPreparationWork(ctx context.Context, w *PreparationWork, id string, commands ...*sdkclient.PollCommand) ([]byte, error) {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
+	nextControl := time.Now()
 	for {
 		if ctx.Err() != nil {
 			return nil, ErrPreparationPending
 		}
 		result, err := d.preparationWorkResult(w, id)
 		if err == nil {
+			if result.Interrupted {
+				return nil, errDeployCancelled
+			}
 			if !result.Completed {
 				return nil, ErrPreparationPending
 			}
@@ -348,6 +398,12 @@ func (d *Docker) waitPreparationWork(ctx context.Context, w *PreparationWork, id
 		}
 		if !errors.Is(err, ErrPreparationPending) {
 			return nil, fmt.Errorf("%w: %v", ErrPreparationPending, err)
+		}
+		if len(commands) == 1 && time.Now().After(nextControl) {
+			// Errors never count as cancellation, and the worker is never killed by PID.
+			// A durable stopped journal still needs its matching worker receipt.
+			_, _ = d.InterruptPreparationWork(ctx, commands[0], w, id)
+			nextControl = time.Now().Add(2 * time.Second)
 		}
 		select {
 		case <-ctx.Done():
@@ -375,6 +431,13 @@ func (d *Docker) ForgetPreparationWork(w *PreparationWork) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
+	}
+	var request preparationWorkRequest
+	if _, err = readWorkJSON(filepath.Join(dir, "request.json"), &request); err != nil {
+		return err
+	}
+	if request.OwnedBuilder {
+		return d.forgetOwnedPreparation(w, request.DeploymentID, dir)
 	}
 	for _, entry := range entries {
 		if !slices.Contains([]string{"request.json", "started", "result.json"}, entry.Name()) || entry.Type()&os.ModeSymlink != 0 || entry.IsDir() {
@@ -450,6 +513,9 @@ func RunPreparationWorker(stateDir, id string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), workBudget(w.Step))
 	defer cancel()
+	if request.OwnedBuilder {
+		return d.runOwnedPreparation(ctx, w, &request, dir, app)
+	}
 	args := []string{"compose", w.Step}
 	if w.Step == "pull" {
 		args = append(args, "--ignore-buildable")
