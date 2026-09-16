@@ -432,6 +432,17 @@ type GitCredential struct {
 	Credential string `json:"credential"`
 }
 
+type BuildSecrets struct {
+	Protocol string            `json:"protocol"`
+	Values   map[string]string `json:"values"`
+}
+
+func (c *Client) AgentBuildSecrets(ctx context.Context, deploymentID, commandID, controlToken string) (*BuildSecrets, error) {
+	var result BuildSecrets
+	err := c.Post(ctx, "/v1/agent/build-secrets/"+deploymentID, map[string]string{"command_id": commandID, "control_token": controlToken}, &result)
+	return &result, err
+}
+
 // AgentGitCredential fetches the private-git credential for a deployment
 // the calling agent owns. Only call it when the deploy payload's
 // GitAuthMethod is "deploy_key" or "pat"; the control plane returns 404

@@ -107,11 +107,11 @@ func (d *Docker) rollbackRelease(ctx context.Context, cmd *sdkclient.PollCommand
 	if err != nil {
 		return failResult(cmd.ID, "cannot resolve current configuration; containers were not changed")
 	}
-	currentContract, err := releaseContract(raw)
+	currentContract, err := releaseSourceContract(raw, dir)
 	if err != nil {
 		return failResult(cmd.ID, err.Error())
 	}
-	targetContract, err := releaseContract(target.Compose)
+	targetContract, err := releaseSourceContract(target.Compose, dir)
 	if err != nil || !reflect.DeepEqual(currentContract, targetContract) {
 		return failResult(cmd.ID, "release changes ports, storage or routing; redeploy explicitly instead; containers were not changed")
 	}

@@ -45,15 +45,18 @@ func (w *PreparationWork) validate() error {
 }
 
 type preparationWorkRequest struct {
-	Version      int      `json:"version"`
-	ID           string   `json:"id"`
-	CommandID    string   `json:"command_id"`
-	DeploymentID string   `json:"deployment_id"`
-	StateDir     string   `json:"state_dir"`
-	Step         string   `json:"step"`
-	Docker       string   `json:"docker"`
-	Env          []string `json:"env"`
-	ConfigSHA256 string   `json:"config_sha256"`
+	LocalBootRecovery bool     `json:"local_boot_recovery,omitempty"`
+	BootID            string   `json:"boot_id,omitempty"`
+	PrivateBuild      bool     `json:"private_build,omitempty"`
+	Version           int      `json:"version"`
+	ID                string   `json:"id"`
+	CommandID         string   `json:"command_id"`
+	DeploymentID      string   `json:"deployment_id"`
+	StateDir          string   `json:"state_dir"`
+	Step              string   `json:"step"`
+	Docker            string   `json:"docker"`
+	Env               []string `json:"env"`
+	ConfigSHA256      string   `json:"config_sha256"`
 }
 type preparationWorkResult struct {
 	Version       int    `json:"version"`
@@ -221,7 +224,15 @@ func (d *Docker) createPreparationWork(cmd *sdkclient.PollCommand, id, step stri
 	if err = syncRecoveryDirectory(base); err != nil {
 		return nil, err
 	}
-	request := preparationWorkRequest{Version: 1, ID: work.ID, CommandID: cmd.ID, DeploymentID: id, StateDir: d.StateDir, Step: step, Docker: docker, Env: preparationEnvironment(d), ConfigSHA256: hash}
+	var payload sdkclient.DeployPayload
+	if len(cmd.Payload) > 0 {
+		if err := cmd.As(&payload); err != nil {
+			return nil, err
+		}
+	}
+	privateBuild := step == "build" && payload.Manifest.Runtime.Build != nil && len(payload.Manifest.Runtime.Build.SecretNames) > 0
+	request := preparationWorkRequest{BootID: currentBootID(), PrivateBuild: privateBuild, Version: 1, ID: work.ID, CommandID: cmd.ID, DeploymentID: id, StateDir: d.StateDir, Step: step, Docker: docker, Env: preparationEnvironment(d), ConfigSHA256: hash}
+	request.LocalBootRecovery = request.BootID != "" && localPreparationDaemon(&request) == nil
 	raw, err := json.Marshal(request)
 	if err != nil {
 		return nil, err
@@ -248,7 +259,7 @@ func (d *Docker) loadPreparationWork(w *PreparationWork, id string) (string, *pr
 	if err != nil {
 		return "", nil, err
 	}
-	if workHash(raw) != w.RequestSHA256 || request.Version != 1 || request.ID != w.ID || request.CommandID != w.CommandID || request.DeploymentID != id || request.StateDir != d.StateDir || request.Step != w.Step {
+	if (request.BootID != "" && !bootIDPattern.MatchString(request.BootID)) || workHash(raw) != w.RequestSHA256 || request.Version != 1 || request.ID != w.ID || request.CommandID != w.CommandID || request.DeploymentID != id || request.StateDir != d.StateDir || request.Step != w.Step {
 		return "", nil, errors.New("preparation worker request does not match operation")
 	}
 	return dir, &request, nil
@@ -273,13 +284,17 @@ func (d *Docker) preparationWorkResult(w *PreparationWork, id string) (*preparat
 }
 
 // CompletedPreparationWork promotes only a successful, durable worker receipt.
-// Errors, timeouts, dead PIDs and missing systemd units are not proof of success.
+// A verified host reboot may instead produce an aborted checkpoint. Neither
+// missing receipts nor a reboot are ever reported as successful deployment.
 func (d *Docker) CompletedPreparationWork(r *PreparationRecovery, commandID string) (*PreparationRecovery, error) {
 	if r == nil || r.Validate() != nil || r.Phase != "busy" || r.Work == nil || r.Work.CommandID != commandID {
 		return nil, errors.New("no supervised preparation to reconcile")
 	}
 	result, err := d.preparationWorkResult(r.Work, r.DeploymentID)
 	if errors.Is(err, ErrPreparationPending) {
+		if interrupted, rebootErr := d.preparationAfterReboot(r); rebootErr == nil {
+			return interrupted, nil
+		}
 		// A live service explains why a receipt is pending. Its absence is only
 		// a reason to request review, never permission to restore or replay.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -394,6 +409,14 @@ func RunPreparationWorker(stateDir, id string) error {
 	if _, _, err = d.loadPreparationWork(w, request.DeploymentID); err != nil {
 		return err
 	}
+	if request.BootID != "" && request.BootID != currentBootID() {
+		return errors.New("preparation worker belongs to an earlier host boot; never replay")
+	}
+	if request.LocalBootRecovery {
+		if err := localPreparationDaemon(&request); err != nil {
+			return err
+		}
+	}
 	if !filepath.IsAbs(request.Docker) || !recoveryDeploymentID.MatchString(request.DeploymentID) {
 		return errors.New("invalid preparation worker command")
 	}
@@ -431,13 +454,26 @@ func RunPreparationWorker(stateDir, id string) error {
 	if w.Step == "pull" {
 		args = append(args, "--ignore-buildable")
 	}
+	if request.PrivateBuild {
+		args = append(args, "--no-cache")
+	}
 	command := exec.CommandContext(ctx, request.Docker, args...)
 	command.Dir = app
 	command.Env = request.Env
 	output := &preparationTail{limit: 4096}
 	command.Stdout = output
 	command.Stderr = output
+	if request.PrivateBuild {
+		command.Stdout = io.Discard
+		command.Stderr = io.Discard
+	}
 	err = command.Run()
+	if request.PrivateBuild {
+		output.data = []byte("Build output withheld because private credentials were mounted.")
+		if cleanupErr := clearBuildSecrets(app); cleanupErr != nil {
+			err = errors.New("Build credential cleanup failed")
+		}
+	}
 	result := preparationWorkResult{Version: 1, ID: id, RequestSHA256: w.RequestSHA256, Completed: ctx.Err() == nil, Success: err == nil && ctx.Err() == nil, Output: string(output.data)}
 	if err != nil {
 		var exitErr *exec.ExitError

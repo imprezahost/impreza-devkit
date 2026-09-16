@@ -37,18 +37,21 @@ func (r *PreparationRecovery) Validate() error {
 	if r == nil || r.Version != 1 {
 		return errors.New("invalid preparation recovery version")
 	}
+	if r.Phase == "aborted" && r.Work == nil {
+		return errors.New("aborted preparation needs a bound worker")
+	}
 	if r.Work != nil {
 		if err := r.Work.validate(); err != nil {
 			return err
 		}
-		if r.Phase != "busy" && r.Phase != "ready" {
+		if r.Phase != "busy" && r.Phase != "ready" && r.Phase != "aborted" {
 			return errors.New("worker outside preparation phase")
 		}
 	}
 	if r.Phase == "unstarted" && r.Work == nil && r.DeploymentID == "" && len(r.Files) == 0 && len(r.Containers) == 0 {
 		return nil
 	}
-	if !slices.Contains([]string{"ready", "busy", "blocked", "replacing"}, r.Phase) || !recoveryDeploymentID.MatchString(r.DeploymentID) || len(r.Files) != 3 {
+	if !slices.Contains([]string{"ready", "busy", "aborted", "blocked", "replacing"}, r.Phase) || !recoveryDeploymentID.MatchString(r.DeploymentID) || len(r.Files) != 3 {
 		return errors.New("invalid preparation checkpoint")
 	}
 	for i, name := range []string{"compose.yaml", ".env", "startup.json"} {
@@ -67,7 +70,7 @@ func (r *PreparationRecovery) Validate() error {
 	return nil
 }
 func (r *PreparationRecovery) Recoverable() bool {
-	return r != nil && r.Validate() == nil && (r.Phase == "unstarted" || r.Phase == "ready")
+	return r != nil && r.Validate() == nil && (r.Phase == "unstarted" || r.Phase == "ready" || r.Phase == "aborted")
 }
 
 // Lstat every component below StateDir. Never follow an app-directory or config
@@ -157,6 +160,9 @@ func (d *Docker) ReconcilePreparation(ctx context.Context, r *PreparationRecover
 	snapshot := deployConfigSnapshot{}
 	for _, f := range r.Files {
 		snapshot = append(snapshot, deployConfigFile{name: f.Name, data: f.Data, mode: os.FileMode(f.Mode), exists: f.Exists})
+	}
+	if err := clearBuildSecrets(dir); err != nil {
+		return errors.New("build credential cleanup failed during reconciliation")
 	}
 	if err := snapshot.restore(dir); err != nil {
 		return err

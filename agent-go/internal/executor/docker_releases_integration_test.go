@@ -66,11 +66,17 @@ func TestDockerReleaseUninstall(t *testing.T) {
 		t.Fatal("no retained tags to test")
 	}
 	payload, _ := json.Marshal(map[string]any{"deployment_id": id, "purge_data": false})
+	if err := writeBuildSecrets(dir, []string{"npmrc"}, map[string]string{"npmrc": "temporary-uninstall-credential"}); err != nil {
+		t.Fatal(err)
+	}
 	if r := d.uninstall(ctx, &sdkclient.PollCommand{ID: "uninstall_test", Kind: sdkclient.CommandUninstall, Payload: payload}); r.Status != "success" {
 		t.Fatalf("uninstall: %+v", r)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "releases")); !os.IsNotExist(err) {
 		t.Fatal("release secrets retained after uninstall")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".build-secrets")); !os.IsNotExist(err) {
+		t.Fatal("build credentials retained after uninstall")
 	}
 	for _, tag := range tags {
 		if _, err := d.dockerCmd(ctx, "image", "inspect", tag).Output(); err == nil {

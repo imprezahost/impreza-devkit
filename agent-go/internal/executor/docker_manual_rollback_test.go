@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -55,5 +56,37 @@ func TestManualReleaseSnapshotValidation(t *testing.T) {
 	os.Mkdir(path, 0700)
 	if _, err := loadRelease(dir, "rel_test"); err == nil {
 		t.Fatal("accepted directory")
+	}
+}
+
+func TestManualReleaseVersionedConfigContract(t *testing.T) {
+	dir := t.TempDir()
+	makeContract := func(hash, name string) map[string]any {
+		p := filepath.Join(dir, "source-files", hash, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(hash), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := json.Marshal(map[string]any{"services": map[string]any{"web": map[string]any{"configs": []string{"settings"}}}, "configs": map[string]any{"settings": map[string]any{"file": filepath.ToSlash(p)}}})
+		contract, err := releaseSourceContract(raw, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return contract
+	}
+	first := makeContract(strings.Repeat("a", 64), "settings.conf")
+	second := makeContract(strings.Repeat("b", 64), "settings.conf")
+	if !reflect.DeepEqual(first, second) {
+		t.Fatal("same config at a retained version refused")
+	}
+	different := makeContract(strings.Repeat("c", 64), "other.conf")
+	if reflect.DeepEqual(first, different) {
+		t.Fatal("different config file allowed")
+	}
+	raw, _ := json.Marshal(map[string]any{"services": map[string]any{"web": map[string]any{}}, "configs": map[string]any{"settings": map[string]any{"file": filepath.ToSlash(filepath.Join(dir, "source-files", strings.Repeat("d", 64), "missing"))}}})
+	if _, err := releaseSourceContract(raw, dir); err == nil {
+		t.Fatal("missing retained source accepted")
 	}
 }

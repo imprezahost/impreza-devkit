@@ -301,6 +301,9 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		if err := fetchAndExtractBuildContext(ctx, d.Client, d.Log, p.Manifest.Runtime.Build, buildDir, p.GitAuthMethod, p.DeploymentID); err != nil {
 			return failResult(cmd.ID, "fetch build context: "+err.Error())
 		}
+		if err := stageComposeSourceFiles(appDir, p.Manifest.Runtime.Build); err != nil {
+			return failResult(cmd.ID, "stage Compose source files: "+err.Error())
+		}
 		d.Log.Info("docker deploy: build context ready",
 			"deployment_id", p.DeploymentID,
 			"dir", buildDir,
@@ -310,6 +313,21 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		return failResult(cmd.ID,
 			"manifest.runtime.build is set but agent has no SDK client wired (cannot download context)",
 		)
+	}
+
+	hasBuildSecrets := p.Manifest.Runtime.Build != nil && len(p.Manifest.Runtime.Build.SecretNames) > 0
+	if hasBuildSecrets {
+		defer func() {
+			if result.Status != PreparationPendingStatus {
+				if cleanupErr := clearBuildSecrets(appDir); cleanupErr != nil {
+					result.Status = "failed"
+					result.Error = "Build credential cleanup failed; review the private agent state before retrying."
+				}
+			}
+		}()
+		if err := d.fetchBuildSecrets(ctx, cmd, p, appDir); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
 	}
 
 	d.Log.Info("docker deploy: writing state", "deployment_id", p.DeploymentID, "dir", appDir)
@@ -428,7 +446,16 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 			}
 			out, err = d.waitPreparationWork(ctx, work, p.DeploymentID)
 		} else {
-			out, err = d.compose(ctx, appDir, args...)
+			if hasBuildSecrets && args[0] == "build" {
+				out, err = d.privateBuild(ctx, appDir, args...)
+			} else {
+				out, err = d.compose(ctx, appDir, args...)
+			}
+		}
+		if hasBuildSecrets && args[0] == "build" && !errors.Is(err, ErrPreparationPending) {
+			if cleanupErr := clearBuildSecrets(appDir); cleanupErr != nil {
+				return nil, errors.New("Build credential cleanup failed")
+			}
 		}
 		if err == nil {
 			err = savePreparation("ready")
@@ -529,6 +556,10 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 	// Release archives also contain secrets, and their private image tags
 	// must not keep old images alive after this deployment is uninstalled.
 	d.pruneReleases(ctx, filepath.Join(appDir, "releases"), 0)
+	// Credentials have no purpose after uninstall, including when app data is kept.
+	if err := clearBuildSecrets(appDir); err != nil {
+		return failResult(cmd.ID, "uninstall could not safely remove temporary build credentials")
+	}
 
 	// On-disk cleanup runs whether or not `down` succeeded.
 	//
@@ -544,7 +575,7 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 			d.Log.Warn("removeAll state dir failed", "deployment_id", p.DeploymentID, "err", err)
 		}
 	} else {
-		for _, leftover := range []string{"compose.yaml", ".env", "startup.json", "build-ctx", "releases"} {
+		for _, leftover := range []string{"compose.yaml", ".env", "startup.json", "build-ctx", "source-files", "releases"} {
 			if err := os.RemoveAll(filepath.Join(appDir, leftover)); err != nil {
 				d.Log.Warn("uninstall: removing transient artifact failed",
 					"deployment_id", p.DeploymentID, "path", leftover, "err", err)

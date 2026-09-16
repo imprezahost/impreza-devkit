@@ -2,6 +2,8 @@ module github.com/imprezahost/impreza-devkit/cli-go
 
 go 1.26.3
 
+toolchain go1.26.6
+
 require (
 	github.com/fatih/color v1.19.0
 	github.com/imprezahost/impreza-devkit/sdk-go v0.0.0
@@ -11,7 +13,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require golang.org/x/net v0.54.0 // indirect
+require golang.org/x/net v0.55.0 // indirect
 
 replace github.com/imprezahost/impreza-devkit/sdk-go => ../sdk-go
 
@@ -23,6 +25,6 @@ require (
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
-	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 )

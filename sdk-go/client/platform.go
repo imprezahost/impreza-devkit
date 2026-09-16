@@ -88,10 +88,14 @@ type ManifestRuntime struct {
 // (empty) means "Dockerfile" at the root. Customers with a non-default
 // layout (apps/myapp/Dockerfile) pass that path here.
 type BuildContext struct {
-	URL            string `json:"url,omitempty"`
-	SHA256         string `json:"sha256,omitempty"`
-	SizeBytes      int64  `json:"size_bytes,omitempty"`
-	DockerfilePath string `json:"dockerfile_path,omitempty"`
+	AuxiliaryFiles    []string `json:"auxiliary_files,omitempty"`
+	AuxiliaryProtocol string   `json:"auxiliary_protocol,omitempty"`
+	SecretNames       []string `json:"secret_names,omitempty"`
+	SecretProtocol    string   `json:"secret_protocol,omitempty"`
+	URL               string   `json:"url,omitempty"`
+	SHA256            string   `json:"sha256,omitempty"`
+	SizeBytes         int64    `json:"size_bytes,omitempty"`
+	DockerfilePath    string   `json:"dockerfile_path,omitempty"`
 
 	// Phase 15 — git-clone source. When Git is set, the agent skips
 	// the URL/SHA256 tarball-download path and `git clone --depth=1

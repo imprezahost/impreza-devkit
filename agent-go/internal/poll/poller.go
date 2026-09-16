@@ -116,7 +116,7 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 			return err
 		}
 	}
-	capabilities := []string{"startup-health-v1", "deploy-cancel-v1"}
+	capabilities := []string{"startup-health-v1", "deploy-cancel-v1", "build-secrets-v1", "compose-source-files-v1"}
 	if p.journal != nil {
 		capabilities = append(capabilities, sdkclient.DeploymentProgressProtocol)
 	}

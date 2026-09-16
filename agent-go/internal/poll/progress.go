@@ -78,7 +78,7 @@ func (p *Poller) resumeRecord(ctx context.Context) error {
 			}
 		}
 		response, err := p.reportProgress(ctx, "interrupted")
-		if err == nil && response.Terminal {
+		if err == nil && response.Terminal && (p.active.Preparation == nil || p.active.Preparation.Phase != "aborted") {
 			if err := p.journal.clear(); err != nil {
 				return err
 			}
@@ -139,6 +139,9 @@ func (p *Poller) reconcilePreparation(ctx context.Context, docker *executor.Dock
 		return err
 	}
 	if response.Terminal {
+		if p.active.Preparation != nil && p.active.Preparation.Phase == "aborted" {
+			return errors.New("reboot recovery requires an authenticated preparing phase; terminal server state requires manual reconciliation")
+		}
 		p.forgetPreparationWork()
 		if err := p.journal.clear(); err != nil {
 			return err
@@ -162,6 +165,9 @@ func (p *Poller) reconcilePreparation(ctx context.Context, docker *executor.Dock
 		return err
 	}
 	result := sdkclient.DeployResult{CommandID: p.active.CommandID, ControlToken: p.active.ControlToken, DeploymentID: p.active.Preparation.DeploymentID, Status: "failed", PreparationRestored: true, Error: "Agent interrupted before container replacement. The completed preparation checkpoint was verified and previous configuration restored. Deployment was not repeated; retry explicitly when ready."}
+	if p.active.Preparation.Phase == "aborted" {
+		result.Error = "Host reboot interrupted preparation without a completion receipt. The prior container identities were verified and configuration restored. No build or deployment was replayed; retry explicitly when ready."
+	}
 	if control.CancelRequested {
 		result.Status = "cancelled"
 		result.Error = "Requested cancellation confirmed after interrupted preparation was reconciled. Deployment was not repeated."
