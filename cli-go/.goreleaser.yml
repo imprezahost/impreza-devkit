@@ -1,16 +1,18 @@
 # Goreleaser config for impreza-cli-go.
 #
 # Builds the Go CLI for Linux / macOS / Windows on x86_64 + arm64
-# (5 binaries total) and uploads them to GitHub Releases when a tag
-# matching `cli-go-v*` is pushed to the public mirror.
+# (5 binaries total) for local release preparation. Production releases
+# publish audited archives once; GitHub Actions verifies public downloads.
 #
 # Local dry run (no upload):
 #
 #     goreleaser release --snapshot --clean --skip=publish
 #
-# CI (via .github/workflows/release-go.yml):
+# Prepare archives for an existing tag without uploading:
 #
-#     goreleaser release --clean
+#     goreleaser release --clean --skip=validate,publish
+#
+# .github/workflows/release-go.yml does not run GoReleaser or upload assets.
 
 # Schema version — required by goreleaser v2+.
 version: 2
@@ -140,7 +142,7 @@ changelog:
 # Release configuration ───────────────────────────────────────────────
 
 release:
-  # Target the public GitHub repo (the mirror).
+  # Target the public GitHub repository.
   github:
     owner: imprezahost
     name: impreza-devkit
