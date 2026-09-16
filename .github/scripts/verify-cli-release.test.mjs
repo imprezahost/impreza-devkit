@@ -51,8 +51,11 @@ test('missing release fails without attempting to create it', async () => {
   assert.equal(count, 1);
 });
 test('invalid tag is rejected before network access', async () => {
-  for (const value of ['', undefined, 'cli-go-v01.2.3', '../main', 'cli-go-v1.2.3\n', 'sdk-v1.2.3'])
-    await assert.rejects(verifyRelease(value, {fetchFn: () => assert.fail('unexpected network')}));
+  for (const value of ['', undefined, 'cli-go-v01.2.3', '../main', 'cli-go-v1.2.3\n', 'sdk-v1.2.3']) {
+    let calls = 0;
+    await assert.rejects(verifyRelease(value, {fetchFn: () => { calls++; throw new Error('unexpected network'); }}), /Invalid CLI release tag/);
+    assert.equal(calls, 0);
+  }
 });
 test('trusted asset redirect never carries API credentials', async () => {
   let count = 0;
