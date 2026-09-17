@@ -12,6 +12,8 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## Agent 0.6.15 — 2026-09-17
+
 - Require mandatory Docker health checks for PostgreSQL credential rotation and
   abandonment before disabling the unused login. Missing or optional startup
   policies are refused; review the operation again with the updated API.

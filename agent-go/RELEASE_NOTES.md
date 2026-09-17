@@ -1,13 +1,11 @@
-# Agent 0.6.12
+# Agent 0.6.15
 
-Adds optional controlled builds on Ubuntu 24.04 amd64: explicit administrative
-preparation, checksum-pinned executor delivery, verified build cancellation and
-recovery after worker loss or host reboot without replay. Invalid or missing
-identity evidence still requires support. Legacy builds retain checkpoint
-cancellation; replacement, data rollback and automatic fleet upgrades are unchanged.
+Requires Docker health checks for PostgreSQL credential rotation and abandonment.
+The replacement must report healthy before an unused login can be disabled.
+Missing or optional startup policies are refused; review the operation again
+with the updated API. A running container without a healthcheck is insufficient.
+Health assurance depends on what the application healthcheck actually verifies.
 
-After active deployments finish, update explicitly and follow the
-[controlled build guide](https://docs.imprezahost.com/deployment-cancellation.html#controlled-builds).
-The update preserves identity, configuration and applications. Activation is a
-separate administrator action. Trusted project code is required; this is not an
-egress sandbox or a fixed-time termination guarantee.
+After active deployments finish, update explicitly using the documented update
+command. Identity, configuration and applications are preserved. There is no
+automatic fleet update. See the [connection guide](https://docs.imprezahost.com/service-bindings.html).
