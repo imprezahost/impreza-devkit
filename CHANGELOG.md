@@ -12,6 +12,13 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## Agent 0.6.13 and Go SDK — 2026-09-17
+
+- Add reviewed PostgreSQL application connections with dedicated, authenticated credentials and separate database ownership.
+- Verify data-preserving login retirement after application replacement; retain cleanup retries and durable operation receipts.
+- Preserve managed credentials during route changes, redact them from logs and refuse rollback across different database logins.
+- Python packages and Go CLI are unchanged. Credential rotation is not included.
+
 ## Agent 0.6.12 and Go CLI 0.2.2 — 2026-09-16
 
 - Add explicit `builder prepare`, `builder status` and `builder disable` commands

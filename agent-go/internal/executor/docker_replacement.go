@@ -11,7 +11,19 @@ import (
 
 // finishReplacement executes the already-authorized runtime phase once. Both
 // synchronous deployments and detached workers share exactly this sequence.
-func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollCommand, p sdkclient.DeployPayload, previousRelease *runtimeRelease, isRedeploy bool, primaryOnion string) sdkclient.DeployResult {
+func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollCommand, p sdkclient.DeployPayload, previousRelease *runtimeRelease, isRedeploy bool, primaryOnion string) (result sdkclient.DeployResult) {
+	if err := validateResolvedRetirements(p); err != nil {
+		return failResult(cmd.ID, err.Error())
+	}
+	values := serviceBindingEnvRedactions([]byte(renderEnv(p.Vars)))
+	if previousRelease != nil {
+		for key, value := range serviceBindingEnvRedactions(previousRelease.Env) {
+			values[key] = value
+		}
+	}
+	defer func() { redactServiceBindingResult(&result, values) }()
+	d = d.withServiceBindingLogRedaction(values)
+
 	appDir := d.appDir(p.DeploymentID)
 	policy, err := resolveStartupPolicy(p.Manifest.Runtime.Startup)
 	if err != nil {
@@ -66,7 +78,7 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 			"deploy did not produce a working app: %s\n%s", detail, failLogs,
 		))
 	case settleUnsettled:
-		if previousRelease != nil || policy.RequireHealthy {
+		if previousRelease != nil || policy.RequireHealthy || len(p.Manifest.Runtime.ServiceBindingRetirements) != 0 {
 			return failStartup("new release did not pass startup checks before the deadline: " + detail + "\n" + d.grabFailureLogs(ctx, appDir))
 		}
 		d.Log.Warn("docker deploy: stack not confirmed healthy, proceeding anyway",
@@ -258,14 +270,21 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 	// miss this is the only place an operator finds out the app was never
 	// confirmed healthy, so it goes above the log tail rather than being
 	// buried under 4KB of container output.
+	retirements := d.finishServiceBindingRetirements(ctx, p)
+	for _, retirement := range retirements {
+		if retirement.Status != "retired" {
+			settleNote += "\nDatabase connection cleanup is pending; the dedicated login was not confirmed disabled. Review and retry removal."
+		}
+	}
 	return sdkclient.DeployResult{
-		StartupCheck: policy.receipt(verdict),
-		CommandID:    cmd.ID,
-		Status:       "success",
-		DeploymentID: p.DeploymentID,
-		Domain:       envValue(p.Vars, "DOMAIN_URL"),
-		Onion:        primaryOnion,
-		Release:      releaseMetadata,
-		LogsTail:     "health: " + settleNote + "\n\n" + tail(logOut, 4096),
+		ServiceBindingRetirements: retirements,
+		StartupCheck:              policy.receipt(verdict),
+		CommandID:                 cmd.ID,
+		Status:                    "success",
+		DeploymentID:              p.DeploymentID,
+		Domain:                    envValue(p.Vars, "DOMAIN_URL"),
+		Onion:                     primaryOnion,
+		Release:                   releaseMetadata,
+		LogsTail:                  "health: " + settleNote + "\n\n" + tail(logOut, 4096),
 	}
 }

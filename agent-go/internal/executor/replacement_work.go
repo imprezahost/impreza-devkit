@@ -80,7 +80,7 @@ func (d *Docker) replacementDirectory(id string) (string, error) {
 }
 func replacementPayload(p sdkclient.DeployPayload) sdkclient.DeployPayload {
 	// The worker needs no source URLs, Git authentication or control-plane token.
-	return sdkclient.DeployPayload{DeploymentID: p.DeploymentID, Vars: p.Vars, Routes: p.Routes, Manifest: sdkclient.AppManifest{Runtime: sdkclient.ManifestRuntime{Type: p.Manifest.Runtime.Type, Startup: p.Manifest.Runtime.Startup}, Lifecycle: p.Manifest.Lifecycle}}
+	return sdkclient.DeployPayload{DeploymentID: p.DeploymentID, Vars: p.Vars, Routes: p.Routes, ServiceBindingRetirementAuthorizations: p.ServiceBindingRetirementAuthorizations, Manifest: sdkclient.AppManifest{Runtime: sdkclient.ManifestRuntime{Type: p.Manifest.Runtime.Type, Startup: p.Manifest.Runtime.Startup, ServiceBindingRetirementProtocol: p.Manifest.Runtime.ServiceBindingRetirementProtocol, ServiceBindingRetirements: p.Manifest.Runtime.ServiceBindingRetirements}, Lifecycle: p.Manifest.Lifecycle}}
 }
 func (d *Docker) createReplacementWork(cmd *sdkclient.PollCommand, p sdkclient.DeployPayload, previous *runtimeRelease, redeploy bool, containers []string) (*ReplacementWork, error) {
 	docker, err := exec.LookPath("docker")

@@ -223,3 +223,12 @@ Agent 0.6.8+: supported Linux/systemd deploys run image pull and build in a sepa
 ## Supervised replacement
 
 Agent 0.6.9+: new supported Linux/systemd deploys keep the authorized container replacement, startup checks, lifecycle hooks, routes and normal startup recovery in one supervised worker. If the agent restarts, recovery=reconciling with step=reconciling_replacement waits for that original worker. Its verified durable final receipt is delivered without repeating containers or hooks, including a failed deployment whose previous release was restored. Missing or invalid receipts, worker loss or timeout, host reboot before completion, legacy unsupervised operations, data ownership changes and onion provisioning still require support; keep the private journal and do not retry to unblock the queue. This does not add automatic deployment retries, database rollback or zero-downtime traffic switching. Update the agent explicitly before the next deploy.
+
+
+## Reviewed PostgreSQL connections
+
+Agent 0.6.13 supports dedicated PostgreSQL connections for generated image applications on the same server and project environment. The agent receives credentials only for the authorized deployment. A separate role retains database ownership; the application uses a dedicated login.
+
+Use the portal or MCP to review creation or removal, then confirm the exact saved review. Removal verifies a healthy replacement without the connection before disabling the login, and retains the database and its data. A pending cleanup requires a new review. Durable verified receipts are replayed after restart without repeating the replacement. Missing receipts or incomplete replacement still require support review.
+
+Manual rollback cannot restore a different managed credential. Credential rotation is not available. Existing servers require an explicit [agent update](https://docs.imprezahost.com/agent-updates.html); there is no automatic fleet update. See the [connection guide](https://docs.imprezahost.com/service-bindings.html).

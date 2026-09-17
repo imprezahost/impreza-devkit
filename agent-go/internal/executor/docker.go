@@ -132,7 +132,22 @@ func NewDocker(stateDir string, log *slog.Logger) *Docker {
 }
 
 // Execute dispatches a poll command to the right per-kind handler.
-func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) sdkclient.DeployResult {
+func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) (result sdkclient.DeployResult) {
+	var identity struct {
+		DeploymentID string `json:"deployment_id"`
+	}
+	_ = cmd.As(&identity)
+	redactions, redactionErr := d.runtimeServiceBindingRedactions(identity.DeploymentID)
+	d = d.withServiceBindingLogRedaction(redactions)
+	defer func() {
+		if redactionErr != nil {
+			result.Error = "Runtime output withheld because private credential state could not be verified."
+			result.LogsTail = ""
+			return
+		}
+		redactServiceBindingResult(&result, redactions)
+	}()
+
 	switch cmd.Kind {
 	case sdkclient.CommandDeploy:
 		return d.deploy(ctx, cmd)
@@ -182,6 +197,9 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	composeYAML := strings.TrimSpace(p.Manifest.Runtime.ComposeYAML)
 	if composeYAML == "" {
 		return failResult(cmd.ID, "manifest has empty compose_yaml")
+	}
+	if err := validateServiceBindingManifest(p); err != nil {
+		return failResult(cmd.ID, err.Error())
 	}
 
 	if p.GitCommitSHA != "" {
@@ -330,6 +348,12 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		}
 	}
 
+	bindingSecrets, err := d.prepareServiceBindings(ctx, cmd, &p)
+	if err != nil {
+		return failResult(cmd.ID, err.Error())
+	}
+	defer func() { redactServiceBindingResult(&result, bindingSecrets) }()
+	d = d.withServiceBindingLogRedaction(bindingSecrets)
 	d.Log.Info("docker deploy: writing state", "deployment_id", p.DeploymentID, "dir", appDir)
 
 	if err := writeStartupPolicy(appDir, p.Manifest.Runtime.Startup); err != nil {
@@ -1023,6 +1047,12 @@ func (d *Docker) updateRoutes(ctx context.Context, cmd *sdkclient.PollCommand) s
 		return failResult(cmd.ID, "no state dir for deployment "+p.DeploymentID)
 	}
 
+	var bindingErr error
+	p.Vars, bindingErr = d.preserveServiceBindingVars(ctx, p.DeploymentID, p.Vars)
+	if bindingErr != nil {
+		return failResult(cmd.ID, bindingErr.Error())
+	}
+
 	// Phase 89 — post-deploy onion provisioning. When the server asks
 	// us to add a hidden service to a deployment that doesn't have one
 	// yet (the customer clicked "+ Add .onion" on an app already
@@ -1168,6 +1198,11 @@ func (d *Docker) logsTail(ctx context.Context, cmd *sdkclient.PollCommand) sdkcl
 		}
 	}
 
+	values, redactionErr := d.runtimeServiceBindingRedactions(p.DeploymentID)
+	if redactionErr != nil {
+		return failResult(cmd.ID, "Logs withheld because private credential state could not be verified.")
+	}
+
 	// Build `docker compose logs ...` args. We use `--no-color` so the
 	// caller sees raw text without ANSI escapes.
 	args := []string{"logs", "--no-color"}
@@ -1187,6 +1222,7 @@ func (d *Docker) logsTail(ctx context.Context, cmd *sdkclient.PollCommand) sdkcl
 	logCtx, cancelLog := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelLog()
 	out, err := d.compose(logCtx, appDir, args...)
+	out = []byte(redactServiceBindingText(string(out), values))
 	if err != nil {
 		// Include the stderr in the chunk so callers can debug.
 		msg := fmt.Sprintf("logs_tail: docker compose logs failed: %v\n%s", err, tail(out, 4096))
