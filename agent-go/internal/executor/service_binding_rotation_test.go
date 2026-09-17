@@ -26,6 +26,7 @@ func rotationPayload(consumer string, intent sdkclient.ServiceBindingRotationInt
 	}
 	return sdkclient.DeployPayload{DeploymentID: consumer, Manifest: sdkclient.AppManifest{Runtime: sdkclient.ManifestRuntime{
 		Type:                           "docker-compose",
+		Startup:                        &sdkclient.ManifestStartup{RequireHealthy: true, TimeoutSeconds: 60},
 		ServiceBindingProtocol:         sdkclient.ServiceBindingGenerationProtocol,
 		ServiceBindings:                []sdkclient.ServiceBindingRef{serving},
 		ServiceBindingRotationProtocol: sdkclient.ServiceBindingRotationProtocol,
@@ -43,14 +44,27 @@ func TestServiceBindingRotationManifestBoundaries(t *testing.T) {
 	}
 	intent.Mode = "rotate"
 	for name, change := range map[string]func(*sdkclient.DeployPayload){
-		"rotation protocol":  func(p *sdkclient.DeployPayload) { p.Manifest.Runtime.ServiceBindingRotationProtocol = sdkclient.ServiceBindingGenerationRetirementProtocol },
-		"missing intent":     func(p *sdkclient.DeployPayload) { p.Manifest.Runtime.ServiceBindingRotation = nil },
-		"binding protocol":   func(p *sdkclient.DeployPayload) { p.Manifest.Runtime.ServiceBindingProtocol = sdkclient.ServiceBindingProtocol },
-		"rotation identity":  func(p *sdkclient.DeployPayload) { p.Manifest.Runtime.ServiceBindingRotation.RotationID = "bnd_" + strings.Repeat("3", 24) },
-		"mode":               func(p *sdkclient.DeployPayload) { p.Manifest.Runtime.ServiceBindingRotation.Mode = "swap" },
-		"candidate identity": func(p *sdkclient.DeployPayload) { p.Manifest.Runtime.ServiceBindingRotation.Candidate.BindingID = "bnd_" + strings.Repeat("9", 24) },
-		"shared prefix":      func(p *sdkclient.DeployPayload) { p.Manifest.Runtime.ServiceBindingRotation.Candidate.Revision = intent.Previous.Revision[:24] + strings.Repeat("9", 40) },
-		"serving reference":  func(p *sdkclient.DeployPayload) { p.Manifest.Runtime.ServiceBindings[0] = intent.Previous },
+		"missing health policy": func(p *sdkclient.DeployPayload) { p.Manifest.Runtime.Startup = nil },
+		"optional health":       func(p *sdkclient.DeployPayload) { p.Manifest.Runtime.Startup = &sdkclient.ManifestStartup{} },
+		"invalid timeout":       func(p *sdkclient.DeployPayload) { p.Manifest.Runtime.Startup.TimeoutSeconds = 601 },
+		"rotation protocol": func(p *sdkclient.DeployPayload) {
+			p.Manifest.Runtime.ServiceBindingRotationProtocol = sdkclient.ServiceBindingGenerationRetirementProtocol
+		},
+		"missing intent": func(p *sdkclient.DeployPayload) { p.Manifest.Runtime.ServiceBindingRotation = nil },
+		"binding protocol": func(p *sdkclient.DeployPayload) {
+			p.Manifest.Runtime.ServiceBindingProtocol = sdkclient.ServiceBindingProtocol
+		},
+		"rotation identity": func(p *sdkclient.DeployPayload) {
+			p.Manifest.Runtime.ServiceBindingRotation.RotationID = "bnd_" + strings.Repeat("3", 24)
+		},
+		"mode": func(p *sdkclient.DeployPayload) { p.Manifest.Runtime.ServiceBindingRotation.Mode = "swap" },
+		"candidate identity": func(p *sdkclient.DeployPayload) {
+			p.Manifest.Runtime.ServiceBindingRotation.Candidate.BindingID = "bnd_" + strings.Repeat("9", 24)
+		},
+		"shared prefix": func(p *sdkclient.DeployPayload) {
+			p.Manifest.Runtime.ServiceBindingRotation.Candidate.Revision = intent.Previous.Revision[:24] + strings.Repeat("9", 40)
+		},
+		"serving reference": func(p *sdkclient.DeployPayload) { p.Manifest.Runtime.ServiceBindings[0] = intent.Previous },
 		"abandon serving": func(p *sdkclient.DeployPayload) {
 			p.Manifest.Runtime.ServiceBindingRotation.Mode = "abandon"
 		},

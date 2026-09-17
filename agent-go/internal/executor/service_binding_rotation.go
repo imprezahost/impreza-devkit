@@ -42,6 +42,10 @@ func rotationRefs(consumer string, intent *sdkclient.ServiceBindingRotationInten
 func validateRotationShape(consumer string, runtime sdkclient.ManifestRuntime) (serving, target sdkclient.ServiceBindingRef, err error) {
 	invalid := errors.New("unsupported service binding rotation manifest")
 	intent := runtime.ServiceBindingRotation
+	policy, policyErr := resolveStartupPolicy(runtime.Startup)
+	if policyErr != nil || !policy.RequireHealthy {
+		return serving, target, errors.New("credential rotation requires a healthy startup policy; review the rotation again")
+	}
 	if intent == nil || runtime.ServiceBindingRotationProtocol != sdkclient.ServiceBindingRotationProtocol || runtime.ServiceBindingProtocol != sdkclient.ServiceBindingGenerationProtocol || runtime.Type != "docker-compose" || runtime.Build != nil || runtime.ServiceBindingRetirementProtocol != "" || len(runtime.ServiceBindingRetirements) != 0 || !bindingRotationIDPattern.MatchString(intent.RotationID) || (intent.Mode != "rotate" && intent.Mode != "abandon") {
 		return serving, target, invalid
 	}

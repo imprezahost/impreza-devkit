@@ -171,3 +171,15 @@ Its scoped AppArmor profile and required seccomp/system-path exceptions do not
 provide a sandbox for hostile project code or an outbound network restriction.
 Build only trusted projects; build credentials can be read by that project's build.
 See [controlled builds](https://docs.imprezahost.com/deployment-cancellation.html#controlled-builds).
+
+
+## PostgreSQL credential rotation
+
+Reviewed rotation and abandonment require a mandatory healthy-startup policy.
+Every running container must provide a Docker healthcheck and report `healthy`
+before the unused login can be disabled. A running container without a healthcheck
+is insufficient. The API preserves a configured timeout (30–600 seconds), or uses
+60 seconds. The required policy remains enabled after completion. Use checks
+that test the application's actual readiness, including database access as needed.
+Failed checks preserve the credentials for a reviewed retry and recover a verified
+previous release when available. See [PostgreSQL connections](https://docs.imprezahost.com/service-bindings.html#rotation).

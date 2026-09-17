@@ -12,6 +12,10 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+- Require mandatory Docker health checks for PostgreSQL credential rotation and
+  abandonment before disabling the unused login. Missing or optional startup
+  policies are refused; review the operation again with the updated API.
+
 ## Agent 0.6.14 and Go SDK — 2026-09-17
 
 - Add reviewed PostgreSQL credential rotation to the Go SDK and agent
