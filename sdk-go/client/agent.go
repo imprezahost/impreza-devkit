@@ -390,6 +390,7 @@ type DeploymentStartupCheck struct {
 // Idempotent on CommandID — re-posting the same result is a no-op.
 type DeployResult struct {
 	ServiceBindingRetirements []ServiceBindingRetirementResult `json:"service_binding_retirements,omitempty"`
+	ServiceBindingRotation    *ServiceBindingRotationResult    `json:"service_binding_rotation,omitempty"`
 	ControlToken              string                           `json:"control_token,omitempty"`
 	PreparationRestored       bool                             `json:"preparation_restored,omitempty"`
 	StartupCheck              *DeploymentStartupCheck          `json:"startup_check,omitempty"`

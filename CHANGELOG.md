@@ -12,6 +12,18 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## Agent 0.6.14 and Go SDK — 2026-09-17
+
+- Add reviewed PostgreSQL credential rotation to the Go SDK and agent
+  (`postgres-service-binding-rotation-v1`). The reviewed operation reserves a
+  distinct candidate login; the agent replaces the consumer with the rotated
+  `DATABASE_URL` and disables the previous login only after a healthy
+  replacement. Database data is always retained. A failed startup keeps the
+  serving credential, an unverified disable stays pending cleanup for a newly
+  reviewed retry, and abandonment discards the unused candidate while that is
+  still allowed. Agents without the capability refuse the dispatch, so update
+  existing agents explicitly. Python SDK and CLI packages are unchanged.
+
 ## Agent 0.6.13 and Go SDK — 2026-09-17
 
 - Add reviewed PostgreSQL application connections with dedicated, authenticated credentials and separate database ownership.
@@ -42,7 +54,7 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ### Fixed
 
-- Reject unsupported agent commands with an explicit failure instead of simulated success. Continue polling subsequent jobs. Queued agent upgrades remain unsupported; use the customer-initiated update command.
+- Return an explicit terminal failure for unsupported agent commands instead of simulated success. The polling loop continues with subsequent jobs. Queued agent upgrades remain unsupported; use the customer-initiated update command.
 
 ## Agent 0.6.1 — 2026-09-13
 
@@ -57,24 +69,32 @@ Agent distribution only; Python SDK and CLI remain at 0.5.0.
 
 ### Added
 
-- Retained-release rollback for the agent. Restore a selected configuration
-  snapshot using its exact local image IDs, with startup checks and recovery
-  of the current healthy runtime if the selected release fails. The agent
-  retains five snapshots and refuses incompatible ports, storage or routing.
-- Release and recovery metadata in Go SDK deployment results.
+- Manual retained-release rollback with protocol release-v1 receipts. The agent
+  validates immutable images and unchanged ports/storage/routing before replacing
+  containers, protects the selected snapshot during retention, saves the current
+  healthy runtime and recovers it if the selected release fails startup. No hooks
+  are replayed and no database or mutable data is reverted. Requires coordinated
+  control-plane rollout; no public release or automatic fleet upgrade is implied.
 
 ### Fixed
 
-- Prepare Compose configuration, image pulls and builds before replacing
-  running containers. A preparation failure preserves the existing runtime
-  and restores its configuration.
-- Recover a healthy previous release when replacement, startup health checks
-  or installation hooks fail. A recovered runtime does not turn a failed
-  deployment attempt into a successful one.
+- Agent automatic startup rollback: retain five private local configuration
+  snapshots with immutable image identities, restore an eligible previous
+  runtime after replacement, crash-loop, Docker-health deadline or install
+  hook failure, and verify recovery without pulling/building or deleting
+  volumes. Results add release/recovery metadata while preserving a failed
+  attempt status. Missing images or recovery failures report unknown runtime.
+  Includes Docker integration coverage for mutable tags, literal environment
+  values, persistent data, failed recovery and successful retries. Unreleased;
+  no database rollback, manual version selection or zero-downtime guarantee.
 
-These changes require an updated agent and compatible API support. Rollback
-can interrupt traffic and does not revert databases, mutable data or external
-side effects. Agent binary distribution is separate from this source update.
+- Agent redeploys validate Compose, pull images and build before replacing
+  containers. Preparation failures preserve existing containers and restore
+  their previous Compose and environment files. The attempted deploy remains
+  failed with a diagnostic; this is not rollback after replacement begins.
+  Includes opt-in Docker integration coverage for invalid Compose, failed
+  pulls/builds, retained HTTP availability/data and a successful retry.
+  Requires the updated agent; no SDK/CLI version or public release yet.
 
 ## [0.5.0] — 2026-09-09
 

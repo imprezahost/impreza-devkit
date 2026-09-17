@@ -222,6 +222,9 @@ func (d *Docker) provisionPostgresBindingSQL(ctx context.Context, c sdkclient.Se
 
 func validateServiceBindingManifest(p sdkclient.DeployPayload) error {
 	runtime := p.Manifest.Runtime
+	if runtime.ServiceBindingRotationProtocol != "" || runtime.ServiceBindingRotation != nil {
+		return validateServiceBindingRotation(p)
+	}
 	if runtime.ServiceBindingRetirementProtocol != "" || len(runtime.ServiceBindingRetirements) != 0 {
 		if (runtime.ServiceBindingRetirementProtocol != sdkclient.ServiceBindingRetirementProtocol && runtime.ServiceBindingRetirementProtocol != sdkclient.ServiceBindingGenerationRetirementProtocol) || runtime.Type != "docker-compose" || runtime.Build != nil || len(runtime.ServiceBindingRetirements) != 1 || runtime.ServiceBindingProtocol != "" || len(runtime.ServiceBindings) != 0 {
 			return errors.New("unsupported service binding retirement manifest")
@@ -276,6 +279,11 @@ func (d *Docker) prepareServiceBindings(ctx context.Context, cmd *sdkclient.Poll
 		return nil, errors.New("service credential response does not match the reviewed binding")
 	}
 	credential := response.Bindings[0]
+	if p.Manifest.Runtime.ServiceBindingRotation != nil {
+		if err := d.prepareServiceBindingRotation(ctx, cmd, p); err != nil {
+			return nil, err
+		}
+	}
 	var value string
 	if response.Protocol == sdkclient.ServiceBindingGenerationProtocol {
 		value, err = d.provisionPostgresGeneration(ctx, p.DeploymentID, credential)

@@ -57,16 +57,18 @@ type ManifestStartup struct {
 // customer's footgun (Docker compose will pick `build:` and ignore
 // the image hint).
 type ManifestRuntime struct {
-	ServiceBindingProtocol           string              `json:"service_binding_protocol,omitempty"`
-	ServiceBindings                  []ServiceBindingRef `json:"service_bindings,omitempty"`
-	ServiceBindingRetirementProtocol string              `json:"service_binding_retirement_protocol,omitempty"`
-	ServiceBindingRetirements        []ServiceBindingRef `json:"service_binding_retirements,omitempty"`
-	Startup                          *ManifestStartup    `json:"startup,omitempty"`
-	Type                             string              `json:"type"` // docker-compose | docker | systemd | raw
-	Isolated                         bool                `json:"isolated,omitempty"`
-	ComposeYAML                      string              `json:"compose_yaml,omitempty"`
-	DataDir                          *DataDirConfig      `json:"data_dir,omitempty"`
-	Build                            *BuildContext       `json:"build,omitempty"`
+	ServiceBindingProtocol           string                       `json:"service_binding_protocol,omitempty"`
+	ServiceBindings                  []ServiceBindingRef          `json:"service_bindings,omitempty"`
+	ServiceBindingRetirementProtocol string                       `json:"service_binding_retirement_protocol,omitempty"`
+	ServiceBindingRetirements        []ServiceBindingRef          `json:"service_binding_retirements,omitempty"`
+	ServiceBindingRotationProtocol   string                       `json:"service_binding_rotation_protocol,omitempty"`
+	ServiceBindingRotation           *ServiceBindingRotationIntent `json:"service_binding_rotation,omitempty"`
+	Startup                          *ManifestStartup             `json:"startup,omitempty"`
+	Type                             string                       `json:"type"` // docker-compose | docker | systemd | raw
+	Isolated                         bool                         `json:"isolated,omitempty"`
+	ComposeYAML                      string                       `json:"compose_yaml,omitempty"`
+	DataDir                          *DataDirConfig               `json:"data_dir,omitempty"`
+	Build                            *BuildContext                `json:"build,omitempty"`
 }
 
 // BuildContext tells the agent to fetch + extract a build context

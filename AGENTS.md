@@ -86,3 +86,7 @@ repository.
 
 The nearest AGENTS.md to the edited file wins; instructions the user gives
 in chat override this file.
+
+## Maintainer publication policy
+
+A requested GitHub publication authorizes the necessary affected package and binary releases unless explicitly source-only. Build and package from the clean curated public checkout, removing stale build outputs. Verify the registry/download and a clean installation. Do not bump unchanged packages. Keep full history in private GitLab; public commits must exclude assistant coauthors and internal test or infrastructure details. Customer agent updates are explicit and preserve identity, configuration and applications.

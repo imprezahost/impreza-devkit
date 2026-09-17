@@ -36,6 +36,9 @@ func (d *Docker) prepareServiceBindingRetirements(ctx context.Context, cmd *sdkc
 
 func validateResolvedRetirements(p sdkclient.DeployPayload) error {
 	refs := p.Manifest.Runtime.ServiceBindingRetirements
+	if p.Manifest.Runtime.ServiceBindingRotation != nil || p.Manifest.Runtime.ServiceBindingRotationProtocol != "" {
+		return validateResolvedRotation(p)
+	}
 	if len(refs) == 0 && len(p.ServiceBindingRetirementAuthorizations) == 0 && p.Manifest.Runtime.ServiceBindingRetirementProtocol == "" {
 		return nil
 	}
@@ -88,6 +91,11 @@ func (d *Docker) verifyConsumerDisconnected(ctx context.Context, consumer, provi
 }
 
 func (d *Docker) finishServiceBindingRetirements(ctx context.Context, p sdkclient.DeployPayload) []sdkclient.ServiceBindingRetirementResult {
+	// A rotation carries its target in the same authorization slot; its outcome
+	// is reported through the rotation field, never as a removal result.
+	if p.Manifest.Runtime.ServiceBindingRotation != nil {
+		return nil
+	}
 	var results []sdkclient.ServiceBindingRetirementResult
 	verified := validateResolvedRetirements(p) == nil
 	for _, c := range p.ServiceBindingRetirementAuthorizations {

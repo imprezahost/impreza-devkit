@@ -78,7 +78,7 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 			"deploy did not produce a working app: %s\n%s", detail, failLogs,
 		))
 	case settleUnsettled:
-		if previousRelease != nil || policy.RequireHealthy || len(p.Manifest.Runtime.ServiceBindingRetirements) != 0 {
+		if previousRelease != nil || policy.RequireHealthy || len(p.Manifest.Runtime.ServiceBindingRetirements) != 0 || p.Manifest.Runtime.ServiceBindingRotation != nil {
 			return failStartup("new release did not pass startup checks before the deadline: " + detail + "\n" + d.grabFailureLogs(ctx, appDir))
 		}
 		d.Log.Warn("docker deploy: stack not confirmed healthy, proceeding anyway",
@@ -276,8 +276,13 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 			settleNote += "\nDatabase connection cleanup is pending; the dedicated login was not confirmed disabled. Review and retry removal."
 		}
 	}
+	rotation := d.finishServiceBindingRotation(ctx, p, verdict == settleHealthy)
+	if rotation != nil && (rotation.Status == "cleanup_pending" || rotation.Status == "abandon_pending") {
+		settleNote += "\nDatabase credential rotation cleanup is pending; the unused login was not confirmed disabled. Data and the serving credential are retained. Review and retry the rotation."
+	}
 	return sdkclient.DeployResult{
 		ServiceBindingRetirements: retirements,
+		ServiceBindingRotation:    rotation,
 		StartupCheck:              policy.receipt(verdict),
 		CommandID:                 cmd.ID,
 		Status:                    "success",

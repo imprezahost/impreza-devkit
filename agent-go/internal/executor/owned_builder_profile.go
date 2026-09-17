@@ -85,7 +85,7 @@ func manageOwnedBuilderProfile(ctx context.Context, dir string, r *ownedBuilderR
 	}
 	if r.Profile == "" {
 		return nil
-	} // No profile was created for this record.
+	} // Pre-factory private fixture only.
 	if (r.Phase != "finished" && r.Phase != "stopped" && r.Phase != "recovered") || (r.Profile != "loaded" && r.Profile != "released") {
 		return errors.New("builder profile cannot be released before verified stop")
 	}

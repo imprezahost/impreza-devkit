@@ -9,7 +9,8 @@ import (
 	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 )
 
-// Generation logins share a stable database owner that cannot authenticate.
+// Private generation foundation. No dispatcher or public capability uses this
+// protocol until its complete reviewed lifecycle has passed acceptance.
 func bindingGenerationNames(ref sdkclient.ServiceBindingRef) (database, owner, login string) {
 	id := strings.TrimPrefix(ref.BindingID, "bnd_")
 	database, owner = "imp_"+id, "ibo_"+id

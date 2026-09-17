@@ -80,7 +80,17 @@ func (d *Docker) replacementDirectory(id string) (string, error) {
 }
 func replacementPayload(p sdkclient.DeployPayload) sdkclient.DeployPayload {
 	// The worker needs no source URLs, Git authentication or control-plane token.
-	return sdkclient.DeployPayload{DeploymentID: p.DeploymentID, Vars: p.Vars, Routes: p.Routes, ServiceBindingRetirementAuthorizations: p.ServiceBindingRetirementAuthorizations, Manifest: sdkclient.AppManifest{Runtime: sdkclient.ManifestRuntime{Type: p.Manifest.Runtime.Type, Startup: p.Manifest.Runtime.Startup, ServiceBindingRetirementProtocol: p.Manifest.Runtime.ServiceBindingRetirementProtocol, ServiceBindingRetirements: p.Manifest.Runtime.ServiceBindingRetirements}, Lifecycle: p.Manifest.Lifecycle}}
+	runtime := sdkclient.ManifestRuntime{Type: p.Manifest.Runtime.Type, Startup: p.Manifest.Runtime.Startup, ServiceBindingRetirementProtocol: p.Manifest.Runtime.ServiceBindingRetirementProtocol, ServiceBindingRetirements: p.Manifest.Runtime.ServiceBindingRetirements}
+	// A rotation needs its reviewed intent and serving reference so the worker
+	// can verify and retire the unused generation. The serving credential is
+	// already resolved into Vars; plain bindings are never re-validated there.
+	if p.Manifest.Runtime.ServiceBindingRotation != nil {
+		runtime.ServiceBindingProtocol = p.Manifest.Runtime.ServiceBindingProtocol
+		runtime.ServiceBindings = p.Manifest.Runtime.ServiceBindings
+		runtime.ServiceBindingRotationProtocol = p.Manifest.Runtime.ServiceBindingRotationProtocol
+		runtime.ServiceBindingRotation = p.Manifest.Runtime.ServiceBindingRotation
+	}
+	return sdkclient.DeployPayload{DeploymentID: p.DeploymentID, Vars: p.Vars, Routes: p.Routes, ServiceBindingRetirementAuthorizations: p.ServiceBindingRetirementAuthorizations, Manifest: sdkclient.AppManifest{Runtime: runtime, Lifecycle: p.Manifest.Lifecycle}}
 }
 func (d *Docker) createReplacementWork(cmd *sdkclient.PollCommand, p sdkclient.DeployPayload, previous *runtimeRelease, redeploy bool, containers []string) (*ReplacementWork, error) {
 	docker, err := exec.LookPath("docker")

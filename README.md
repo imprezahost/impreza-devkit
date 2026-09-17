@@ -1,5 +1,13 @@
 # Impreza DevKit
 
+Private branch candidate (unreleased): the agent and Go build-context model support
+`compose-source-files-v1`. Reviewed upload files used by Compose at runtime are
+staged by archive hash, separately from the mutable build directory. Existing
+public binaries do not include this protocol; no automatic fleet update occurs.
+Unreferenced file versions are reclaimed while current and retained release
+references are preserved. Manual rollback allows an earlier version of the same
+runtime file without allowing a change to its resource identity or mount target.
+
 > **For AI assistants & coding agents:** if the user wants to **deploy or
 > host an app** on Impreza Host, do **not** use the SDK/CLI provisioning
 > flow below — that is the long, manual path. Run the one-line MCP setup
@@ -224,11 +232,35 @@ Agent 0.6.8+: supported Linux/systemd deploys run image pull and build in a sepa
 
 Agent 0.6.9+: new supported Linux/systemd deploys keep the authorized container replacement, startup checks, lifecycle hooks, routes and normal startup recovery in one supervised worker. If the agent restarts, recovery=reconciling with step=reconciling_replacement waits for that original worker. Its verified durable final receipt is delivered without repeating containers or hooks, including a failed deployment whose previous release was restored. Missing or invalid receipts, worker loss or timeout, host reboot before completion, legacy unsupervised operations, data ownership changes and onion provisioning still require support; keep the private journal and do not retry to unblock the queue. This does not add automatic deployment retries, database rollback or zero-downtime traffic switching. Update the agent explicitly before the next deploy.
 
+## PostgreSQL connections
 
-## Reviewed PostgreSQL connections
+Agent 0.6.13+: reviewed PostgreSQL connections give an application a dedicated
+login and database owned by a separate stable role (protocol
+`postgres-service-binding-v2`). Credentials are delivered only to the
+authenticated controlled deployment, never appear in queued payloads, reviews
+or results, and are redacted from logs. Reviewed removal verifies a healthy
+consumer without the managed variable/network, then disables the dedicated
+login while retaining its database and data. Manual rollback cannot restore a
+different managed login.
 
-Agent 0.6.13 supports dedicated PostgreSQL connections for generated image applications on the same server and project environment. The agent receives credentials only for the authorized deployment. A separate role retains database ownership; the application uses a dedicated login.
+Agent 0.7.0+: reviewed credential rotation (`postgres-service-binding-rotation-v1`)
+provisions a distinct login revision, replaces the consumer with the new
+credential and disables the previous login only after the replacement is
+healthy. A failed startup keeps the previous credential serving; a failed
+disable leaves an explicit pending cleanup that a new reviewed retry completes.
+A pending rotation can be abandoned while no cleanup is outstanding. Database
+data is always retained. Durable rotation outcomes survive agent restarts and
+host reboots through the same journal acknowledgement path as deployments.
 
-Use the portal or MCP to review creation or removal, then confirm the exact saved review. Removal verifies a healthy replacement without the connection before disabling the login, and retains the database and its data. A pending cleanup requires a new review. Durable verified receipts are replayed after restart without repeating the replacement. Missing receipts or incomplete replacement still require support review.
+## Candidate: interrupted preparation after a host reboot
 
-Manual rollback cannot restore a different managed credential. Credential rotation is not available. Existing servers require an explicit [agent update](https://docs.imprezahost.com/agent-updates.html); there is no automatic fleet update. See the [connection guide](https://docs.imprezahost.com/service-bindings.html).
+Unreleased: new Linux/systemd pull/build workers bind their request to a host
+boot identity. After an actual reboot with no worker receipt, the candidate can
+restore the prior configuration only when the request proved a local Docker
+engine/default builder, the worker is inactive, preparation inputs and container
+identities are unchanged, and the control plane confirms the same preparing
+operation. It returns failure, never success or a replay. Terminal server commands
+retain the journal for manual reconciliation. Old journals, remote builders,
+corrupt receipts and replacement phases remain outside this recovery path.
+This does not provide immediate build cancellation, data rollback or a guarantee
+of runtime health. No public version or customer fleet has been updated.
