@@ -19,6 +19,40 @@ const ServiceBindingGenerationRetirementProtocol = "postgres-service-binding-ret
 // consumer is healthy, and a rotation never retires the login it serves.
 const ServiceBindingRotationProtocol = "postgres-service-binding-rotation-v1"
 
+// ServiceBindingBackupProtocol authorizes one reviewed backup transport job to
+// read the current generation's credential just in time. It never creates a
+// login and never reaches the persisted manifest beyond the secret-free spec.
+const ServiceBindingBackupProtocol = "postgres-service-binding-backup-v1"
+
+// BackupDatabaseSpec is the reviewed database stage of a backup transport job.
+// References contain no credentials; the agent authorizes them for the current
+// command only. VerifyDatabase is the scratch name the agent creates on the
+// provider for the mandatory verified restore.
+type BackupDatabaseSpec struct {
+	ServiceBindingRef
+	Protocol             string `json:"protocol"`
+	ConsumerDeploymentID string `json:"consumer_deployment_id"`
+	VerifyDatabase       string `json:"verify_database"`
+}
+
+// ServiceBindingRestoreProtocol authorizes one reviewed restore transport job
+// to read the current generation's credential just in time and to land the
+// verified dump in a NEW database. It never touches the serving one.
+const ServiceBindingRestoreProtocol = "postgres-service-binding-restore-v1"
+
+// RestoreDatabaseSpec is the reviewed database stage of a restore transport
+// job. References contain no credentials; the agent authorizes them for the
+// current command only. RestoreDatabase is the new database the agent creates
+// on the provider; the live database is never named as a target.
+type RestoreDatabaseSpec struct {
+	ServiceBindingRef
+	Protocol             string `json:"protocol"`
+	ConsumerDeploymentID string `json:"consumer_deployment_id"`
+	RestoreDatabase      string `json:"restore_database"`
+	ExpectedTables       int    `json:"expected_tables"`
+	DumpSHA256           string `json:"dump_sha256"`
+}
+
 // References contain no credentials. The agent must authorize them for the current command.
 type ServiceBindingRef struct {
 	BindingID            string `json:"binding_id"`
@@ -82,6 +116,16 @@ type ServiceBindingRotationResult struct {
 	Status            string `json:"status"` // completed | cleanup_pending | abandoned | abandon_pending
 }
 
+// DatabaseRestoreResult is the durable outcome of a reviewed database
+// restore: the NEW database, verified by an agent-side table count against
+// the reviewed expectation. The live database is never named here — it was
+// never touched.
+type DatabaseRestoreResult struct {
+	RestoreID string `json:"restore_id"`
+	Database  string `json:"database"`
+	Tables    int    `json:"tables"`
+}
+
 func (c *Client) AgentServiceBindingRetirements(ctx context.Context, deploymentID, commandID, controlToken string) (*ServiceBindingRetirements, error) {
 	if !regexp.MustCompile(`^dpl_(?:[a-f0-9]{16}|[a-f0-9]{24})$`).MatchString(deploymentID) {
 		return nil, errors.New("invalid deployment identity")
@@ -97,5 +141,28 @@ func (c *Client) AgentServiceBindings(ctx context.Context, deploymentID, command
 	}
 	var result ServiceBindingCredentials
 	err := c.Post(ctx, "/v1/agent/service-bindings/"+url.PathEscape(deploymentID), map[string]string{"command_id": commandID, "control_token": controlToken}, &result)
+	return &result, err
+}
+
+// AgentServiceBindingBackup authorizes the database stage of the exact backup
+// transport job being executed. The path carries the job's own deployment id.
+func (c *Client) AgentServiceBindingBackup(ctx context.Context, jobDeploymentID, commandID, controlToken string) (*ServiceBindingCredentials, error) {
+	if !regexp.MustCompile(`^bkpjob_[a-f0-9]{16}$`).MatchString(jobDeploymentID) {
+		return nil, errors.New("invalid backup job identity")
+	}
+	var result ServiceBindingCredentials
+	err := c.Post(ctx, "/v1/agent/service-binding-backup/"+url.PathEscape(jobDeploymentID), map[string]string{"command_id": commandID, "control_token": controlToken}, &result)
+	return &result, err
+}
+
+// AgentServiceBindingRestore authorizes the database stage of the exact
+// restore transport job being executed. The path carries the job's own
+// deployment id.
+func (c *Client) AgentServiceBindingRestore(ctx context.Context, jobDeploymentID, commandID, controlToken string) (*ServiceBindingCredentials, error) {
+	if !regexp.MustCompile(`^rstjob_[a-f0-9]{16}$`).MatchString(jobDeploymentID) {
+		return nil, errors.New("invalid restore job identity")
+	}
+	var result ServiceBindingCredentials
+	err := c.Post(ctx, "/v1/agent/service-binding-restores/"+url.PathEscape(jobDeploymentID), map[string]string{"command_id": commandID, "control_token": controlToken}, &result)
 	return &result, err
 }

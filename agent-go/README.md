@@ -183,3 +183,19 @@ is insufficient. The API preserves a configured timeout (30–600 seconds), or u
 that test the application's actual readiness, including database access as needed.
 Failed checks preserve the credentials for a reviewed retry and recover a verified
 previous release when available. See [PostgreSQL connections](https://docs.imprezahost.com/service-bindings.html#rotation).
+
+## Reviewed routing and data workflows
+
+Agent 0.6.16 supports reviewed hostname switches between applications on the same
+server, password-protected HTTPS previews, PostgreSQL backups with a restore check,
+and assisted restore into a new database. A traffic switch keeps the source running.
+If routing recovery cannot be verified, preserve the journal and request support
+before attempting another change. Restore does not cut over the application or
+provide point-in-time recovery. Update an existing agent explicitly after active
+operations finish; identity, configuration and applications are preserved.
+
+The IPv4 egress baseline covers forwarded traffic entering standard Docker bridges.
+It blocks outbound mail and private/metadata destinations and limits new connections.
+It does not cover IPv6, host networking, custom bridge names or all forms of abuse.
+Installation failure is reported and does not stop the agent; this is not a complete
+network sandbox. See the deployment-safety and service-bindings guides for limits.

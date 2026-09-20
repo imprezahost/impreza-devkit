@@ -12,6 +12,17 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## Agent 0.6.16 and Go SDK — 2026-09-19
+
+- Add reviewed traffic switches with health verification, rollback and a durable
+  recovery journal; the source application keeps running.
+- Add password-protected HTTPS previews, PostgreSQL backup verification and
+  assisted restoration into a new database without automatic cutover.
+- Add an IPv4 Docker egress baseline for standard bridges. This does not cover
+  IPv6, host networking, custom bridge names or all outbound abuse.
+- Clarify basic Cloud VPS management: status/resources and boot/shutdown/reboot.
+  Existing agent installations update only at the customer's request.
+
 ## Agent 0.6.15 — 2026-09-17
 
 - Require mandatory Docker health checks for PostgreSQL credential rotation and

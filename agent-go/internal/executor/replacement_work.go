@@ -80,7 +80,7 @@ func (d *Docker) replacementDirectory(id string) (string, error) {
 }
 func replacementPayload(p sdkclient.DeployPayload) sdkclient.DeployPayload {
 	// The worker needs no source URLs, Git authentication or control-plane token.
-	runtime := sdkclient.ManifestRuntime{Type: p.Manifest.Runtime.Type, Startup: p.Manifest.Runtime.Startup, ServiceBindingRetirementProtocol: p.Manifest.Runtime.ServiceBindingRetirementProtocol, ServiceBindingRetirements: p.Manifest.Runtime.ServiceBindingRetirements}
+	runtime := sdkclient.ManifestRuntime{Type: p.Manifest.Runtime.Type, Startup: p.Manifest.Runtime.Startup, ServiceBindingRetirementProtocol: p.Manifest.Runtime.ServiceBindingRetirementProtocol, ServiceBindingRetirements: p.Manifest.Runtime.ServiceBindingRetirements, BackupDatabase: p.Manifest.Runtime.BackupDatabase, RestoreDatabase: p.Manifest.Runtime.RestoreDatabase}
 	// A rotation needs its reviewed intent and serving reference so the worker
 	// can verify and retire the unused generation. The serving credential is
 	// already resolved into Vars; plain bindings are never re-validated there.
@@ -90,7 +90,7 @@ func replacementPayload(p sdkclient.DeployPayload) sdkclient.DeployPayload {
 		runtime.ServiceBindingRotationProtocol = p.Manifest.Runtime.ServiceBindingRotationProtocol
 		runtime.ServiceBindingRotation = p.Manifest.Runtime.ServiceBindingRotation
 	}
-	return sdkclient.DeployPayload{DeploymentID: p.DeploymentID, Vars: p.Vars, Routes: p.Routes, ServiceBindingRetirementAuthorizations: p.ServiceBindingRetirementAuthorizations, Manifest: sdkclient.AppManifest{Runtime: runtime, Lifecycle: p.Manifest.Lifecycle}}
+	return sdkclient.DeployPayload{DeploymentID: p.DeploymentID, Vars: p.Vars, Routes: p.Routes, ServiceBindingRetirementAuthorizations: p.ServiceBindingRetirementAuthorizations, RestorePlanID: p.RestorePlanID, Manifest: sdkclient.AppManifest{Runtime: runtime, Lifecycle: p.Manifest.Lifecycle}}
 }
 func (d *Docker) createReplacementWork(cmd *sdkclient.PollCommand, p sdkclient.DeployPayload, previous *runtimeRelease, redeploy bool, containers []string) (*ReplacementWork, error) {
 	docker, err := exec.LookPath("docker")
@@ -215,13 +215,24 @@ func (d *Docker) waitReplacementWork(ctx context.Context, cmd *sdkclient.PollCom
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	lastStep := ""
+	// "Worker gone without a receipt" must persist before we believe it:
+	// right after systemd-run the unit can take a moment to register, and a
+	// transient D-Bus hiccup reads exactly the same. Believing the first
+	// observation ended supervised replacements at launch under load (seen
+	// intermittently in the acceptance matrix).
+	gone := 0
 	for ctx.Err() == nil {
 		r, err := d.CompletedReplacementWork(w)
 		if err == nil {
 			return *r
 		}
-		if !errors.Is(err, ErrReplacementPending) {
-			break
+		if errors.Is(err, ErrReplacementPending) {
+			gone = 0
+		} else {
+			gone++
+			if gone >= 5 {
+				break
+			}
 		}
 		if dir, dirErr := d.replacementDirectory(w.ID); dirErr == nil {
 			var progress replacementProgress

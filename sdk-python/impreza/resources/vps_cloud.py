@@ -1,20 +1,8 @@
-"""Cloud-only VPS sub-resources (Phase 1.4b-ii).
+"""Legacy Cloud infrastructure sub-resources retained for compatibility.
 
-Mounted on the :class:`~impreza.resources.vps.Vps` bound model as
-``vps.images``, ``vps.rescue``, ``vps.iso``, ``vps.rdns``, and
-``vps.ssh_keys`` properties. Each sub-resource raises
-:class:`~impreza.exceptions.BackendNotSupported` when accessed on a
-Proxmox VPS.
-
-Note on rDNS: the underlying API (``/vps/cloud/rdns/{ip}``) is
-account-level (not bound to a particular VM), but the SDK exposes it
-through ``vps.rdns`` so users with a :class:`Vps` in hand have direct
-access. The ``ip`` argument selects which IP record is being managed
-within the account.
-
-Note on SSH keys: ``ssh_keys.list()`` returns account-level keys,
-shared across every Cloud VPS the client owns. ``assign(key_ids)``
-attaches one or more keys to the current bound VPS.
+After the basic-management policy rolls out, these operations return API
+FEATURE_NOT_AVAILABLE (403). They are not supported by the basic VPS profile;
+use status, resources and start/shutdown/reboot, or contact Impreza support.
 """
 
 from __future__ import annotations

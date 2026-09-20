@@ -21,13 +21,16 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
@@ -86,12 +89,51 @@ type Route struct {
 	// token must be available to the Caddy container via the env-var
 	// CloudflareTokenEnvVar — see SetCloudflareToken.
 	TLSDNSProvider string
+	// BasicAuth (protected previews) gates the route behind HTTP Basic
+	// auth. Carries only the bcrypt hash of the server-generated
+	// password — the plaintext never leaves the platform's creation
+	// response. Validated on write; an invalid hash is refused, never
+	// silently dropped (that would serve the route publicly).
+	BasicAuth *BasicAuth
+}
+
+// BasicAuth is one HTTP Basic credential gate for a route.
+type BasicAuth struct {
+	Username   string
+	BCryptHash string
+}
+
+// basicAuthUsernameRe keeps the Caddyfile free of injection: the username
+// lands inside a `basic_auth { user hash }` block, so it can never contain
+// whitespace, braces or quotes.
+var basicAuthUsernameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
+// basicAuthHashRe is a bcrypt hash with cost >= 10 ($2a$/$2b$/$2y$). Lower
+// costs are refused: below 10 the hash is fast enough to brute-force
+// online against the proxy.
+var basicAuthHashRe = regexp.MustCompile(`^\$2[aby]\$(1[0-9]|2[0-9]|3[01])\$[./A-Za-z0-9]{53}$`)
+
+// validateBasicAuth refuses malformed credentials rather than emitting a
+// fragment Caddy would reject (breaking every other route on reload) or —
+// worse — silently skipping the gate.
+func validateBasicAuth(b *BasicAuth) error {
+	if b == nil {
+		return nil
+	}
+	if !basicAuthUsernameRe.MatchString(b.Username) {
+		return fmt.Errorf("basic_auth username %q is not a safe label", b.Username)
+	}
+	if !basicAuthHashRe.MatchString(b.BCryptHash) {
+		return fmt.Errorf("basic_auth hash is not a bcrypt hash with cost >= 10")
+	}
+	return nil
 }
 
 // Caddy owns the host's reverse-proxy state.
 type Caddy struct {
-	StateDir string // <agent-state>/proxy
-	Log      *slog.Logger
+	StateDir     string // <agent-state>/proxy
+	Log          *slog.Logger
+	switchReload func(context.Context) error // test seam for reload failure boundaries
 }
 
 // New constructs a Caddy under <agentStateDir>/proxy.
@@ -131,6 +173,9 @@ func (c *Caddy) EnsureNetwork(ctx context.Context) error {
 //     Caddy that can serve DNS-01 fragments. Data dir is bind-mounted
 //     so existing certs survive the recreation.
 func (c *Caddy) EnsureRunning(ctx context.Context) error {
+	if err := c.guardRoutingSwitch(); err != nil {
+		return err
+	}
 	if err := c.ensureDirs(); err != nil {
 		return err
 	}
@@ -311,6 +356,9 @@ func (c *Caddy) SetImprezaCredentials(ctx context.Context, agentID, agentSecret,
 // regenerates the aggregate Caddyfile, and reloads Caddy. Passing an
 // empty `routes` slice removes the deployment's fragment.
 func (c *Caddy) ApplyDeploymentRoutes(ctx context.Context, deploymentID string, routes []Route) error {
+	if err := c.guardRoutingSwitch(); err != nil {
+		return err
+	}
 	if err := c.ensureDirs(); err != nil {
 		return err
 	}
@@ -319,6 +367,14 @@ func (c *Caddy) ApplyDeploymentRoutes(ctx context.Context, deploymentID string, 
 	if len(routes) == 0 {
 		_ = os.Remove(fragPath)
 	} else {
+		// Refuse a malformed gate up front: writing it would either break
+		// `caddy reload` for every deployment on the box or, worse, skip
+		// the auth directive and serve a protected route publicly.
+		for _, r := range routes {
+			if err := validateBasicAuth(r.BasicAuth); err != nil {
+				return fmt.Errorf("route %s: %w", r.Hostname+r.OnionAddr, err)
+			}
+		}
 		body := renderFragment(deploymentID, routes)
 		if err := os.WriteFile(fragPath, []byte(body), 0o644); err != nil {
 			return fmt.Errorf("write fragment %s: %w", fragPath, err)
@@ -333,6 +389,216 @@ func (c *Caddy) ApplyDeploymentRoutes(ctx context.Context, deploymentID string, 
 // RemoveDeploymentRoutes deletes the per-deployment fragment and reloads.
 func (c *Caddy) RemoveDeploymentRoutes(ctx context.Context, deploymentID string) error {
 	return c.ApplyDeploymentRoutes(ctx, deploymentID, nil)
+}
+
+// splitFragment breaks a fragment into its leading comments and its site
+// blocks. The renderer's own output shape only: a block opens at column zero
+// and closes with `}` at column zero. Anything else refuses — a fragment we
+// cannot parse exactly is a fragment we must not rewrite.
+func splitFragment(raw string) (header []string, blocks []string, err error) {
+	raw = strings.TrimRight(raw, "\n")
+	if raw == "" {
+		return nil, nil, nil
+	}
+	lines := strings.Split(raw, "\n")
+	i := 0
+	for i < len(lines) && (strings.HasPrefix(lines[i], "#") || lines[i] == "") {
+		i++
+	}
+	header = lines[:i]
+	for i < len(lines) {
+		if lines[i] == "" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(lines[i], " ") || strings.HasPrefix(lines[i], "\t") {
+			return nil, nil, fmt.Errorf("fragment block opens with indentation")
+		}
+		start := i
+		for i < len(lines) && lines[i] != "}" {
+			i++
+		}
+		if i >= len(lines) {
+			return nil, nil, fmt.Errorf("fragment block is never closed")
+		}
+		i++
+		blocks = append(blocks, strings.Join(lines[start:i], "\n"))
+	}
+	return header, blocks, nil
+}
+
+// SwitchHostname moves one hostname's site block from the source deployment's
+// fragment to the target's, repointing its upstream. The block keeps its TLS
+// directives verbatim: the certificate already exists for the hostname, and a
+// re-issuance mid-switch would be downtime of our own making. The source keeps
+// every other block (its onion mirror stays). Returns a rollback that restores
+// both previous fragments and reloads; the caller decides when to run it.
+var ErrRoutingRecoveryRequired = errors.New("routing recovery required")
+
+func (c *Caddy) SwitchHostname(ctx context.Context, hostname, sourceID, targetID, upstream string) (undo func(context.Context) error, retErr error) {
+	if err := c.guardRoutingSwitch(); err != nil {
+		return nil, err
+	}
+	if err := c.ensureDirs(); err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(c.StateDir, "deployments")
+	sourcePath := filepath.Join(dir, sourceID+".caddy")
+	targetPath := filepath.Join(dir, targetID+".caddy")
+	rawSource, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return nil, fmt.Errorf("source fragment unreadable: %w", err)
+	}
+	header, blocks, err := splitFragment(string(rawSource))
+	if err != nil {
+		return nil, fmt.Errorf("source fragment shape unverified: %w", err)
+	}
+	var moved string
+	kept := blocks[:0]
+	for _, block := range blocks {
+		if strings.HasPrefix(block, hostname+" {") {
+			if moved != "" {
+				return nil, fmt.Errorf("hostname appears twice in the source fragment")
+			}
+			moved = block
+			continue
+		}
+		kept = append(kept, block)
+	}
+	if moved == "" {
+		return nil, fmt.Errorf("the source is not serving the reviewed hostname")
+	}
+	lines := strings.Split(moved, "\n")
+	found := false
+	for i, line := range lines {
+		if strings.HasPrefix(line, "  reverse_proxy ") {
+			if found {
+				return nil, fmt.Errorf("hostname block has more than one upstream")
+			}
+			lines[i] = "  reverse_proxy " + upstream
+			found = true
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("hostname block has no upstream to repoint")
+	}
+	moved = strings.Join(lines, "\n")
+
+	var rawTarget []byte
+	if data, err := os.ReadFile(targetPath); err == nil {
+		rawTarget = data
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("target fragment unreadable: %w", err)
+	}
+	targetHeader, targetBlocks, err := splitFragment(string(rawTarget))
+	if err != nil {
+		return nil, fmt.Errorf("target fragment shape unverified: %w", err)
+	}
+	targetBlocks = append(targetBlocks, moved)
+	if err := c.beginRoutingSwitch(routingSwitchRecord{Version: 1, Hostname: hostname, Source: sourceID, Target: targetID, SourceBefore: rawSource, TargetBefore: rawTarget, TargetExisted: rawTarget != nil}); err != nil {
+		return nil, errors.Join(ErrRoutingRecoveryRequired, err)
+	}
+	// Install rollback before the first mutation. A cancelled request must not
+	// cancel recovery, and one failed restoration must not skip the other file.
+	rollback := func(_ context.Context) error {
+		recovery, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		var failures []error
+		if rawTarget == nil {
+			if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
+				failures = append(failures, err)
+			}
+		} else if err := writeSwitchFile(targetPath, rawTarget); err != nil {
+			failures = append(failures, err)
+		}
+		if err := writeSwitchFile(sourcePath, rawSource); err != nil {
+			failures = append(failures, err)
+		}
+		if len(failures) > 0 {
+			return errors.Join(failures...)
+		}
+		if err := c.regenerateCaddyfile(); err != nil {
+			return err
+		}
+		if err := c.reloadSwitch(recovery); err != nil {
+			return err
+		}
+		return c.CompleteHostnameSwitch(hostname, sourceID, targetID)
+	}
+	defer func() {
+		if retErr != nil {
+			if err := rollback(context.Background()); err != nil {
+				retErr = errors.Join(retErr, ErrRoutingRecoveryRequired, err)
+			}
+		}
+	}()
+
+	write := func(path, deploymentID string, header, blocks []string) error {
+		if len(blocks) == 0 {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return nil
+		}
+		var sb strings.Builder
+		for _, line := range header {
+			sb.WriteString(line + "\n")
+		}
+		if len(header) == 0 {
+			fmt.Fprintf(&sb, "# deployment %s\n", deploymentID)
+		}
+		for _, block := range blocks {
+			sb.WriteString(block + "\n\n")
+		}
+		return writeSwitchFile(path, []byte(sb.String()))
+	}
+	if err := write(sourcePath, sourceID, header, kept); err != nil {
+		return nil, fmt.Errorf("write source fragment: %w", err)
+	}
+	if err := write(targetPath, targetID, targetHeader, targetBlocks); err != nil {
+		return nil, fmt.Errorf("write target fragment: %w", err)
+	}
+	if err := c.regenerateCaddyfile(); err != nil {
+		return nil, err
+	}
+	if err := c.reloadSwitch(ctx); err != nil {
+		return nil, err
+	}
+	return rollback, nil
+}
+
+func writeSwitchFile(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".route-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(f.Name(), path); err != nil {
+		return err
+	}
+	return syncRoutingDir(filepath.Dir(path))
+}
+
+// A rejected configuration must never trigger a restart of the serving proxy.
+func (c *Caddy) reloadSwitch(ctx context.Context) error {
+	if c.switchReload != nil {
+		return c.switchReload(ctx)
+	}
+	if err := exec.CommandContext(ctx, "docker", "exec", ContainerName, "caddy", "reload", "--config", "/etc/caddy/Caddyfile").Run(); err != nil {
+		return fmt.Errorf("proxy did not accept routing: %w", err)
+	}
+	return nil
 }
 
 // regenerateCaddyfile reads all fragments in sorted order and writes a
@@ -361,8 +627,7 @@ func (c *Caddy) regenerateCaddyfile() error {
 	for _, n := range names {
 		data, err := os.ReadFile(filepath.Join(dir, n))
 		if err != nil {
-			c.Log.Warn("proxy: skipping unreadable fragment", "name", n, "err", err)
-			continue
+			return fmt.Errorf("read routing fragment %s: %w", n, err)
 		}
 		sb.Write(data)
 		if !strings.HasSuffix(string(data), "\n") {
@@ -370,7 +635,21 @@ func (c *Caddy) regenerateCaddyfile() error {
 		}
 		sb.WriteByte('\n')
 	}
-	return os.WriteFile(filepath.Join(c.StateDir, "Caddyfile"), []byte(sb.String()), 0o644)
+	// Preserve the inode mounted into Caddy, but make its content durable before
+	// the switch recovery record can be cleared.
+	f, err := os.OpenFile(filepath.Join(c.StateDir, "Caddyfile"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.WriteString(sb.String()); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // reload tells Caddy to re-read its Caddyfile in-place. Fast (no
@@ -482,6 +761,7 @@ func renderFragment(deploymentID string, routes []Route) string {
 				// is the standard Caddy way; we rely on Caddyfile
 				// shorthand here.
 			}
+			writeBasicAuth(&sb, r.BasicAuth)
 			fmt.Fprintf(&sb, "  reverse_proxy %s\n", r.Upstream)
 			fmt.Fprintf(&sb, "}\n")
 		}
@@ -492,9 +772,19 @@ func renderFragment(deploymentID string, routes []Route) string {
 		// since Let's Encrypt can't issue for .onion anyway).
 		if r.OnionAddr != "" {
 			fmt.Fprintf(&sb, "http://%s {\n", r.OnionAddr)
+			writeBasicAuth(&sb, r.BasicAuth)
 			fmt.Fprintf(&sb, "  reverse_proxy %s\n", r.Upstream)
 			fmt.Fprintf(&sb, "}\n")
 		}
 	}
 	return sb.String()
+}
+
+// writeBasicAuth emits the gate for a protected route. Validated upstream
+// (ApplyDeploymentRoutes), so this only ever writes a safe bcrypt line.
+func writeBasicAuth(sb *strings.Builder, b *BasicAuth) {
+	if b == nil {
+		return
+	}
+	fmt.Fprintf(sb, "  basic_auth {\n    %s %s\n  }\n", b.Username, b.BCryptHash)
 }

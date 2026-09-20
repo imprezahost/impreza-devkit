@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func replacementFixture(t *testing.T) (*Docker, *ReplacementWork, string) {
@@ -123,5 +124,44 @@ func TestReplacementCancellationRetainsWorkerAndCleanupRejectsUnknownFiles(t *te
 	os.Remove(filepath.Join(dir, "unexpected"))
 	if err := d.ForgetReplacementWork(w); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The liveness probe is a transient answer by nature: a unit mid-registration
+// and a D-Bus hiccup read exactly like a vanished worker. The wait must only
+// give up when "gone" persists — and must still give up when it does.
+func TestReplacementWaitSurvivesTransientLivenessProbe(t *testing.T) {
+	d, w, bin := replacementFixture(t)
+	counter := filepath.Join(bin, "probes")
+	os.WriteFile(filepath.Join(bin, "systemctl"), []byte("#!/bin/sh\nn=$(cat '"+counter+"' 2>/dev/null || echo 0); n=$((n+1)); echo $n > '"+counter+"'\nif [ $n -lt 3 ]; then exit 1; fi\necho active\n"), 0700)
+	go func() {
+		time.Sleep(2500 * time.Millisecond)
+		dir, _, err := d.loadReplacementWork(w)
+		if err != nil {
+			return
+		}
+		receipt := replacementReceipt{Version: 1, ID: w.ID, RequestSHA256: w.RequestSHA256, Result: sdkclient.DeployResult{CommandID: w.CommandID, DeploymentID: w.DeploymentID, Status: "success", LogsTail: "landed"}}
+		_ = writePrivateWorkJSON(dir, "result.json", receipt, replacementRecordLimit)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	r := d.waitReplacementWork(ctx, &sdkclient.PollCommand{ID: w.CommandID}, w)
+	if r.Status != "success" || r.LogsTail != "landed" {
+		t.Fatalf("transient probe failures ended the supervised wait: %+v", r)
+	}
+}
+
+func TestReplacementWaitDetectsAVanishedWorker(t *testing.T) {
+	d, w, bin := replacementFixture(t)
+	os.WriteFile(filepath.Join(bin, "systemctl"), []byte("#!/bin/sh\nexit 1\n"), 0700)
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	r := d.waitReplacementWork(ctx, &sdkclient.PollCommand{ID: w.CommandID}, w)
+	if r.Status != PreparationPendingStatus {
+		t.Fatalf("a worker gone for good must surface as pending review: %+v", r)
+	}
+	if time.Since(start) < 4*time.Second {
+		t.Fatal("the wait believed the first probe")
 	}
 }

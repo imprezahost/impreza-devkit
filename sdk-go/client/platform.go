@@ -61,8 +61,10 @@ type ManifestRuntime struct {
 	ServiceBindings                  []ServiceBindingRef          `json:"service_bindings,omitempty"`
 	ServiceBindingRetirementProtocol string                       `json:"service_binding_retirement_protocol,omitempty"`
 	ServiceBindingRetirements        []ServiceBindingRef          `json:"service_binding_retirements,omitempty"`
-	ServiceBindingRotationProtocol   string                       `json:"service_binding_rotation_protocol,omitempty"`
+	ServiceBindingRotationProtocol   string                        `json:"service_binding_rotation_protocol,omitempty"`
 	ServiceBindingRotation           *ServiceBindingRotationIntent `json:"service_binding_rotation,omitempty"`
+	BackupDatabase                   *BackupDatabaseSpec           `json:"backup_database,omitempty"`
+	RestoreDatabase                  *RestoreDatabaseSpec          `json:"restore_database,omitempty"`
 	Startup                          *ManifestStartup             `json:"startup,omitempty"`
 	Type                             string                       `json:"type"` // docker-compose | docker | systemd | raw
 	Isolated                         bool                         `json:"isolated,omitempty"`
@@ -209,6 +211,10 @@ type Route struct {
 	Upstream string      `json:"upstream,omitempty"`
 	TLS      *RouteTLS   `json:"tls,omitempty"`
 	Onion    *RouteOnion `json:"onion,omitempty"`
+	// BasicAuth (protected previews) gates the route behind HTTP Basic
+	// auth; the server sends only the bcrypt hash of the generated
+	// password — the plaintext exists once, in the creation response.
+	BasicAuth *RouteBasicAuth `json:"basic_auth,omitempty"`
 }
 
 // RouteTLS configures the certificate provisioning for the hostname.
@@ -233,6 +239,22 @@ type RouteTLS struct {
 type RouteOnion struct {
 	Enabled bool   `json:"enabled"`
 	Address string `json:"address,omitempty"` // populated by the agent after Tor sets it up
+}
+
+// PreviewBasicAuthProtocol is the poll capability an agent announces when
+// its proxy can enforce Route.BasicAuth. The server never dispatches a
+// protected route to an agent that does not announce it — an agent that
+// ignored the field would serve the preview publicly, the exact opposite
+// of what the customer asked for.
+const PreviewBasicAuthProtocol = "preview-basic-auth-v1"
+
+// RouteBasicAuth gates a route behind HTTP Basic authentication. The
+// server generates the password and hands over ONLY the bcrypt hash; the
+// agent never sees the plaintext. Caddy verifies credentials in constant
+// time against the hash.
+type RouteBasicAuth struct {
+	Username    string `json:"username"`
+	BCryptHash  string `json:"bcrypt_hash"`
 }
 
 // ─────────────────────────────────────────────────────────────────────

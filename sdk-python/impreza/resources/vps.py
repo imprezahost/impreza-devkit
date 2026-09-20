@@ -1,36 +1,10 @@
-"""VPS resource — accessed via ``Client.vps`` and ``AsyncClient.vps``.
+"""VPS resources with backend-aware dispatch.
 
-Phase 1.4b-i delivers the **smart-dispatch entry point** plus the
-**common operations** shared by both VPS backends (Proxmox, Cloud):
-
-* ``c.vps.get(service_id)`` resolves the backend via
-  ``GET /account/services/{id}`` and returns a :class:`Vps` (or
-  :class:`AsyncVps`) bound model carrying the backend identity.
-* The bound model exposes the operations that exist on both
-  backends: power (``start`` / ``stop`` / ``reboot`` / ``shutdown``),
-  ``set_hostname``, ``set_password``, ``reinstall``, ``status``.
-* ``c.vps.list()`` returns every VPS the client owns across both
-  backends, normalized.
-* Direct-ID convenience wrappers (``c.vps.start(service_id)`` etc.)
-  exist for one-shot use; they cache the resolved backend on the
-  resource so a follow-up call doesn't re-fetch the service.
-
-Backend-specific surfaces (snapshots+backups+queue for Proxmox;
-images+rescue+ISO+rDNS for Cloud) land in 1.4b-ii.
-
-URL normalization for power operations:
-
-==================  ========================  ===========================
-Common method       Proxmox URL              Cloud URL
-==================  ========================  ===========================
-``start()``         ``/start``                ``/boot``
-``shutdown()``      ``/shutdown``             ``/shutdown``
-``reboot()``        ``/reboot``               ``/reboot``
-``stop()``          ``/stop``                 ``/poweroff``
-==================  ========================  ===========================
-
-``set_hostname``, ``set_password`` and ``reinstall`` use identical
-relative paths on both backends, so no normalization is needed there.
+Basic Cloud VPS supports status, allocated resources, start, graceful shutdown
+and reboot. Legacy advanced methods remain for source compatibility; after the
+basic-management policy rolls out they return API FEATURE_NOT_AVAILABLE (403).
+Infrastructure changes beyond this profile require Impreza support. Proxmox
+capabilities remain unchanged. Use the client account workflow for cancellation.
 """
 
 from __future__ import annotations

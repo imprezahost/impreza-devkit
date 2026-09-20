@@ -46,6 +46,10 @@ const (
 	// regenerates its Caddyfile fragment + reloads Caddy in-place;
 	// the container + Tor hidden service are left running as-is.
 	CommandUpdateRoutes CommandKind = "update_routes"
+	// CommandTrafficSwitch moves a reviewed hostname to another deployment
+	// on the same agent: the target's fragment takes the hostname and the
+	// source keeps running untouched. Rollback is a fragment restore.
+	CommandTrafficSwitch CommandKind = "traffic_switch"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -222,6 +226,9 @@ type DeployPayload struct {
 	// token). The credential itself is NOT in the payload — the agent
 	// fetches it just-in-time via AgentGitCredential at clone time.
 	GitAuthMethod string `json:"git_auth_method,omitempty"`
+	// RestorePlanID binds a restore transport job to its reviewed plan; the
+	// completion cross-checks it against the reported outcome.
+	RestorePlanID string `json:"restore_plan_id,omitempty"`
 }
 
 // UpdatePayload is the payload of a CommandUpdate.
@@ -248,6 +255,28 @@ type UninstallPayload struct {
 // RestartPayload is the payload of a CommandRestart.
 type RestartPayload struct {
 	DeploymentID string `json:"deployment_id"`
+}
+
+// TrafficSwitchProtocol identifies the reviewed hostname move. The payload is
+// secret-free: routing identity only, never credentials.
+const TrafficSwitchProtocol = "traffic-switch-v1"
+
+// TrafficSwitchPayload is the payload of a CommandTrafficSwitch: move Hostname
+// from DeploymentID (source, keeps running) to TargetDeploymentID's upstream.
+type TrafficSwitchPayload struct {
+	Protocol           string `json:"switch_protocol"`
+	SwitchID           string `json:"switch_id"`
+	DeploymentID       string `json:"deployment_id"`
+	TargetDeploymentID string `json:"target_deployment_id"`
+	Hostname           string `json:"hostname"`
+	Upstream           string `json:"upstream"`
+}
+
+// TrafficSwitchResult is the durable outcome, reported only on success.
+type TrafficSwitchResult struct {
+	SwitchID string `json:"switch_id"`
+	Hostname string `json:"hostname"`
+	Status   string `json:"status"` // switched
 }
 
 // HealthCheckPayload is the payload of a CommandHealthCheck.
@@ -391,6 +420,8 @@ type DeploymentStartupCheck struct {
 type DeployResult struct {
 	ServiceBindingRetirements []ServiceBindingRetirementResult `json:"service_binding_retirements,omitempty"`
 	ServiceBindingRotation    *ServiceBindingRotationResult    `json:"service_binding_rotation,omitempty"`
+	TrafficSwitch             *TrafficSwitchResult             `json:"traffic_switch,omitempty"`
+	DatabaseRestore           *DatabaseRestoreResult           `json:"database_restore,omitempty"`
 	ControlToken              string                           `json:"control_token,omitempty"`
 	PreparationRestored       bool                             `json:"preparation_restored,omitempty"`
 	StartupCheck              *DeploymentStartupCheck          `json:"startup_check,omitempty"`

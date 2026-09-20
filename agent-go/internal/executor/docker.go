@@ -163,6 +163,8 @@ func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) (resul
 		return d.logsTail(ctx, cmd)
 	case sdkclient.CommandUpdateRoutes:
 		return d.updateRoutes(ctx, cmd)
+	case sdkclient.CommandTrafficSwitch:
+		return d.trafficSwitch(ctx, cmd)
 	default:
 		message := fmt.Sprintf("Unsupported command %q. No operation was performed. Check agent and platform compatibility.", cmd.Kind)
 		if cmd.Kind == sdkclient.CommandAgentUpgrade {
@@ -199,6 +201,12 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		return failResult(cmd.ID, "manifest has empty compose_yaml")
 	}
 	if err := validateServiceBindingManifest(p); err != nil {
+		return failResult(cmd.ID, err.Error())
+	}
+	if err := validateBackupDatabaseSpec(p); err != nil {
+		return failResult(cmd.ID, err.Error())
+	}
+	if err := validateRestoreDatabaseSpec(p); err != nil {
 		return failResult(cmd.ID, err.Error())
 	}
 
@@ -348,9 +356,61 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		}
 	}
 
-	bindingSecrets, err := d.prepareServiceBindings(ctx, cmd, &p)
-	if err != nil {
-		return failResult(cmd.ID, err.Error())
+	var bindingSecrets map[string]string
+	var restoreSpec *sdkclient.RestoreDatabaseSpec
+	var restoreCredential sdkclient.ServiceBindingCredential
+	restoreDone := false
+	if backupSpec := p.Manifest.Runtime.BackupDatabase; backupSpec != nil {
+		// The backup database stage: JIT credential, then the scratch database
+		// the verified restore runs against. The scratch is dropped on every
+		// path; the verify stage drops it first on success.
+		secrets, credential, err := d.prepareBackupDatabase(ctx, cmd, &p, backupSpec)
+		if err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+		if err := d.createPostgresBackupScratch(ctx, backupSpec, credential); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+		defer func() {
+			dropCtx, stop := context.WithTimeout(context.Background(), 45*time.Second)
+			defer stop()
+			if err := d.dropPostgresBackupScratch(dropCtx, backupSpec, credential); err != nil {
+				d.Log.Warn("backup verification scratch cleanup failed; the provider may retain restored data in the scratch database",
+					"deployment_id", p.DeploymentID, "err", err)
+			}
+		}()
+		bindingSecrets = secrets
+	} else if rs := p.Manifest.Runtime.RestoreDatabase; rs != nil {
+		// The reviewed database restore: JIT credential, then the NEW database
+		// the verified dump lands in. Any failure drops the new database; the
+		// live one is never named anywhere in this flow.
+		restoreSpec = rs
+		secrets, credential, err := d.prepareRestoreDatabase(ctx, cmd, &p, rs)
+		if err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+		if err := d.createPostgresRestoreDatabase(ctx, rs, credential); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+		restoreCredential = credential
+		defer func() {
+			if restoreDone {
+				return
+			}
+			dropCtx, stop := context.WithTimeout(context.Background(), 45*time.Second)
+			defer stop()
+			if err := d.dropPostgresRestoreDatabase(dropCtx, rs, credential); err != nil {
+				d.Log.Warn("restore database cleanup failed; the provider retains the new database",
+					"deployment_id", p.DeploymentID, "err", err)
+			}
+		}()
+		bindingSecrets = secrets
+	} else {
+		var err error
+		bindingSecrets, err = d.prepareServiceBindings(ctx, cmd, &p)
+		if err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
 	}
 	defer func() { redactServiceBindingResult(&result, bindingSecrets) }()
 	d = d.withServiceBindingLogRedaction(bindingSecrets)
@@ -503,7 +563,10 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		return preparationResult(cmd.ID, err)
 	}
 
-	if d.SupervisePreparation && d.SaveReplacement != nil && recovery != nil && recovery.Phase == "replacing" {
+	// A restore transport job stays synchronous (RestoreDatabase != nil): its
+	// outcome is the verified table count attached after finishReplacement,
+	// and a one-shot stack has no replacement to supervise.
+	if d.SupervisePreparation && d.SaveReplacement != nil && recovery != nil && recovery.Phase == "replacing" && p.Manifest.Runtime.RestoreDatabase == nil {
 		work, err := d.createReplacementWork(cmd, p, previousRelease, isRedeploy, recovery.Containers)
 		if err != nil {
 			return failResult(cmd.ID, "prepare supervised replacement: "+err.Error())
@@ -521,7 +584,33 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		return d.waitReplacementWork(ctx, cmd, work)
 	}
 	runtimeStarted = true
-	return d.finishReplacement(ctx, cmd, p, previousRelease, isRedeploy, primaryOnion)
+	result = d.finishReplacement(ctx, cmd, p, previousRelease, isRedeploy, primaryOnion)
+	if restoreSpec != nil {
+		if result.Status != "success" {
+			return result
+		}
+		// The outcome is proven against the provider, not the job container's
+		// self-report: count the restored tables through the verified channel
+		// and compare against the reviewed expectation. A mismatch fails the
+		// job and the deferred drop removes the new database.
+		tables, err := d.countPostgresRestoreTables(ctx, restoreSpec, restoreCredential)
+		if err != nil || tables != restoreSpec.ExpectedTables {
+			result.Status = "failed"
+			if err != nil {
+				result.Error = "restored database could not be verified: " + err.Error()
+			} else {
+				result.Error = fmt.Sprintf("restored database holds %d tables where the reviewed backup holds %d", tables, restoreSpec.ExpectedTables)
+			}
+			return result
+		}
+		restoreDone = true
+		result.DatabaseRestore = &sdkclient.DatabaseRestoreResult{
+			RestoreID: p.RestorePlanID,
+			Database:  restoreSpec.RestoreDatabase,
+			Tables:    tables,
+		}
+	}
+	return result
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1138,6 +1227,7 @@ func (d *Docker) updateRoutes(ctx context.Context, cmd *sdkclient.PollCommand) s
 				TLSMode:        mode,
 				TLSEmail:       email,
 				TLSDNSProvider: dnsProvider,
+				BasicAuth:      basicAuthFromPayload(r.BasicAuth),
 			})
 		}
 		applyCtx, cancelApply := context.WithTimeout(ctx, composeQueryTimeout)
@@ -1384,6 +1474,16 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 // spaces` correctly as long as there are no `#` mid-line. For values
 // containing `#` or backslashes, the manifest author is expected to
 // keep them out of vars (they'd be in compose_yaml instead).
+// basicAuthFromPayload maps the server's route credential gate onto the
+// proxy's. The payload carries only the bcrypt hash of the generated
+// password — the agent never sees the plaintext.
+func basicAuthFromPayload(b *sdkclient.RouteBasicAuth) *proxy.BasicAuth {
+	if b == nil {
+		return nil
+	}
+	return &proxy.BasicAuth{Username: b.Username, BCryptHash: b.BCryptHash}
+}
+
 func renderEnv(vars map[string]any) string {
 	keys := make([]string, 0, len(vars))
 	for k := range vars {

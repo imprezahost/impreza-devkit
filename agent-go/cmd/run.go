@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/config"
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/egress"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/executor"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/poll"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/state"
@@ -69,6 +70,18 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	// Docker is the production executor. Unsupported commands return a
 	// terminal failure so the queue can advance without claiming success.
 	exec := executor.NewDocker(stateDir, log)
+
+	// S4 egress baseline: reconcile the agent-owned IMPREZA-EGRESS chain under
+	// DOCKER-USER. Fail-open on purpose — an egress firewall must never take
+	// deploys down; every attempt is recorded in <stateDir>/egress.json and the
+	// unit retries on each start (the boot window between Docker start and
+	// agent start is a documented residual limit of this phase).
+	egressCtx, egressCancel := context.WithTimeout(cmd.Context(), 20*time.Second)
+	if err := egress.Apply(egressCtx, stateDir); err != nil {
+		log.Warn("egress baseline not applied; tenant egress remains unrestricted for this run",
+			"err", err)
+	}
+	egressCancel()
 
 	// Phase 9.11d v2: hand the agent's own credentials to the Caddy
 	// sidecar's env-file. The bundled caddy-dns-impreza plugin uses
