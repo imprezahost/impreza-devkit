@@ -96,12 +96,18 @@ func (p *Poller) Run(ctx context.Context) error {
 		defer close(hbDone)
 		p.heartbeatLoop(ctx)
 	}()
+	metricsDone := make(chan struct{})
+	go func() {
+		defer close(metricsDone)
+		p.metricsLoop(ctx)
+	}()
 	defer func() {
 		// Wait for the heartbeat goroutine to wind down so caller
 		// teardown (e.g. writing PID files, closing logs) sees a
 		// truly idle agent.
 		cancel()
 		<-hbDone
+		<-metricsDone
 	}()
 
 	return p.pollLoop(ctx)
@@ -120,6 +126,7 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 	if p.journal != nil {
 		capabilities = append(capabilities, sdkclient.DeploymentProgressProtocol)
 	}
+	capabilities = append(capabilities, sdkclient.MysqlServiceBindingGenerationProtocol, sdkclient.MysqlServiceBindingGenerationRetirementProtocol, sdkclient.MysqlServiceBindingRotationProtocol)
 	backoff := time.Duration(p.cfg.BackoffMinSeconds) * time.Second
 	maxBackoff := time.Duration(p.cfg.BackoffMaxSeconds) * time.Second
 
@@ -256,6 +263,39 @@ func (p *Poller) heartbeatLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			p.sendHeartbeat(ctx)
+		}
+	}
+}
+
+// metricsLoop runs in a goroutine and emits one per-app metrics report per
+// MetricsSeconds (default 60s). Numbers and container states only — the
+// collector never reads environment, configuration or logs, so the report
+// cannot carry a secret. Errors are logged and the next tick retries.
+func (p *Poller) metricsLoop(ctx context.Context) {
+	collector, ok := p.exec.(interface {
+		CollectAppMetrics(context.Context) *sdkclient.AppMetricsReport
+	})
+	if !ok {
+		return
+	}
+	interval := time.Duration(p.cfg.MetricsSeconds) * time.Second
+	if interval <= 0 {
+		interval = 60 * time.Second
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			report := collector.CollectAppMetrics(ctx)
+			if report == nil || len(report.Apps) == 0 {
+				continue
+			}
+			if err := p.client.AgentMetricsReport(ctx, *report); err != nil {
+				p.log.Warn("metrics: report failed", "err", err)
+			}
 		}
 	}
 }

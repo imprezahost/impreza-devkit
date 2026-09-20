@@ -50,6 +50,9 @@ type Config struct {
 	BackoffMinSeconds int `toml:"backoff_min_seconds,omitempty"`
 	BackoffMaxSeconds int `toml:"backoff_max_seconds,omitempty"`
 	HeartbeatSeconds  int `toml:"heartbeat_seconds,omitempty"`
+	// MetricsSeconds is the per-app metrics cadence (default 60). The report
+	// carries numbers and container states only.
+	MetricsSeconds    int `toml:"metrics_seconds,omitempty"`
 }
 
 // Sentinel errors callers may want to distinguish.

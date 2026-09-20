@@ -226,7 +226,7 @@ func validateServiceBindingManifest(p sdkclient.DeployPayload) error {
 		return validateServiceBindingRotation(p)
 	}
 	if runtime.ServiceBindingRetirementProtocol != "" || len(runtime.ServiceBindingRetirements) != 0 {
-		if (runtime.ServiceBindingRetirementProtocol != sdkclient.ServiceBindingRetirementProtocol && runtime.ServiceBindingRetirementProtocol != sdkclient.ServiceBindingGenerationRetirementProtocol) || runtime.Type != "docker-compose" || runtime.Build != nil || len(runtime.ServiceBindingRetirements) != 1 || runtime.ServiceBindingProtocol != "" || len(runtime.ServiceBindings) != 0 {
+		if (runtime.ServiceBindingRetirementProtocol != sdkclient.ServiceBindingRetirementProtocol && runtime.ServiceBindingRetirementProtocol != sdkclient.ServiceBindingGenerationRetirementProtocol && runtime.ServiceBindingRetirementProtocol != sdkclient.MysqlServiceBindingGenerationRetirementProtocol) || runtime.Type != "docker-compose" || runtime.Build != nil || len(runtime.ServiceBindingRetirements) != 1 || runtime.ServiceBindingProtocol != "" || len(runtime.ServiceBindings) != 0 {
 			return errors.New("unsupported service binding retirement manifest")
 		}
 		ref := runtime.ServiceBindingRetirements[0]
@@ -241,7 +241,7 @@ func validateServiceBindingManifest(p sdkclient.DeployPayload) error {
 	if runtime.ServiceBindingProtocol == "" && len(runtime.ServiceBindings) == 0 {
 		return nil
 	}
-	if (runtime.ServiceBindingProtocol != sdkclient.ServiceBindingProtocol && runtime.ServiceBindingProtocol != sdkclient.ServiceBindingGenerationProtocol) || runtime.Type != "docker-compose" || len(runtime.ServiceBindings) != 1 || runtime.Build != nil {
+	if (runtime.ServiceBindingProtocol != sdkclient.ServiceBindingProtocol && runtime.ServiceBindingProtocol != sdkclient.ServiceBindingGenerationProtocol && runtime.ServiceBindingProtocol != sdkclient.MysqlServiceBindingGenerationProtocol) || runtime.Type != "docker-compose" || len(runtime.ServiceBindings) != 1 || runtime.Build != nil {
 		return errors.New("unsupported service binding manifest")
 	}
 	r := runtime.ServiceBindings[0]
@@ -285,9 +285,12 @@ func (d *Docker) prepareServiceBindings(ctx context.Context, cmd *sdkclient.Poll
 		}
 	}
 	var value string
-	if response.Protocol == sdkclient.ServiceBindingGenerationProtocol {
+	switch response.Protocol {
+	case sdkclient.ServiceBindingGenerationProtocol:
 		value, err = d.provisionPostgresGeneration(ctx, p.DeploymentID, credential)
-	} else {
+	case sdkclient.MysqlServiceBindingGenerationProtocol:
+		value, err = d.provisionMysqlGeneration(ctx, p.DeploymentID, credential)
+	default:
 		value, err = d.provisionPostgresBinding(ctx, p.DeploymentID, credential)
 	}
 	if err != nil {
@@ -388,9 +391,11 @@ func preservedServiceBindingVars(consumer string, raw []byte, vars map[string]an
 	name := "imp_" + strings.TrimPrefix(binding, "bnd_")
 	login := u.User.Username()
 	generationLogin := strings.HasPrefix(login, "ibg_"+strings.TrimPrefix(binding, "bnd_")+"_") && bindingGenerationLoginPattern.MatchString(login)
-	if u.Scheme != "postgresql" || (login != name && !generationLogin) || !hasPassword || !bindingRevisionPattern.MatchString(password) || u.Host != "pg_"+provider+":5432" || u.Path != "/"+name || u.RawQuery != "sslmode=disable" || u.Fragment != "" || u.RawPath != "" {
-		return fail()
-	}
+		postgresURL := u.Scheme == "postgresql" && (login == name || generationLogin) && u.Host == "pg_"+provider+":5432" && u.Path == "/"+name && u.RawQuery == "sslmode=disable"
+		mysqlURL := u.Scheme == "mysql" && generationLogin && u.Host == "mariadb_"+provider+":3306" && u.Path == "/"+name && u.RawQuery == ""
+		if (!postgresURL && !mysqlURL) || !hasPassword || !bindingRevisionPattern.MatchString(password) || u.Fragment != "" || u.RawPath != "" {
+			return fail()
+		}
 	copyVars := make(map[string]any, len(vars)+1)
 	for k, v := range vars {
 		copyVars[k] = v
@@ -433,12 +438,15 @@ func (d *Docker) preserveServiceBindingVars(ctx context.Context, consumer string
 
 var bindingGenerationLoginPattern = regexp.MustCompile(`^ibg_[a-f0-9]{24}_[a-f0-9]{24}$`)
 var bindingRuntimeURLPattern = regexp.MustCompile(`(?m)^DATABASE_URL=(postgresql://(?:imp_[a-f0-9]{24}|ibg_[a-f0-9]{24}_[a-f0-9]{24}):([a-f0-9]{64})@pg_dpl_(?:[a-f0-9]{16}|[a-f0-9]{24}):5432/imp_[a-f0-9]{24}\?sslmode=disable)\r?$`)
+var mysqlBindingRuntimeURLPattern = regexp.MustCompile(`(?m)^DATABASE_URL=(mysql://ibg_[a-f0-9]{24}_[a-f0-9]{24}:([a-f0-9]{64})@mariadb_dpl_(?:[a-f0-9]{16}|[a-f0-9]{24}):3306/imp_[a-f0-9]{24})\r?$`)
 
 func serviceBindingEnvRedactions(raw []byte) map[string]string {
 	values := map[string]string{}
-	for _, match := range bindingRuntimeURLPattern.FindAllSubmatch(raw, -1) {
-		values[string(match[1])] = string(match[1])
-		values[string(match[2])] = string(match[2])
+	for _, pattern := range []*regexp.Regexp{bindingRuntimeURLPattern, mysqlBindingRuntimeURLPattern} {
+		for _, match := range pattern.FindAllSubmatch(raw, -1) {
+			values[string(match[1])] = string(match[1])
+			values[string(match[2])] = string(match[2])
+		}
 	}
 	return values
 }

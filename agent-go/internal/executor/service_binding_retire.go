@@ -48,8 +48,12 @@ func validateResolvedRetirements(p sdkclient.DeployPayload) error {
 	if len(refs) != 1 || len(p.ServiceBindingRetirementAuthorizations) != 1 || refs[0] != p.ServiceBindingRetirementAuthorizations[0].ServiceBindingRef {
 		return errors.New("verified connection retirement authorization is missing")
 	}
-	if p.Manifest.Runtime.ServiceBindingRetirementProtocol == sdkclient.ServiceBindingGenerationRetirementProtocol {
+	switch p.Manifest.Runtime.ServiceBindingRetirementProtocol {
+	case sdkclient.ServiceBindingGenerationRetirementProtocol:
 		_, err := postgresGenerationRetireSQL(p.DeploymentID, p.ServiceBindingRetirementAuthorizations[0])
+		return err
+	case sdkclient.MysqlServiceBindingGenerationRetirementProtocol:
+		_, err := mysqlGenerationRetireSQL(p.DeploymentID, p.ServiceBindingRetirementAuthorizations[0])
 		return err
 	}
 	_, err := postgresBindingRetireSQL(p.DeploymentID, p.ServiceBindingRetirementAuthorizations[0])
@@ -103,9 +107,12 @@ func (d *Docker) finishServiceBindingRetirements(ctx context.Context, p sdkclien
 		check, cancel := context.WithTimeout(ctx, 60*time.Second)
 		if verified && d.verifyConsumerDisconnected(check, p.DeploymentID, c.ProviderDeploymentID) == nil {
 			var err error
-			if p.Manifest.Runtime.ServiceBindingRetirementProtocol == sdkclient.ServiceBindingGenerationRetirementProtocol {
+			switch p.Manifest.Runtime.ServiceBindingRetirementProtocol {
+			case sdkclient.ServiceBindingGenerationRetirementProtocol:
 				err = d.retirePostgresGeneration(check, p.DeploymentID, c)
-			} else {
+			case sdkclient.MysqlServiceBindingGenerationRetirementProtocol:
+				err = d.retireMysqlGeneration(check, p.DeploymentID, c)
+			default:
 				err = d.retirePostgresBinding(check, p.DeploymentID, c)
 			}
 			if err == nil {

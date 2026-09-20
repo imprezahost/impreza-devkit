@@ -1,11 +1,13 @@
-# Agent 0.6.15
+# Agent 0.6.17
 
-Requires Docker health checks for PostgreSQL credential rotation and abandonment.
-The replacement must report healthy before an unused login can be disabled.
-Missing or optional startup policies are refused; review the operation again
-with the updated API. A running container without a healthcheck is insufficient.
-Health assurance depends on what the application healthcheck actually verifies.
+Adds per-application resource metrics and managed MariaDB connection lifecycle:
+creation, removal and credential rotation. Metrics contain numeric resource
+measurements and container state, not environment values. Their default interval
+is 60 seconds. Unknown or stale observations do not mean healthy.
 
-After active deployments finish, update explicitly using the documented update
-command. Identity, configuration and applications are preserved. There is no
-automatic fleet update. See the [connection guide](https://docs.imprezahost.com/service-bindings.html).
+MariaDB operations require an explicit reviewed plan and supported application
+layout. Rotation requires a healthy application; database contents are retained
+on connection removal. PostgreSQL backup/restore remains a separate capability.
+
+Update explicitly after active operations finish. Configuration, identity and
+applications are preserved; no automatic fleet upgrade occurs.

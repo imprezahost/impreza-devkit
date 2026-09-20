@@ -172,6 +172,36 @@ func TestServiceBindingRotationAuthorizationConfinement(t *testing.T) {
 	}
 }
 
+func TestServiceBindingRotationAuthorizationMysqlProtocol(t *testing.T) {
+	consumer, c, intent := rotationFixture()
+	_, _, previousLogin := bindingGenerationNames(intent.Previous)
+	for _, fault := range []string{"valid", "postgres-protocol"} {
+		t.Run(fault, func(t *testing.T) {
+			response := sdkclient.ServiceBindingRetirements{Protocol: sdkclient.MysqlServiceBindingRotationProtocol, Retirements: []sdkclient.ServiceBindingRetirement{{ServiceBindingRef: intent.Previous, Username: previousLogin, Database: c.Database, AdminUser: c.AdminUser}}}
+			if fault == "postgres-protocol" {
+				response.Protocol = sdkclient.ServiceBindingRotationProtocol
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": response})
+			}))
+			defer server.Close()
+			client, err := sdkclient.NewAgent(sdkclient.AgentOptions{AgentID: "agt_fixture", AgentSecret: "fixture", BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := rotationPayload(consumer, intent)
+			p.Manifest.Runtime.ServiceBindingProtocol = sdkclient.MysqlServiceBindingGenerationProtocol
+			p.Manifest.Runtime.ServiceBindingRotationProtocol = sdkclient.MysqlServiceBindingRotationProtocol
+			cmd := &sdkclient.PollCommand{ID: "cmd_fixture", Kind: sdkclient.CommandDeploy, ControlToken: "control"}
+			err = (&Docker{Client: client}).prepareServiceBindingRotation(context.Background(), cmd, &p)
+			if (err == nil) != (fault == "valid") {
+				t.Fatalf("mysql rotation authorization protocol mismatch mishandled: %v", err)
+			}
+		})
+	}
+}
+
 func TestServiceBindingRotationDiscardsQueuedAuthorizations(t *testing.T) {
 	consumer, c, intent := rotationFixture()
 	// Provisioning must fail for operational reasons in any environment, so the

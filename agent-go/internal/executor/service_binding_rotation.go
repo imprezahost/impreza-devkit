@@ -46,7 +46,9 @@ func validateRotationShape(consumer string, runtime sdkclient.ManifestRuntime) (
 	if policyErr != nil || !policy.RequireHealthy {
 		return serving, target, errors.New("credential rotation requires a healthy startup policy; review the rotation again")
 	}
-	if intent == nil || runtime.ServiceBindingRotationProtocol != sdkclient.ServiceBindingRotationProtocol || runtime.ServiceBindingProtocol != sdkclient.ServiceBindingGenerationProtocol || runtime.Type != "docker-compose" || runtime.Build != nil || runtime.ServiceBindingRetirementProtocol != "" || len(runtime.ServiceBindingRetirements) != 0 || !bindingRotationIDPattern.MatchString(intent.RotationID) || (intent.Mode != "rotate" && intent.Mode != "abandon") {
+	postgresPair := runtime.ServiceBindingRotationProtocol == sdkclient.ServiceBindingRotationProtocol && runtime.ServiceBindingProtocol == sdkclient.ServiceBindingGenerationProtocol
+	mysqlPair := runtime.ServiceBindingRotationProtocol == sdkclient.MysqlServiceBindingRotationProtocol && runtime.ServiceBindingProtocol == sdkclient.MysqlServiceBindingGenerationProtocol
+	if intent == nil || (!postgresPair && !mysqlPair) || runtime.Type != "docker-compose" || runtime.Build != nil || runtime.ServiceBindingRetirementProtocol != "" || len(runtime.ServiceBindingRetirements) != 0 || !bindingRotationIDPattern.MatchString(intent.RotationID) || (intent.Mode != "rotate" && intent.Mode != "abandon") {
 		return serving, target, invalid
 	}
 	serving, target, err = rotationRefs(consumer, intent)
@@ -81,7 +83,7 @@ func (d *Docker) prepareServiceBindingRotation(ctx context.Context, cmd *sdkclie
 	fetch, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	response, err := d.Client.AgentServiceBindingRetirements(fetch, p.DeploymentID, cmd.ID, cmd.ControlToken)
-	if err != nil || response == nil || response.Protocol != sdkclient.ServiceBindingRotationProtocol || len(response.Retirements) != 1 || response.Retirements[0].ServiceBindingRef != target {
+	if err != nil || response == nil || response.Protocol != p.Manifest.Runtime.ServiceBindingRotationProtocol || len(response.Retirements) != 1 || response.Retirements[0].ServiceBindingRef != target {
 		return errors.New("rotation retirement authorization does not match the reviewed operation")
 	}
 	resolved := *p
@@ -100,6 +102,10 @@ func validateResolvedRotation(p sdkclient.DeployPayload) error {
 	}
 	if len(p.ServiceBindingRetirementAuthorizations) != 1 || p.ServiceBindingRetirementAuthorizations[0].ServiceBindingRef != target {
 		return errors.New("verified rotation retirement authorization is missing")
+	}
+	if p.Manifest.Runtime.ServiceBindingRotationProtocol == sdkclient.MysqlServiceBindingRotationProtocol {
+		_, err = mysqlGenerationRetireSQL(p.DeploymentID, p.ServiceBindingRetirementAuthorizations[0])
+		return err
 	}
 	_, err = postgresGenerationRetireSQL(p.DeploymentID, p.ServiceBindingRetirementAuthorizations[0])
 	return err
@@ -130,7 +136,11 @@ func (d *Docker) finishServiceBindingRotation(ctx context.Context, p sdkclient.D
 	}
 	check, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	if d.retirePostgresGeneration(check, p.DeploymentID, p.ServiceBindingRetirementAuthorizations[0]) == nil {
+	retire := d.retirePostgresGeneration
+	if p.Manifest.Runtime.ServiceBindingRotationProtocol == sdkclient.MysqlServiceBindingRotationProtocol {
+		retire = d.retireMysqlGeneration
+	}
+	if retire(check, p.DeploymentID, p.ServiceBindingRetirementAuthorizations[0]) == nil {
 		out.Status = completed
 	}
 	return out

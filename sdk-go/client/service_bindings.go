@@ -19,6 +19,15 @@ const ServiceBindingGenerationRetirementProtocol = "postgres-service-binding-ret
 // consumer is healthy, and a rotation never retires the login it serves.
 const ServiceBindingRotationProtocol = "postgres-service-binding-rotation-v1"
 
+// MariaDB/MySQL engine (catalog provider `mariadb`). Distinct protocol names:
+// an agent that only knows the PostgreSQL family must refuse these manifests.
+// MariaDB has no role ownership or login disabling: a dedicated database plus
+// a per-revision `user@'%'` with schema-scoped grants, and retirement drops
+// the login. No legacy v1 exists for this engine.
+const MysqlServiceBindingGenerationProtocol = "mysql-service-binding-v2"
+const MysqlServiceBindingGenerationRetirementProtocol = "mysql-service-binding-retire-v2"
+const MysqlServiceBindingRotationProtocol = "mysql-service-binding-rotation-v1"
+
 // ServiceBindingBackupProtocol authorizes one reviewed backup transport job to
 // read the current generation's credential just in time. It never creates a
 // login and never reaches the persisted manifest beyond the secret-free spec.
