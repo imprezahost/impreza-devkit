@@ -391,11 +391,11 @@ func preservedServiceBindingVars(consumer string, raw []byte, vars map[string]an
 	name := "imp_" + strings.TrimPrefix(binding, "bnd_")
 	login := u.User.Username()
 	generationLogin := strings.HasPrefix(login, "ibg_"+strings.TrimPrefix(binding, "bnd_")+"_") && bindingGenerationLoginPattern.MatchString(login)
-		postgresURL := u.Scheme == "postgresql" && (login == name || generationLogin) && u.Host == "pg_"+provider+":5432" && u.Path == "/"+name && u.RawQuery == "sslmode=disable"
-		mysqlURL := u.Scheme == "mysql" && generationLogin && u.Host == "mariadb_"+provider+":3306" && u.Path == "/"+name && u.RawQuery == ""
-		if (!postgresURL && !mysqlURL) || !hasPassword || !bindingRevisionPattern.MatchString(password) || u.Fragment != "" || u.RawPath != "" {
-			return fail()
-		}
+	postgresURL := u.Scheme == "postgresql" && (login == name || generationLogin) && u.Host == "pg_"+provider+":5432" && u.Path == "/"+name && u.RawQuery == "sslmode=disable"
+	mysqlURL := u.Scheme == "mysql" && generationLogin && u.Host == "mariadb_"+provider+":3306" && u.Path == "/"+name && u.RawQuery == ""
+	if (!postgresURL && !mysqlURL) || !hasPassword || !bindingRevisionPattern.MatchString(password) || u.Fragment != "" || u.RawPath != "" {
+		return fail()
+	}
 	copyVars := make(map[string]any, len(vars)+1)
 	for k, v := range vars {
 		copyVars[k] = v
@@ -440,9 +440,13 @@ var bindingGenerationLoginPattern = regexp.MustCompile(`^ibg_[a-f0-9]{24}_[a-f0-
 var bindingRuntimeURLPattern = regexp.MustCompile(`(?m)^DATABASE_URL=(postgresql://(?:imp_[a-f0-9]{24}|ibg_[a-f0-9]{24}_[a-f0-9]{24}):([a-f0-9]{64})@pg_dpl_(?:[a-f0-9]{16}|[a-f0-9]{24}):5432/imp_[a-f0-9]{24}\?sslmode=disable)\r?$`)
 var mysqlBindingRuntimeURLPattern = regexp.MustCompile(`(?m)^DATABASE_URL=(mysql://ibg_[a-f0-9]{24}_[a-f0-9]{24}:([a-f0-9]{64})@mariadb_dpl_(?:[a-f0-9]{16}|[a-f0-9]{24}):3306/imp_[a-f0-9]{24})\r?$`)
 
+var mysqlJobRuntimeURLPattern = regexp.MustCompile(`(?m)^(?:DATABASE_URL|IMPREZA_DATABASE_JOB_URL)=(mysql://ij[vr]_[a-f0-9]{16}:([a-f0-9]{64})@mariadb_dpl_(?:[a-f0-9]{16}|[a-f0-9]{24}):3306/imp_(?:verify|restore)_[a-f0-9]{16})\r?$`)
+
+var postgresJobRuntimeURLPattern = regexp.MustCompile(`(?m)^(?:DATABASE_URL|IMPREZA_DATABASE_JOB_URL)=(postgresql://ij[vr]_[a-f0-9]{16}:([a-f0-9]{64})@pg_dpl_(?:[a-f0-9]{16}|[a-f0-9]{24}):5432/imp_(?:verify|restore)_[a-f0-9]{16}\?sslmode=disable)\r?$`)
+
 func serviceBindingEnvRedactions(raw []byte) map[string]string {
 	values := map[string]string{}
-	for _, pattern := range []*regexp.Regexp{bindingRuntimeURLPattern, mysqlBindingRuntimeURLPattern} {
+	for _, pattern := range []*regexp.Regexp{bindingRuntimeURLPattern, mysqlBindingRuntimeURLPattern, mysqlJobRuntimeURLPattern, postgresJobRuntimeURLPattern} {
 		for _, match := range pattern.FindAllSubmatch(raw, -1) {
 			values[string(match[1])] = string(match[1])
 			values[string(match[2])] = string(match[2])

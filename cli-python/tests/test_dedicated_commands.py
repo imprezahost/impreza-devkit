@@ -91,9 +91,7 @@ def test_list_renders_table(seeded_config: Path) -> None:
 def test_list_json_echoes_raw_payload(seeded_config: Path) -> None:
     """JSON output passes the server payload through untouched, so
     scripts see every field — not just the table projection."""
-    respx.get(f"{BASE}/dedicated").mock(
-        return_value=httpx.Response(200, json=_ok(_SERVERS))
-    )
+    respx.get(f"{BASE}/dedicated").mock(return_value=httpx.Response(200, json=_ok(_SERVERS)))
     result = runner.invoke(app, ["--output", "json", "dedicated", "list"])
     assert result.exit_code == 0, result.stdout
     assert json.loads(result.stdout) == _SERVERS
@@ -166,9 +164,7 @@ def test_dict_verbs_render(
     needle: str,
 ) -> None:
     """Every read verb that returns a dict renders a Field / Value table."""
-    route = respx.get(f"{BASE}{path}").mock(
-        return_value=httpx.Response(200, json=_ok(payload))
-    )
+    route = respx.get(f"{BASE}{path}").mock(return_value=httpx.Response(200, json=_ok(payload)))
     result = runner.invoke(app, argv)
     assert result.exit_code == 0, result.stdout
     assert route.called
@@ -215,9 +211,7 @@ def test_set_rdns_puts_ip_in_path_and_hostname_in_body(seeded_config: Path) -> N
     )
     assert result.exit_code == 0, result.stdout
     assert route.called
-    assert json.loads(route.calls.last.request.content) == {
-        "hostname": "srv1.example.com"
-    }
+    assert json.loads(route.calls.last.request.content) == {"hostname": "srv1.example.com"}
 
 
 @respx.mock
@@ -294,3 +288,21 @@ def test_reinstall_sends_wipe_header(seeded_config: Path) -> None:
     body = json.loads(route.calls.last.request.content)
     assert body["confirm"] is True
     assert body["os_id"] == "ubuntu-24.04"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["set-firewall", "101", "--ip", "203.0.113.10", "--state", "invalid"],
+        ["set-firewall", "101", "--ip", "203.0.113.10", "--sensitivity", "invalid"],
+        ["bandwidth", "101", "--type", "invalid"],
+        ["bandwidth", "101", "--scale", "invalid"],
+    ],
+)
+@respx.mock
+def test_invalid_dedicated_options_never_reach_transport(
+    seeded_config: Path, args: list[str]
+) -> None:
+    result = runner.invoke(app, ["dedicated"] + args)
+    assert result.exit_code == 2
+    assert len(respx.calls) == 0

@@ -24,7 +24,7 @@ func validateBackupDatabaseSpec(p sdkclient.DeployPayload) error {
 		return nil
 	}
 	if !backupJobPattern.MatchString(p.DeploymentID) || runtime.Type != "docker-compose" || runtime.Build != nil ||
-		spec.Protocol != sdkclient.ServiceBindingBackupProtocol ||
+		(spec.Protocol != sdkclient.ServiceBindingBackupProtocol && spec.Protocol != sdkclient.MysqlServiceBindingBackupProtocol) ||
 		runtime.ServiceBindingProtocol != "" || len(runtime.ServiceBindings) != 0 ||
 		runtime.ServiceBindingRetirementProtocol != "" || len(runtime.ServiceBindingRetirements) != 0 ||
 		runtime.ServiceBindingRotationProtocol != "" || runtime.ServiceBindingRotation != nil ||
@@ -34,6 +34,9 @@ func validateBackupDatabaseSpec(p sdkclient.DeployPayload) error {
 	}
 	if err := validateServiceBindingRef(spec.ConsumerDeploymentID, spec.ServiceBindingRef); err != nil {
 		return err
+	}
+	if _, exists := p.Vars["IMPREZA_DATABASE_JOB_URL"]; exists {
+		return errors.New("backup database would overwrite a reserved job variable")
 	}
 	if _, exists := p.Vars[spec.Variable]; exists {
 		return errors.New("backup database would overwrite a runtime variable")
@@ -65,15 +68,44 @@ func (d *Docker) prepareBackupDatabase(ctx context.Context, cmd *sdkclient.PollC
 	if credential.Username != login || credential.Database != database || !bindingRevisionPattern.MatchString(credential.Password) || !bindingAdminPattern.MatchString(credential.AdminUser) {
 		return nil, empty, errors.New("invalid backup database credential shape")
 	}
-	u := url.URL{Scheme: "postgresql", User: url.UserPassword(credential.Username, credential.Password), Host: "pg_" + credential.ProviderDeploymentID + ":5432", Path: "/" + credential.Database, RawQuery: "sslmode=disable"}
-	value := u.String()
+	var value string
+	if spec.Protocol == sdkclient.MysqlServiceBindingBackupProtocol {
+		value, err = mysqlBackupURL(credential, credential.Database)
+		if err != nil {
+			return nil, empty, err
+		}
+	} else {
+		u := url.URL{Scheme: "postgresql", User: url.UserPassword(credential.Username, credential.Password), Host: "pg_" + credential.ProviderDeploymentID + ":5432", Path: "/" + credential.Database, RawQuery: "sslmode=disable"}
+		value = u.String()
+	}
 	vars := make(map[string]any, len(p.Vars)+1)
 	for k, v := range p.Vars {
 		vars[k] = v
 	}
 	vars[spec.Variable] = value
+	secrets := map[string]string{"url": value, "password": credential.Password}
+	if spec.Protocol == sdkclient.MysqlServiceBindingBackupProtocol {
+		job, jobErr := mysqlDatabaseJobCredential(credential, spec.VerifyDatabase)
+		if jobErr != nil {
+			return nil, empty, jobErr
+		}
+		jobURL, jobErr := mysqlBackupURL(job, job.Database)
+		if jobErr != nil {
+			return nil, empty, jobErr
+		}
+		vars["IMPREZA_DATABASE_JOB_URL"] = jobURL
+		secrets["job_url"], secrets["job_password"] = jobURL, job.Password
+	} else {
+		job, jobErr := postgresDatabaseJobCredential(credential, spec.VerifyDatabase)
+		if jobErr != nil {
+			return nil, empty, jobErr
+		}
+		jobURL := postgresDatabaseJobURL(job)
+		vars["IMPREZA_DATABASE_JOB_URL"] = jobURL
+		secrets["job_url"], secrets["job_password"] = jobURL, job.Password
+	}
 	p.Vars = vars
-	return map[string]string{"url": value, "password": credential.Password}, credential, nil
+	return secrets, credential, nil
 }
 
 // The scratch database proves the dump restores before the backup is reported.
@@ -81,61 +113,11 @@ func (d *Docker) prepareBackupDatabase(ctx context.Context, cmd *sdkclient.PollC
 // credential can never create or drop databases itself. The marker comment is
 // what lets the drop path distinguish our scratch from anything else.
 func postgresBackupScratchSQL(consumer string, c sdkclient.ServiceBindingCredential, scratch string) (string, error) {
-	if err := validateServiceBindingRef(consumer, c.ServiceBindingRef); err != nil {
-		return "", err
-	}
-	database, owner, _ := bindingGenerationNames(c.ServiceBindingRef)
-	if c.Database != database || !backupScratchPattern.MatchString(scratch) || !bindingAdminPattern.MatchString(c.AdminUser) {
-		return "", errors.New("invalid backup verification identity")
-	}
-	identity := c.BindingID + ":" + c.ProviderDeploymentID + ":" + consumer
-	ownerMarker := "impreza-owner:" + identity
-	marker := "impreza-backup-verify:" + identity
-	return `\set ON_ERROR_STOP on
-SELECT pg_advisory_lock(hashtextextended('` + ownerMarker + `',0));
-BEGIN;
-DO $impreza$
-BEGIN
- IF NOT EXISTS (SELECT FROM pg_authid r WHERE r.rolname='` + owner + `' AND NOT r.rolcanlogin AND r.rolpassword IS NULL
-  AND NOT r.rolsuper AND NOT r.rolcreatedb AND NOT r.rolcreaterole AND NOT r.rolreplication AND NOT r.rolbypassrls
-  AND shobj_description(r.oid,'pg_authid')='` + ownerMarker + `') THEN
-  RAISE EXCEPTION 'Backup verification owner cannot be verified'; END IF;
- IF EXISTS (SELECT FROM pg_database WHERE datname='` + scratch + `') AND NOT EXISTS (
-  SELECT FROM pg_database d JOIN pg_authid r ON r.oid=d.datdba
-  WHERE d.datname='` + scratch + `' AND r.rolname='` + owner + `' AND shobj_description(d.oid,'pg_database')='` + marker + `'
- ) THEN RAISE EXCEPTION 'Backup verification database cannot be adopted'; END IF;
-END
-$impreza$;
-COMMIT;
-SELECT format('CREATE DATABASE %I OWNER %I','` + scratch + `','` + owner + `') WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='` + scratch + `')
-\gexec
-COMMENT ON DATABASE "` + scratch + `" IS '` + marker + `';
-REVOKE ALL ON DATABASE "` + scratch + `" FROM PUBLIC;
-`, nil
+	return postgresDatabaseJobSQL(consumer, c, scratch, true, false)
 }
 
 func postgresBackupScratchDropSQL(consumer string, c sdkclient.ServiceBindingCredential, scratch string) (string, error) {
-	if err := validateServiceBindingRef(consumer, c.ServiceBindingRef); err != nil {
-		return "", err
-	}
-	database, owner, _ := bindingGenerationNames(c.ServiceBindingRef)
-	if c.Database != database || !backupScratchPattern.MatchString(scratch) || !bindingAdminPattern.MatchString(c.AdminUser) {
-		return "", errors.New("invalid backup verification identity")
-	}
-	marker := "impreza-backup-verify:" + c.BindingID + ":" + c.ProviderDeploymentID + ":" + consumer
-	return `\set ON_ERROR_STOP on
-SELECT pg_advisory_lock(hashtextextended('impreza-owner:` + c.BindingID + `:` + c.ProviderDeploymentID + `:` + consumer + `',0));
-DO $impreza$
-BEGIN
- IF EXISTS (SELECT FROM pg_database WHERE datname='` + scratch + `') AND NOT EXISTS (
-  SELECT FROM pg_database d JOIN pg_authid r ON r.oid=d.datdba
-  WHERE d.datname='` + scratch + `' AND r.rolname='` + owner + `' AND shobj_description(d.oid,'pg_database')='` + marker + `'
- ) THEN RAISE EXCEPTION 'Backup verification database ownership cannot be verified'; END IF;
-END
-$impreza$;
-SELECT pg_terminate_backend(pid,5000) FROM pg_stat_activity WHERE datname='` + scratch + `' AND pid<>pg_backend_pid();
-DROP DATABASE IF EXISTS "` + scratch + `";
-`, nil
+	return postgresDatabaseJobSQL(consumer, c, scratch, false, false)
 }
 
 // Verified provider channel, same shape as the retirement path: inspect the

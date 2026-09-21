@@ -29,9 +29,14 @@ const MysqlServiceBindingGenerationRetirementProtocol = "mysql-service-binding-r
 const MysqlServiceBindingRotationProtocol = "mysql-service-binding-rotation-v1"
 
 // ServiceBindingBackupProtocol authorizes one reviewed backup transport job to
-// read the current generation's credential just in time. It never creates a
-// login and never reaches the persisted manifest beyond the secret-free spec.
-const ServiceBindingBackupProtocol = "postgres-service-binding-backup-v1"
+// read the current generation's credential just in time. The agent derives a
+// separate verification login that never reaches the persisted manifest.
+const ServiceBindingBackupProtocol = "postgres-service-binding-backup-v2"
+
+// MysqlServiceBindingBackupProtocol is the MariaDB engine's backup
+// authorization: same one-job scope, but the scratch verification and the
+// dump stage speak mariadb-dump over the binding network.
+const MysqlServiceBindingBackupProtocol = "mysql-service-binding-backup-v1"
 
 // BackupDatabaseSpec is the reviewed database stage of a backup transport job.
 // References contain no credentials; the agent authorizes them for the current
@@ -47,7 +52,12 @@ type BackupDatabaseSpec struct {
 // ServiceBindingRestoreProtocol authorizes one reviewed restore transport job
 // to read the current generation's credential just in time and to land the
 // verified dump in a NEW database. It never touches the serving one.
-const ServiceBindingRestoreProtocol = "postgres-service-binding-restore-v1"
+const ServiceBindingRestoreProtocol = "postgres-service-binding-restore-v2"
+
+// MysqlServiceBindingRestoreProtocol is the MariaDB engine's restore
+// authorization: same one-job scope, landing the verified dump in a NEW
+// database created through the provider's administrator channel.
+const MysqlServiceBindingRestoreProtocol = "mysql-service-binding-restore-v1"
 
 // RestoreDatabaseSpec is the reviewed database stage of a restore transport
 // job. References contain no credentials; the agent authorizes them for the

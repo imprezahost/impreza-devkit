@@ -91,7 +91,7 @@ BEGIN NOT ATOMIC
  IF EXISTS (SELECT 1 FROM information_schema.USER_PRIVILEGES WHERE GRANTEE='''` + login + `''@''%''' AND PRIVILEGE_TYPE<>'USAGE') THEN
   SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Generation login holds global privileges';
  END IF;
- IF EXISTS (SELECT 1 FROM ` + "`mysql`.`db`" + ` WHERE ` + "`User`" + `='` + login + `' AND (` + "`Host`" + `<>'%' OR ` + "`Db`" + `<>'` + database + `' OR ` + "`Grant_priv`" + `<>'N')) THEN
+ IF EXISTS (SELECT 1 FROM ` + "`mysql`.`db`" + ` WHERE ` + "`User`" + `='` + login + `' AND (` + "`Host`" + `<>'%' OR ` + "`Db`" + ` NOT IN ('` + database + `','` + strings.ReplaceAll(mysqlExactDatabaseGrant(database), `\`, `\\`) + `') OR ` + "`Grant_priv`" + `<>'N')) THEN
   SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Generation login grant drift';
  END IF;
  IF EXISTS (SELECT 1 FROM ` + "`mysql`.`tables_priv`" + ` WHERE ` + "`User`" + `='` + login + `') OR EXISTS (SELECT 1 FROM ` + "`mysql`.`procs_priv`" + ` WHERE ` + "`User`" + `='` + login + `') THEN
@@ -101,7 +101,14 @@ END$$
 DELIMITER ;
 CREATE DATABASE IF NOT EXISTS ` + "`" + database + "`" + ` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS '` + login + `'@'%' IDENTIFIED VIA mysql_native_password USING '` + verifier + `';
-GRANT ALL PRIVILEGES ON ` + "`" + database + "`" + `.* TO '` + login + `'@'%';
+DELIMITER $$
+BEGIN NOT ATOMIC
+ IF EXISTS (SELECT 1 FROM mysql.db WHERE User='` + login + `' AND Host='%' AND Db='` + database + `') THEN
+  REVOKE ALL PRIVILEGES ON ` + "`" + database + "`" + `.* FROM '` + login + `'@'%';
+ END IF;
+END$$
+DELIMITER ;
+GRANT ALL PRIVILEGES ON ` + "`" + mysqlExactDatabaseGrant(database) + "`" + `.* TO '` + login + `'@'%';
 INSERT INTO ` + "`impreza_ownership`.`bindings`" + ` (` + "`name`" + `, ` + "`marker`" + `) VALUES ('db:` + database + `','` + ownerMarker + `'), ('user:` + login + `','` + marker + `') ON DUPLICATE KEY UPDATE ` + "`marker`" + `=VALUES(` + "`marker`" + `);
 `
 	return sql, nil

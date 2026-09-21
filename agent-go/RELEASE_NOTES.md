@@ -1,13 +1,18 @@
-# Agent 0.6.17
+# Agent 0.6.18
 
-Adds per-application resource metrics and managed MariaDB connection lifecycle:
-creation, removal and credential rotation. Metrics contain numeric resource
-measurements and container state, not environment values. Their default interval
-is 60 seconds. Unknown or stale observations do not mean healthy.
+Adds verified backups and assisted restoration for managed MariaDB InnoDB tables,
+and supports reviewed PostgreSQL restoration to an eligible binding on another
+host. Restores create a new database; applications are never repointed automatically.
 
-MariaDB operations require an explicit reviewed plan and supported application
-layout. Rotation requires a healthy application; database contents are retained
-on connection removal. PostgreSQL backup/restore remains a separate capability.
+PostgreSQL and MariaDB verification and restore use an operation-specific login
+restricted to the new database, without membership of the stable owner. Successful
+completion removes the login. Unsupported MariaDB views,
+triggers, routines, events and non-transactional tables are refused. Keep schema
+changes paused while backing up; filesystem and database snapshots are separate.
 
-Update explicitly after active operations finish. Configuration, identity and
-applications are preserved; no automatic fleet upgrade occurs.
+Database grants use exact names, and administrator SQL output is excluded from
+logs. Existing MariaDB grants are normalized on the next binding deployment.
+A host crash can require administrator reconciliation of temporary objects.
+
+Update explicitly after active operations finish. Identity, configuration and
+applications are preserved. See [database recovery](https://docs.imprezahost.com/customer-workflows.html#restore).

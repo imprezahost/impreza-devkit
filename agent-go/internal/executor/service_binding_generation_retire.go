@@ -33,7 +33,7 @@ BEGIN
    AND shobj_description(o.oid,'pg_authid')='` + ownerMarker + `'
    AND NOT o.rolcanlogin AND o.rolpassword IS NULL AND NOT o.rolsuper AND NOT o.rolcreatedb AND NOT o.rolcreaterole AND NOT o.rolreplication AND NOT o.rolbypassrls
    AND NOT EXISTS (SELECT FROM pg_auth_members WHERE member=o.oid)
-   AND NOT EXISTS (SELECT FROM pg_database WHERE datdba=o.oid AND datname<>'` + database + `')
+   AND NOT EXISTS (SELECT FROM pg_database WHERE datdba=o.oid AND datname<>'` + database + `' AND shobj_description(oid,'pg_database') IS DISTINCT FROM 'impreza-restore:` + identity + `')
    AND NOT EXISTS (SELECT FROM pg_tablespace WHERE spcowner=o.oid)
  ) THEN RAISE EXCEPTION 'Generation retirement owner cannot be verified'; END IF;
  IF EXISTS (

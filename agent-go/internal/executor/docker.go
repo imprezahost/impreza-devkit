@@ -368,17 +368,33 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		if err != nil {
 			return failResult(cmd.ID, err.Error())
 		}
-		if err := d.createPostgresBackupScratch(ctx, backupSpec, credential); err != nil {
-			return failResult(cmd.ID, err.Error())
-		}
-		defer func() {
-			dropCtx, stop := context.WithTimeout(context.Background(), 45*time.Second)
-			defer stop()
-			if err := d.dropPostgresBackupScratch(dropCtx, backupSpec, credential); err != nil {
-				d.Log.Warn("backup verification scratch cleanup failed; the provider may retain restored data in the scratch database",
-					"deployment_id", p.DeploymentID, "err", err)
+		if backupSpec.Protocol == sdkclient.MysqlServiceBindingBackupProtocol {
+			if err := d.createMysqlBackupScratch(ctx, backupSpec, credential); err != nil {
+				return failResult(cmd.ID, err.Error())
 			}
-		}()
+			defer func() {
+				dropCtx, stop := context.WithTimeout(context.Background(), 45*time.Second)
+				defer stop()
+				if err := d.dropMysqlBackupScratch(dropCtx, backupSpec, credential); err != nil {
+					result.Status, result.Error = "failed", "backup verification cleanup failed"
+					d.Log.Warn("backup verification scratch cleanup failed; the provider may retain restored data in the scratch database",
+						"deployment_id", p.DeploymentID, "err", err)
+				}
+			}()
+		} else {
+			if err := d.createPostgresBackupScratch(ctx, backupSpec, credential); err != nil {
+				return failResult(cmd.ID, err.Error())
+			}
+			defer func() {
+				dropCtx, stop := context.WithTimeout(context.Background(), 45*time.Second)
+				defer stop()
+				if err := d.dropPostgresBackupScratch(dropCtx, backupSpec, credential); err != nil {
+					result.Status, result.Error = "failed", "backup verification cleanup failed"
+					d.Log.Warn("backup verification scratch cleanup failed; the provider may retain restored data in the scratch database",
+						"deployment_id", p.DeploymentID, "err", err)
+				}
+			}()
+		}
 		bindingSecrets = secrets
 	} else if rs := p.Manifest.Runtime.RestoreDatabase; rs != nil {
 		// The reviewed database restore: JIT credential, then the NEW database
@@ -389,21 +405,38 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		if err != nil {
 			return failResult(cmd.ID, err.Error())
 		}
-		if err := d.createPostgresRestoreDatabase(ctx, rs, credential); err != nil {
-			return failResult(cmd.ID, err.Error())
+		if rs.Protocol == sdkclient.MysqlServiceBindingRestoreProtocol {
+			if err := d.createMysqlRestoreDatabase(ctx, rs, credential); err != nil {
+				return failResult(cmd.ID, err.Error())
+			}
+			defer func() {
+				if restoreDone {
+					return
+				}
+				dropCtx, stop := context.WithTimeout(context.Background(), 45*time.Second)
+				defer stop()
+				if err := d.dropMysqlRestoreDatabase(dropCtx, rs, credential); err != nil {
+					d.Log.Warn("restore database cleanup failed; the provider retains the new database",
+						"deployment_id", p.DeploymentID, "err", err)
+				}
+			}()
+		} else {
+			if err := d.createPostgresRestoreDatabase(ctx, rs, credential); err != nil {
+				return failResult(cmd.ID, err.Error())
+			}
+			defer func() {
+				if restoreDone {
+					return
+				}
+				dropCtx, stop := context.WithTimeout(context.Background(), 45*time.Second)
+				defer stop()
+				if err := d.dropPostgresRestoreDatabase(dropCtx, rs, credential); err != nil {
+					d.Log.Warn("restore database cleanup failed; the provider retains the new database",
+						"deployment_id", p.DeploymentID, "err", err)
+				}
+			}()
 		}
 		restoreCredential = credential
-		defer func() {
-			if restoreDone {
-				return
-			}
-			dropCtx, stop := context.WithTimeout(context.Background(), 45*time.Second)
-			defer stop()
-			if err := d.dropPostgresRestoreDatabase(dropCtx, rs, credential); err != nil {
-				d.Log.Warn("restore database cleanup failed; the provider retains the new database",
-					"deployment_id", p.DeploymentID, "err", err)
-			}
-		}()
 		bindingSecrets = secrets
 	} else {
 		var err error
@@ -593,7 +626,13 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		// self-report: count the restored tables through the verified channel
 		// and compare against the reviewed expectation. A mismatch fails the
 		// job and the deferred drop removes the new database.
-		tables, err := d.countPostgresRestoreTables(ctx, restoreSpec, restoreCredential)
+		var tables int
+		var err error
+		if restoreSpec.Protocol == sdkclient.MysqlServiceBindingRestoreProtocol {
+			tables, err = d.countMysqlRestoreTables(ctx, restoreSpec, restoreCredential)
+		} else {
+			tables, err = d.countPostgresRestoreTables(ctx, restoreSpec, restoreCredential)
+		}
 		if err != nil || tables != restoreSpec.ExpectedTables {
 			result.Status = "failed"
 			if err != nil {
@@ -602,6 +641,25 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 				result.Error = fmt.Sprintf("restored database holds %d tables where the reviewed backup holds %d", tables, restoreSpec.ExpectedTables)
 			}
 			return result
+		}
+		if restoreSpec.Protocol == sdkclient.MysqlServiceBindingRestoreProtocol {
+			sql, cleanupErr := mysqlDatabaseJobSQL(restoreSpec.ConsumerDeploymentID, restoreCredential, restoreSpec.RestoreDatabase, false, true)
+			if cleanupErr == nil {
+				_, cleanupErr = d.runMysqlRestoreSQL(ctx, restoreCredential, sql)
+			}
+			if cleanupErr != nil {
+				result.Status, result.Error = "failed", "restored database job credential cleanup failed"
+				return result
+			}
+		} else {
+			sql, cleanupErr := postgresDatabaseJobSQL(restoreSpec.ConsumerDeploymentID, restoreCredential, restoreSpec.RestoreDatabase, false, true)
+			if cleanupErr == nil {
+				_, cleanupErr = d.runPostgresRestoreSQL(ctx, restoreCredential, "postgres", sql)
+			}
+			if cleanupErr != nil {
+				result.Status, result.Error = "failed", "restored database job credential cleanup failed"
+				return result
+			}
 		}
 		restoreDone = true
 		result.DatabaseRestore = &sdkclient.DatabaseRestoreResult{

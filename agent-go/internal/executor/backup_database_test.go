@@ -116,12 +116,16 @@ func TestBackupDatabaseJITConfinement(t *testing.T) {
 			spec := p.Manifest.Runtime.BackupDatabase
 			values, credential, err := (&Docker{Client: client}).prepareBackupDatabase(context.Background(), cmd, &p, spec)
 			if mode == "valid" {
-				if err != nil || len(p.ServiceBindingRetirementAuthorizations) != 0 || len(values) != 2 || credential.Password != c.Password {
+				if err != nil || len(p.ServiceBindingRetirementAuthorizations) != 0 || len(values) != 4 || credential.Password != c.Password {
 					t.Fatal("verified backup credential refused")
 				}
 				got, _ := p.Vars["DATABASE_URL"].(string)
 				if !strings.Contains(got, c.Password) || len(serviceBindingEnvRedactions([]byte("DATABASE_URL="+got+"\n"))) != 2 {
 					t.Fatal("injected credential escaped the runtime redaction contract")
+				}
+				jobURL, _ := p.Vars["IMPREZA_DATABASE_JOB_URL"].(string)
+				if strings.Contains(jobURL, c.Password) || !strings.Contains(jobURL, "ijv_") || len(serviceBindingEnvRedactions([]byte("IMPREZA_DATABASE_JOB_URL="+jobURL+"\n"))) != 2 {
+					t.Fatal("verification borrowed serving credential or escaped redaction")
 				}
 				return
 			}

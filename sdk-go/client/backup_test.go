@@ -43,7 +43,7 @@ func TestAgentServiceBindingBackupTransport(t *testing.T) {
 			t.Error("operation identity missing")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"success":true,"data":{"protocol":"postgres-service-binding-backup-v1","bindings":[]}}`))
+		_, _ = w.Write([]byte(`{"success":true,"data":{"protocol":"postgres-service-binding-backup-v2","bindings":[]}}`))
 	}))
 	defer server.Close()
 	c, err := NewAgent(AgentOptions{AgentID: "agt_fixture", AgentSecret: "fixture", BaseURL: server.URL})

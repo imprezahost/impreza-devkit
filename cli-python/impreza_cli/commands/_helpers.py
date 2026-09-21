@@ -28,11 +28,10 @@ Conventions kept consistent across every CLI command:
 from __future__ import annotations
 
 import time
-from typing import Any
 from urllib.parse import quote
 
 import typer
-from impreza import Operation, Vps
+from impreza import Client, Operation, Vps
 from impreza.exceptions import ApiError, InvalidRequest, ResourceNotFound
 
 from ..output import error
@@ -85,7 +84,7 @@ def exit_on_api_error(exc: ApiError) -> None:
     raise typer.Exit(code=1)
 
 
-def resolve_vps_or_exit(client: Any, service_id: int) -> Vps:
+def resolve_vps_or_exit(client: Client, service_id: int) -> Vps:
     """Look up a VPS by id, mapping the standard SDK errors to the
     same friendly stderr lines the 3.2 power verbs introduced.
 

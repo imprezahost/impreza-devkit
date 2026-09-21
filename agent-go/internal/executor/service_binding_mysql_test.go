@@ -44,7 +44,7 @@ func TestMysqlGenerationSQL(t *testing.T) {
 	for _, want := range []string{
 		"GET_LOCK('impreza-owner:",
 		"CREATE USER IF NOT EXISTS '" + c.Username + "'@'%' IDENTIFIED VIA mysql_native_password USING '*",
-		"GRANT ALL PRIVILEGES ON `" + c.Database + "`.* TO '" + c.Username + "'@'%'",
+		"GRANT ALL PRIVILEGES ON `" + mysqlExactDatabaseGrant(c.Database) + "`.* TO '" + c.Username + "'@'%'",
 		"Generation database cannot be adopted",
 		"Generation login cannot be adopted",
 		"Generation login holds global privileges",

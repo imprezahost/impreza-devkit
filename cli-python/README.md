@@ -217,6 +217,15 @@ Tracebacks never leak from expected failures (auth errors, missing
 contexts, 404s, 429s, etc.). Bugs in the CLI itself still raise so
 the traceback isn't swallowed — that's intentional.
 
+## Reviewed application configuration
+
+Version 0.6.0 adds configuration export, review and apply. Documents are limited
+to 64 KiB of UTF-8 and carry secret references instead of values. Applications
+retain their current configuration until a reviewed plan is explicitly applied.
+
+See [the configuration guide](https://docs.imprezahost.com/customer-workflows.html#config-cli)
+for SDK and CLI examples, permissions, review expiry and replay behavior.
+
 ## Development
 
 ```bash

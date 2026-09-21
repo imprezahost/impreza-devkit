@@ -12,6 +12,26 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-21
+
+- Add configuration export, reviewed apply and plan inspection to the Python
+  SDK and CLI. Validate identifiers, document limits and review completeness
+  before applying; retries preserve the accepted receipt.
+- The CLI requires SDK 0.6.x for the configuration commands.
+
+## Agent 0.6.18 and Go SDK — 2026-09-21
+
+- Support reviewed PostgreSQL restoration to an eligible binding on another host.
+- Add verified backup and assisted restore for managed MariaDB InnoDB tables.
+  Verification and restore use a temporary database-scoped login, removed when
+  the operation completes. The serving database remains untouched.
+- Isolate PostgreSQL verification and restored archive SQL behind the same
+  operation-scoped model, without access to the stable owner role.
+- Use exact MariaDB database grants, redact administrative SQL failures and
+  refuse unsupported database objects instead of accepting an incomplete backup.
+- Preserve ordinary deployment progress while backup/restore transport jobs use
+  their own lifecycle. Existing agents update only when the customer requests it.
+
 ## Agent 0.6.16 and Go SDK — 2026-09-19
 
 - Add reviewed traffic switches with health verification, rollback and a durable

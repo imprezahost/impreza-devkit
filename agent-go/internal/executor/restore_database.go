@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -28,7 +27,7 @@ func validateRestoreDatabaseSpec(p sdkclient.DeployPayload) error {
 		return nil
 	}
 	if !restoreJobPattern.MatchString(p.DeploymentID) || runtime.Type != "docker-compose" || runtime.Build != nil ||
-		spec.Protocol != sdkclient.ServiceBindingRestoreProtocol ||
+		(spec.Protocol != sdkclient.ServiceBindingRestoreProtocol && spec.Protocol != sdkclient.MysqlServiceBindingRestoreProtocol) ||
 		runtime.ServiceBindingProtocol != "" || len(runtime.ServiceBindings) != 0 ||
 		runtime.ServiceBindingRetirementProtocol != "" || len(runtime.ServiceBindingRetirements) != 0 ||
 		runtime.ServiceBindingRotationProtocol != "" || runtime.ServiceBindingRotation != nil ||
@@ -71,15 +70,36 @@ func (d *Docker) prepareRestoreDatabase(ctx context.Context, cmd *sdkclient.Poll
 	if credential.Username != login || credential.Database != database || !bindingRevisionPattern.MatchString(credential.Password) || !bindingAdminPattern.MatchString(credential.AdminUser) {
 		return nil, empty, errors.New("invalid restore database credential shape")
 	}
-	u := url.URL{Scheme: "postgresql", User: url.UserPassword(credential.Username, credential.Password), Host: "pg_" + credential.ProviderDeploymentID + ":5432", Path: "/" + credential.Database, RawQuery: "sslmode=disable"}
-	value := u.String()
+	var value, jobPassword string
+	if spec.Protocol == sdkclient.MysqlServiceBindingRestoreProtocol {
+		job, jobErr := mysqlDatabaseJobCredential(credential, spec.RestoreDatabase)
+		if jobErr != nil {
+			return nil, empty, jobErr
+		}
+		value, err = mysqlRestoreURL(job, job.Database)
+		if err != nil {
+			return nil, empty, err
+		}
+		jobPassword = job.Password
+	} else {
+		job, jobErr := postgresDatabaseJobCredential(credential, spec.RestoreDatabase)
+		if jobErr != nil {
+			return nil, empty, jobErr
+		}
+		value = postgresDatabaseJobURL(job)
+		jobPassword = job.Password
+	}
 	vars := make(map[string]any, len(p.Vars)+1)
 	for k, v := range p.Vars {
 		vars[k] = v
 	}
 	vars[spec.Variable] = value
 	p.Vars = vars
-	return map[string]string{"url": value, "password": credential.Password}, credential, nil
+	// The serving password is needed only by the administrator-side setup and
+	// is deliberately absent from the runtime redaction set. The restore stack
+	// receives the operation-scoped login exclusively.
+	secrets := map[string]string{"url": value, "job_password": jobPassword}
+	return secrets, credential, nil
 }
 
 // The new database is created and dropped only through the verified provider
@@ -88,59 +108,11 @@ func (d *Docker) prepareRestoreDatabase(ctx context.Context, cmd *sdkclient.Poll
 // else, and it is also what the customer (or support) sees when listing
 // databases on the provider.
 func postgresRestoreDatabaseSQL(consumer string, c sdkclient.ServiceBindingCredential, name string) (string, error) {
-	if err := validateServiceBindingRef(consumer, c.ServiceBindingRef); err != nil {
-		return "", err
-	}
-	_, owner, _ := bindingGenerationNames(c.ServiceBindingRef)
-	if !restoreDatabasePattern.MatchString(name) || !bindingAdminPattern.MatchString(c.AdminUser) {
-		return "", errors.New("invalid restore database identity")
-	}
-	identity := c.BindingID + ":" + c.ProviderDeploymentID + ":" + consumer
-	ownerMarker := "impreza-owner:" + identity
-	marker := "impreza-restore:" + identity
-	return `\set ON_ERROR_STOP on
-SELECT pg_advisory_lock(hashtextextended('` + ownerMarker + `',0));
-BEGIN;
-DO $impreza$
-BEGIN
- IF NOT EXISTS (SELECT FROM pg_authid r WHERE r.rolname='` + owner + `' AND NOT r.rolcanlogin AND r.rolpassword IS NULL
-  AND NOT r.rolsuper AND NOT r.rolcreatedb AND NOT r.rolcreaterole AND NOT r.rolreplication AND NOT r.rolbypassrls
-  AND shobj_description(r.oid,'pg_authid')='` + ownerMarker + `') THEN
-  RAISE EXCEPTION 'Restore owner cannot be verified'; END IF;
- IF EXISTS (SELECT FROM pg_database WHERE datname='` + name + `') THEN
-  RAISE EXCEPTION 'Restore database name is already taken'; END IF;
-END
-$impreza$;
-COMMIT;
-SELECT format('CREATE DATABASE %I OWNER %I','` + name + `','` + owner + `')
-\gexec
-COMMENT ON DATABASE "` + name + `" IS '` + marker + `';
-REVOKE ALL ON DATABASE "` + name + `" FROM PUBLIC;
-`, nil
+	return postgresDatabaseJobSQL(consumer, c, name, true, false)
 }
 
 func postgresRestoreDropSQL(consumer string, c sdkclient.ServiceBindingCredential, name string) (string, error) {
-	if err := validateServiceBindingRef(consumer, c.ServiceBindingRef); err != nil {
-		return "", err
-	}
-	_, owner, _ := bindingGenerationNames(c.ServiceBindingRef)
-	if !restoreDatabasePattern.MatchString(name) || !bindingAdminPattern.MatchString(c.AdminUser) {
-		return "", errors.New("invalid restore database identity")
-	}
-	marker := "impreza-restore:" + c.BindingID + ":" + c.ProviderDeploymentID + ":" + consumer
-	return `\set ON_ERROR_STOP on
-SELECT pg_advisory_lock(hashtextextended('impreza-owner:` + c.BindingID + `:` + c.ProviderDeploymentID + `:` + consumer + `',0));
-DO $impreza$
-BEGIN
- IF EXISTS (SELECT FROM pg_database WHERE datname='` + name + `') AND NOT EXISTS (
-  SELECT FROM pg_database d JOIN pg_authid r ON r.oid=d.datdba
-  WHERE d.datname='` + name + `' AND r.rolname='` + owner + `' AND shobj_description(d.oid,'pg_database')='` + marker + `'
- ) THEN RAISE EXCEPTION 'Restore database ownership cannot be verified'; END IF;
-END
-$impreza$;
-SELECT pg_terminate_backend(pid,5000) FROM pg_stat_activity WHERE datname='` + name + `' AND pid<>pg_backend_pid();
-DROP DATABASE IF EXISTS "` + name + `";
-`, nil
+	return postgresDatabaseJobSQL(consumer, c, name, false, false)
 }
 
 // The verified provider channel, with output: same inspections as the

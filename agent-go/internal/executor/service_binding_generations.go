@@ -59,7 +59,7 @@ BEGIN
    AND NOT r.rolsuper AND NOT r.rolcreatedb AND NOT r.rolcreaterole AND NOT r.rolreplication AND NOT r.rolbypassrls
    AND shobj_description(r.oid,'pg_authid')='` + ownerMarker + `'
    AND NOT EXISTS (SELECT FROM pg_auth_members WHERE member=r.oid)
-   AND NOT EXISTS (SELECT FROM pg_database WHERE datdba=r.oid AND datname<>'` + database + `')
+   AND NOT EXISTS (SELECT FROM pg_database WHERE datdba=r.oid AND datname<>'` + database + `' AND shobj_description(oid,'pg_database') IS DISTINCT FROM 'impreza-restore:` + identity + `')
    AND NOT EXISTS (SELECT FROM pg_tablespace WHERE spcowner=r.oid)
   ) THEN RAISE EXCEPTION 'Generation owner role cannot be verified'; END IF;
  ELSE

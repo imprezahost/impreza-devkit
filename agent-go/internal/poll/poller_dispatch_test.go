@@ -34,10 +34,31 @@ func TestPollReportsUnsupportedAndContinues(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/agent/poll":
 			var request sdkclient.PollRequest
-			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.Capabilities) != 17 || request.Capabilities[0] != "startup-health-v1" || request.Capabilities[1] != "deploy-cancel-v1" || request.Capabilities[2] != "build-secrets-v1" || request.Capabilities[3] != "compose-source-files-v1" || request.Capabilities[4] != sdkclient.ServiceBindingProtocol || request.Capabilities[5] != sdkclient.ServiceBindingRetirementProtocol || request.Capabilities[6] != sdkclient.ServiceBindingGenerationProtocol || request.Capabilities[7] != sdkclient.ServiceBindingGenerationRetirementProtocol || request.Capabilities[8] != sdkclient.ServiceBindingRotationProtocol || request.Capabilities[9] != sdkclient.ServiceBindingBackupProtocol || request.Capabilities[10] != sdkclient.TrafficSwitchProtocol || request.Capabilities[11] != sdkclient.PreviewBasicAuthProtocol || request.Capabilities[12] != sdkclient.ServiceBindingRestoreProtocol || request.Capabilities[13] != sdkclient.DeploymentProgressProtocol || request.Capabilities[14] != sdkclient.MysqlServiceBindingGenerationProtocol || request.Capabilities[15] != sdkclient.MysqlServiceBindingGenerationRetirementProtocol || request.Capabilities[16] != sdkclient.MysqlServiceBindingRotationProtocol {
-
-				t.Error("missing startup capability")
-				http.Error(w, "capability missing", 400)
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Error(err)
+				w.WriteHeader(400)
+				return
+			}
+			expected := []string{"startup-health-v1", "deploy-cancel-v1", "build-secrets-v1", "compose-source-files-v1", sdkclient.ServiceBindingProtocol, sdkclient.ServiceBindingRetirementProtocol, sdkclient.ServiceBindingGenerationProtocol, sdkclient.ServiceBindingGenerationRetirementProtocol, sdkclient.ServiceBindingRotationProtocol, sdkclient.ServiceBindingBackupProtocol, sdkclient.TrafficSwitchProtocol, sdkclient.PreviewBasicAuthProtocol, sdkclient.ServiceBindingRestoreProtocol, sdkclient.DeploymentProgressProtocol, sdkclient.MysqlServiceBindingGenerationProtocol, sdkclient.MysqlServiceBindingGenerationRetirementProtocol, sdkclient.MysqlServiceBindingRotationProtocol, sdkclient.MysqlServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingRestoreProtocol}
+			seen := map[string]bool{}
+			for _, capability := range request.Capabilities {
+				if seen[capability] {
+					t.Error("duplicate capability")
+					w.WriteHeader(400)
+					return
+				}
+				seen[capability] = true
+			}
+			for _, capability := range expected {
+				if !seen[capability] {
+					t.Error("missing capability: " + capability)
+					w.WriteHeader(400)
+					return
+				}
+			}
+			if len(seen) != len(expected) {
+				t.Error("unexpected capability")
+				w.WriteHeader(400)
 				return
 			}
 			index := int(next.Add(1)) - 1

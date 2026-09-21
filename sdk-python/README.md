@@ -99,10 +99,16 @@ vps.snapshots.list()
 op = vps.snapshots.rollback("pre-update")  # returns Operation future
 op.wait(timeout=600)               # blocks until queue completes
 
-# Backend-specific sub-resources (Cloud)
-vps.images.list()                  # account-scoped
-vps.rescue.enable()
 ```
+
+**Basic Cloud VPS policy (candidate, awaiting rollout):** use `status()`,
+`refresh()` (allocated resources), `start()`, `shutdown()` and `reboot()`.
+Advanced Cloud infrastructure methods remain in the SDK for compatibility, but
+return API `FEATURE_NOT_AVAILABLE` (403) after the policy is applied. Do not use
+`stop()`, images, restore, rescue, console, reinstall, resize, hostname/password,
+rDNS, SSH-key assignment, IPv6, ISO or boot-order operations on these services.
+Contact Impreza support for other infrastructure changes. Orders and cancellations
+use the normal client account workflow; agent-based app management is separate.
 
 Wrong-backend access raises `BackendNotSupported` client-side — no
 network call:
@@ -111,7 +117,7 @@ network call:
 vps = c.vps.get(17987)             # Cloud VPS
 vps.snapshots.list()
 # raises BackendNotSupported("snapshots is not supported on the 'cloud'
-# VPS backend. Use vps.images instead.")
+# VPS backend. ...")
 ```
 
 ## Webhooks
@@ -245,6 +251,15 @@ print(op.is_success(), op.finished_at)
 
 `wait()` raises `OperationTimeout` if it doesn't finish, or
 `OperationFailed` on a terminal failure state.
+
+## Reviewed application configuration
+
+Version 0.6.0 adds configuration export, review and apply. Documents are limited
+to 64 KiB of UTF-8 and carry secret references instead of values. Applications
+retain their current configuration until a reviewed plan is explicitly applied.
+
+See [the configuration guide](https://docs.imprezahost.com/customer-workflows.html#config-cli)
+for SDK and CLI examples, permissions, review expiry and replay behavior.
 
 ## Development
 

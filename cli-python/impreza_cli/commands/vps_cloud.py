@@ -178,6 +178,7 @@ def images_list(
     if not images:
         typer.echo("No images saved on this account.")
         return
+    rows: list[dict[str, Any]]
     if fmt is OutputFormat.TABLE:
         rows = [
             {

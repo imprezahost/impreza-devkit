@@ -129,11 +129,12 @@ func TestRestoreDatabaseJITConfinement(t *testing.T) {
 			spec := p.Manifest.Runtime.RestoreDatabase
 			values, credential, err := (&Docker{Client: client}).prepareRestoreDatabase(context.Background(), cmd, &p, spec)
 			if mode == "valid" {
-				if err != nil || len(p.ServiceBindingRetirementAuthorizations) != 0 || len(values) != 2 || credential.Password != c.Password {
+				job, jobErr := postgresDatabaseJobCredential(c, spec.RestoreDatabase)
+				if err != nil || jobErr != nil || len(p.ServiceBindingRetirementAuthorizations) != 0 || len(values) != 2 || values["job_password"] != job.Password || values["job_password"] == c.Password || credential.Password != c.Password {
 					t.Fatal("verified restore credential refused")
 				}
 				got, _ := p.Vars["DATABASE_URL"].(string)
-				if !strings.Contains(got, c.Password) || len(serviceBindingEnvRedactions([]byte("DATABASE_URL="+got+"\n"))) != 2 {
+				if strings.Contains(got, c.Password) || !strings.Contains(got, "ijr_") || len(serviceBindingEnvRedactions([]byte("DATABASE_URL="+got+"\n"))) != 2 {
 					t.Fatal("injected credential escaped the runtime redaction contract")
 				}
 				return

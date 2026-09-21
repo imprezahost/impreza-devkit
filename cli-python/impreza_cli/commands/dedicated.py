@@ -45,7 +45,7 @@ Reinstall (destructive — wipes ALL data):
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, cast
 
 import typer
 from impreza.exceptions import ApiError
@@ -76,9 +76,11 @@ def _emit(value: Any, *, ctx: typer.Context, title: str) -> None:
     """
     fmt = resolve_output(from_typer_context(ctx), None)
     if isinstance(value, list):
-        rows = value if all(isinstance(row, dict) for row in value) else [
-            {"value": item} for item in value
-        ]
+        rows = (
+            value
+            if all(isinstance(row, dict) for row in value)
+            else [{"value": item} for item in value]
+        )
         print_table(title, rows, fmt=fmt)
     elif isinstance(value, dict):
         print_dict(title, value, fmt=fmt)
@@ -356,8 +358,15 @@ def cmd_set_firewall(
     """Update DDoS firewall state/sensitivity for an IP. Requires the ``firewall`` capability."""
     client = make_client_or_exit(from_typer_context(ctx))
     try:
+        if state not in (None, "always_on", "redirect_on_attack"):
+            raise typer.BadParameter("Use always_on or redirect_on_attack.", param_hint="--state")
+        if sensitivity not in (None, "low", "normal", "medium", "high"):
+            raise typer.BadParameter("Use low, normal, medium or high.", param_hint="--sensitivity")
         data = client.dedicated.set_firewall(
-            service_id, ip=ip, state=state, sensitivity=sensitivity
+            service_id,
+            ip=ip,
+            state=cast(Literal["always_on", "redirect_on_attack"] | None, state),
+            sensitivity=cast(Literal["low", "normal", "medium", "high"] | None, sensitivity),
         )
     except ApiError as exc:
         exit_on_api_error(exc)
@@ -382,7 +391,32 @@ def cmd_bandwidth(
     """Bandwidth graph (PNG base64). Requires the ``bandwidth`` capability."""
     client = make_client_or_exit(from_typer_context(ctx))
     try:
-        data = client.dedicated.bandwidth(service_id, type=type, scale=scale)
+        if type not in (
+            "port_bits",
+            "port_upkts",
+            "port_percent",
+            "port_errors",
+            "port_pktsize",
+            "port_discards",
+        ):
+            raise typer.BadParameter("Unsupported bandwidth type.", param_hint="--type")
+        if scale not in ("day", "week", "month"):
+            raise typer.BadParameter("Use day, week or month.", param_hint="--scale")
+        data = client.dedicated.bandwidth(
+            service_id,
+            type=cast(
+                Literal[
+                    "port_bits",
+                    "port_upkts",
+                    "port_percent",
+                    "port_errors",
+                    "port_pktsize",
+                    "port_discards",
+                ],
+                type,
+            ),
+            scale=cast(Literal["day", "week", "month"], scale),
+        )
     except ApiError as exc:
         exit_on_api_error(exc)
         return

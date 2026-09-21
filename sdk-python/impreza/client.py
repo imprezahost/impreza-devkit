@@ -36,6 +36,7 @@ from ._http import (
 from ._tor import resolve_proxy
 from .resources.account import AccountResource
 from .resources.catalog import CatalogResource
+from .resources.config import ConfigResource
 from .resources.dedicated import DedicatedResource
 from .resources.domains import DomainsResource
 from .resources.email import EmailResource
@@ -97,6 +98,7 @@ class Client:
         self.vps = VpsResource(self._http)
         self.dedicated = DedicatedResource(self._http)
         self.webhooks = WebhooksResource(self._http)
+        self.config = ConfigResource(self._http)
 
     @classmethod
     def from_env(cls, **overrides: Any) -> Client:
