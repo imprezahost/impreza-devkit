@@ -50,7 +50,7 @@ const (
 	// or recreation, and a CVE roll is one documented `docker restart
 	// impreza_tor` — no agent change needed. Image/base changes bump the
 	// tag and ride the agent release.
-	TorImage = "ghcr.io/imprezahost/tor:1"
+	TorImage = "ghcr.io/imprezahost/tor@sha256:5b1c45733facd9540767855dc54275b6cb54e0f76393f442f6cb5a03d0adbe54"
 	// Default upstream Caddy listens on inside impreza-proxy.
 	torUpstream = "unix:/run/impreza-onion/http.sock"
 	// How long we wait for Tor to publish a hostname file after

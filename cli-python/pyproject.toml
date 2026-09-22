@@ -41,7 +41,7 @@ dependencies = [
     # breaking (see CHANGELOG). Raise BOTH bounds in the same commit that
     # makes the CLI depend on a newer SDK feature, or this stops
     # protecting anything.
-    "impreza-sdk>=0.6.0,<0.7",
+    "impreza-sdk>=0.7.0,<0.8",
     "typer>=0.12",
     "rich>=13.7",
     # Declared explicitly because `config.py` imports click directly, for

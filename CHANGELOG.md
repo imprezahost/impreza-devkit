@@ -12,6 +12,23 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-09-22
+
+- Support explicit Tor and SOCKS proxy settings in the Python SDK and CLI.
+- Refuse unsupported proxy schemes and direct onion requests without Tor.
+- The CLI requires SDK 0.7.x for the matching transport safeguards.
+
+## Agent 0.6.19 and Go CLI 0.3.0 — 2026-09-22
+
+- Add onion hardening profiles, restricted discovery and sealed identity export,
+  import and rotation, with explicit permissions and customer confirmation.
+- Preserve onion identities during daemon replacement and refuse conflicting or
+  unsafe identity state; retry cleanup safely after interrupted uninstall.
+- Use the verified multiarchitecture Tor image manifest. Signed Tor package
+  updates at daemon startup remain bounded and retain the baked version offline.
+- Add Tor transport and onion management commands to the Go SDK and CLI.
+- Existing agents update only when the customer requests it.
+
 ## [0.6.0] — 2026-09-21
 
 - Add configuration export, reviewed apply and plan inspection to the Python
