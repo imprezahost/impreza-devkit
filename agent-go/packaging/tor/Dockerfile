@@ -1,11 +1,8 @@
 # impreza/tor — the agent's shared hidden-service daemon.
 #
-# Trust model (revised C1, 2026-09-21): we never package Tor. The base is the
-# official Debian image and tor comes from the Tor Project's own apt
-# repository, verified with the official signing key — the same model the
-# Tor Manager aaPanel plugin has run in production for years. Anyone can
-# rebuild this Dockerfile and compare digests; the trust chain is Debian +
-# Tor Project, not us.
+# Tor is installed from the Tor Project apt repository on an official Debian
+# base, with the repository signing key fingerprint checked before installation.
+# Runtime releases pin the verified multi-architecture image digest.
 FROM debian:trixie-slim@sha256:5bc3287b25407c965a30f38e32603dc253a3869e1b12a21ac09bfc27fd8b13ce
 
 ARG TOR_REPO_KEY=A3C4F0F979CAA22CDBA8F512EE8CBC9E886DDD89
