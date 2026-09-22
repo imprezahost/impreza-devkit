@@ -31,6 +31,11 @@ class GlobalState:
     #: ``None`` means "use the config file's ``default_context``".
     context_override: str | None = None
 
+    #: One-shot Tor routing selected via the global ``--via-tor`` flag.
+    #: Overrides the config file's ``[settings] use_tor`` for this
+    #: invocation only; ``None``/False means "follow the config".
+    via_tor: bool = False
+
     #: Default output format selected via the global ``--output`` flag.
     #: Per-command ``--output`` flags can override this on a single
     #: invocation; ``None`` here means "no preference, fall back to

@@ -167,11 +167,14 @@ var platformAppsInfoCmd = &cobra.Command{
 // ─────────────────────────────────────────────────────────────────────
 
 var (
-	platformDeployAgent    string
-	platformDeployVersion  string
-	platformDeployDomain   string
-	platformDeployOnion    bool
-	platformDeployVarFlags []string
+	platformDeployAgent        string
+	platformDeployVersion      string
+	platformDeployDomain       string
+	platformDeployOnion           bool
+	platformDeployOnionProfile    string
+	platformDeployOnionSecretFile string
+	platformDeployOnionPubFile    string
+	platformDeployVarFlags        []string
 )
 
 var platformDeployCmd = &cobra.Command{
@@ -198,6 +201,13 @@ Tor v3 hidden service mirror for the same upstream.`,
 		if platformDeployAgent == "" {
 			return fmt.Errorf("--agent is required (try: impreza platform servers list)")
 		}
+		if err := validateOnionProfileFlag(platformDeployOnionProfile, platformDeployOnion); err != nil {
+			return err
+		}
+		onionImport, err := readOnionImportFiles(platformDeployOnionSecretFile, platformDeployOnionPubFile, platformDeployOnion)
+		if err != nil {
+			return err
+		}
 		vars := map[string]any{}
 		for _, kv := range platformDeployVarFlags {
 			eq := strings.IndexByte(kv, '=')
@@ -207,12 +217,14 @@ Tor v3 hidden service mirror for the same upstream.`,
 			vars[kv[:eq]] = kv[eq+1:]
 		}
 		req := sdkclient.DeploymentCreateRequest{
-			AppName:    args[0],
-			AppVersion: platformDeployVersion,
-			AgentID:    platformDeployAgent,
-			Vars:       vars,
-			Domain:     platformDeployDomain,
-			Onion:      platformDeployOnion,
+			AppName:      args[0],
+			AppVersion:   platformDeployVersion,
+			AgentID:      platformDeployAgent,
+			Vars:         vars,
+			Domain:       platformDeployDomain,
+			Onion:        platformDeployOnion,
+			OnionProfile: platformDeployOnionProfile,
+			OnionImport:  onionImport,
 		}
 		out, err := c.PlatformCreateDeployment(cmd.Context(), req)
 		if err != nil {
@@ -566,6 +578,12 @@ func printDeployment(cmd *cobra.Command, d *sdkclient.Deployment) {
 	if d.Onion != "" {
 		t.AppendRow(table.Row{"onion", d.Onion})
 	}
+	if d.OnionProfile != "" {
+		t.AppendRow(table.Row{"onion_profile", d.OnionProfile})
+	}
+	if d.OnionExportedAt != nil {
+		t.AppendRow(table.Row{"onion_exported_at", d.OnionExportedAt.UTC().Format("2006-01-02 15:04:05Z")})
+	}
 	if d.LastError != "" {
 		t.AppendRow(table.Row{"last_error", d.LastError})
 	}
@@ -612,6 +630,9 @@ func init() {
 	platformDeployCmd.Flags().StringVar(&platformDeployVersion, "version", "", "App version (default: latest).")
 	platformDeployCmd.Flags().StringVar(&platformDeployDomain, "domain", "", "Public hostname for TLS / Let's Encrypt (DNS must point at the VPS).")
 	platformDeployCmd.Flags().BoolVar(&platformDeployOnion, "onion", false, "Also publish a Tor v3 hidden service.")
+	platformDeployCmd.Flags().StringVar(&platformDeployOnionProfile, "onion-profile", "", "Hardening tier for the hidden service: standard | hardened | max (requires --onion; default standard).")
+	platformDeployCmd.Flags().StringVar(&platformDeployOnionSecretFile, "onion-import-secret-file", "", "Path to the Tor hs_ed25519_secret_key file (96 bytes) to keep an existing .onion (requires --onion and --onion-import-pub-file; deploy-time only).")
+	platformDeployCmd.Flags().StringVar(&platformDeployOnionPubFile, "onion-import-pub-file", "", "Path to the Tor hs_ed25519_public_key file (64 bytes); the address derives from this file (required with --onion-import-secret-file).")
 	platformDeployCmd.Flags().StringArrayVar(&platformDeployVarFlags, "var", nil, "KEY=VALUE manifest variable (repeatable).")
 	_ = platformDeployCmd.MarkFlagRequired("agent")
 

@@ -7,7 +7,11 @@
 package client
 
 import (
+	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
 
 	"github.com/imprezahost/impreza-devkit/sdk-go/config"
 	"github.com/imprezahost/impreza-devkit/sdk-go/tor"
@@ -92,6 +96,19 @@ func SetUserAgent(name string) {
 //   - Else if ctx.UseTor is true, dial through the default Tor SOCKS port.
 //   - Else use http.DefaultTransport.
 func buildTransport(ctx config.Context) (http.RoundTripper, error) {
+	u, err := url.Parse(BaseURL(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("invalid API URL")
+	}
+	host := strings.ToLower(u.Hostname())
+	if strings.HasSuffix(strings.TrimSuffix(host, "."), ".onion") {
+		if !regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z2-7]{56}\.onion$`).MatchString(host) || u.User != nil {
+			return nil, fmt.Errorf("invalid onion API URL")
+		}
+		if !ctx.UseTor && ctx.Proxy == "" {
+			return nil, fmt.Errorf("onion API requires an explicit SOCKS proxy or UseTor")
+		}
+	}
 	proxyURL := ctx.Proxy
 	if proxyURL == "" && ctx.UseTor {
 		proxyURL = tor.DefaultSOCKS

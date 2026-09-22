@@ -69,10 +69,13 @@ def make_client(
     if ctx.base_url:
         kwargs["base_url"] = ctx.base_url
 
-    # Tor preference comes from the [settings] block (CLI-wide). A
-    # future per-context override (one VPN context, one clearnet, etc.)
+    # Tor/proxy preference: an explicit [settings] proxy wins; then the
+    # one-shot global --via-tor flag; then the CLI-wide use_tor setting.
+    # A future per-context override (one VPN context, one clearnet, etc.)
     # would slot in here without touching callers.
-    if cfg.settings.use_tor:
+    if cfg.settings.proxy:
+        kwargs["proxy"] = cfg.settings.proxy
+    elif state.via_tor or cfg.settings.use_tor:
         kwargs["use_tor"] = True
 
     return Client(**kwargs)

@@ -24,6 +24,7 @@ from typing import Any
 
 import httpx
 
+from ._tor import validate_onion_transport
 from .exceptions import (
     ApiError,
     AuthError,
@@ -57,6 +58,7 @@ class HttpClient:
         max_retries: int = DEFAULT_MAX_RETRIES,
         proxy: str | None = None,
     ) -> None:
+        proxy = validate_onion_transport(base_url, proxy)
         self._max_retries = max_retries
         self._client = httpx.Client(
             base_url=base_url.rstrip("/"),
@@ -68,6 +70,7 @@ class HttpClient:
                 "User-Agent": USER_AGENT,
             },
             proxy=proxy,
+            trust_env=proxy is None,
             # The credentials above are CUSTOM headers set on the client, so httpx
             # re-sends them on every hop of a redirect — including one that crosses
             # to another host, where its Authorization-stripping rule does not

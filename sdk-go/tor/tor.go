@@ -9,8 +9,10 @@ package tor
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
+	"time"
 
 	"golang.org/x/net/proxy"
 )
@@ -30,23 +32,32 @@ func Transport(proxyURL string) (http.RoundTripper, error) {
 
 	u, err := url.Parse(proxyURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse proxy URL %q: %w", proxyURL, err)
+		return nil, fmt.Errorf("invalid SOCKS proxy URL")
 	}
+	if u.Scheme != "socks5" && u.Scheme != "socks5h" {
+		return nil, fmt.Errorf("proxy must use SOCKS5")
+	}
+	if u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("invalid SOCKS proxy URL")
+	}
+	if _, _, err := net.SplitHostPort(u.Host); err != nil {
+		return nil, fmt.Errorf("SOCKS proxy requires host and port")
+	}
+	u.Scheme = "socks5"
 
 	// golang.org/x/net/proxy handles socks5:// transparently when the
 	// URL scheme matches.
-	dialer, err := proxy.FromURL(u, proxy.Direct)
+	dialer, err := proxy.FromURL(u, &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("build SOCKS5 dialer: %w", err)
 	}
 
 	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.Proxy = nil // Explicit SOCKS must not inherit HTTP(S)_PROXY from the environment.
 	if d, ok := dialer.(proxy.ContextDialer); ok {
 		tr.DialContext = d.DialContext
 	} else {
-		// Fallback for older proxy.Dialer implementations that don't
-		// implement ContextDialer.
-		tr.Dial = dialer.Dial //nolint:staticcheck // SA1019: graceful fallback
+		return nil, fmt.Errorf("SOCKS transport requires context cancellation")
 	}
 	return tr, nil
 }

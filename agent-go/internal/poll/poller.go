@@ -122,7 +122,7 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 			return err
 		}
 	}
-	capabilities := []string{"startup-health-v1", "deploy-cancel-v1", "build-secrets-v1", "compose-source-files-v1", sdkclient.ServiceBindingProtocol, sdkclient.ServiceBindingRetirementProtocol, sdkclient.ServiceBindingGenerationProtocol, sdkclient.ServiceBindingGenerationRetirementProtocol, sdkclient.ServiceBindingRotationProtocol, sdkclient.ServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingGenerationProtocol, sdkclient.MysqlServiceBindingGenerationRetirementProtocol, sdkclient.MysqlServiceBindingRotationProtocol, sdkclient.MysqlServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingRestoreProtocol, sdkclient.TrafficSwitchProtocol, sdkclient.PreviewBasicAuthProtocol, sdkclient.ServiceBindingRestoreProtocol}
+	capabilities := []string{"onion-auth-v1", "onion-profile-v1", "onion-deploy-profile-v1", "onion-custody-v1", "startup-health-v1", "deploy-cancel-v1", "build-secrets-v1", "compose-source-files-v1", sdkclient.ServiceBindingProtocol, sdkclient.ServiceBindingRetirementProtocol, sdkclient.ServiceBindingGenerationProtocol, sdkclient.ServiceBindingGenerationRetirementProtocol, sdkclient.ServiceBindingRotationProtocol, sdkclient.ServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingGenerationProtocol, sdkclient.MysqlServiceBindingGenerationRetirementProtocol, sdkclient.MysqlServiceBindingRotationProtocol, sdkclient.MysqlServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingRestoreProtocol, sdkclient.TrafficSwitchProtocol, sdkclient.PreviewBasicAuthProtocol, sdkclient.ServiceBindingRestoreProtocol}
 	if p.journal != nil {
 		capabilities = append(capabilities, sdkclient.DeploymentProgressProtocol)
 	}

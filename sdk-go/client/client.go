@@ -113,6 +113,7 @@ func NewAgent(opts AgentOptions) (*Client, error) {
 	base, err := buildTransport(config.Context{
 		UseTor: opts.UseTor,
 		Proxy:  opts.Proxy,
+		URL:    opts.BaseURL,
 	})
 	if err != nil {
 		return nil, err

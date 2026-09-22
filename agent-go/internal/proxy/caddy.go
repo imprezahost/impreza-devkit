@@ -629,7 +629,9 @@ func (c *Caddy) regenerateCaddyfile() error {
 		if err != nil {
 			return fmt.Errorf("read routing fragment %s: %w", n, err)
 		}
-		sb.Write(data)
+		secured, err := secureOnionFragment(string(data))
+		if err != nil { return fmt.Errorf("secure onion fragment %s: %w",n,err) }
+		sb.WriteString(secured)
 		if !strings.HasSuffix(string(data), "\n") {
 			sb.WriteByte('\n')
 		}
@@ -673,7 +675,7 @@ func (c *Caddy) reload(ctx context.Context) error {
 
 // ensureDirs creates the proxy state dir tree at 0700.
 func (c *Caddy) ensureDirs() error {
-	for _, sub := range []string{"", "data", "config", "deployments"} {
+	for _, sub := range []string{"", "data", "config", "config/onion-private", "deployments"} {
 		d := filepath.Join(c.StateDir, sub)
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)
@@ -762,6 +764,13 @@ func renderFragment(deploymentID string, routes []Route) string {
 				// shorthand here.
 			}
 			writeBasicAuth(&sb, r.BasicAuth)
+			// Dual-stack deployments advertise their onion mirror so Tor
+			// Browser shows ".onion available" on the clearnet site. The
+			// header is ignored on plain-HTTP clearnet (spec requires a
+			// secure context), which is exactly where it would be useless.
+			if r.OnionAddr != "" {
+				fmt.Fprintf(&sb, "  header Onion-Location \"http://%s/\"\n", r.OnionAddr)
+			}
 			fmt.Fprintf(&sb, "  reverse_proxy %s\n", r.Upstream)
 			fmt.Fprintf(&sb, "}\n")
 		}
@@ -772,6 +781,7 @@ func renderFragment(deploymentID string, routes []Route) string {
 		// since Let's Encrypt can't issue for .onion anyway).
 		if r.OnionAddr != "" {
 			fmt.Fprintf(&sb, "http://%s {\n", r.OnionAddr)
+			sb.WriteString("  bind unix//config/onion-private/http.sock|0600\n")
 			writeBasicAuth(&sb, r.BasicAuth)
 			fmt.Fprintf(&sb, "  reverse_proxy %s\n", r.Upstream)
 			fmt.Fprintf(&sb, "}\n")

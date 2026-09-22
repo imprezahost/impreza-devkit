@@ -19,6 +19,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -163,6 +164,14 @@ func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) (resul
 		return d.logsTail(ctx, cmd)
 	case sdkclient.CommandUpdateRoutes:
 		return d.updateRoutes(ctx, cmd)
+	case sdkclient.CommandOnionAuthUpdate:
+		return d.onionAuthUpdate(ctx, cmd)
+	case sdkclient.CommandOnionProfileUpdate:
+		return d.onionProfileUpdate(ctx, cmd)
+	case sdkclient.CommandOnionKeyExport:
+		return d.onionKeyExport(ctx, cmd)
+	case sdkclient.CommandOnionRotate:
+		return d.onionRotate(ctx, cmd)
 	case sdkclient.CommandTrafficSwitch:
 		return d.trafficSwitch(ctx, cmd)
 	default:
@@ -496,6 +505,49 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	// later-provisioning path; the clearnet DOMAIN/DOMAIN_URL is
 	// already correct in .env from deploy time, and the onion only
 	// supplements it.
+	// Identity import: the customer brought an existing hidden-service key. Write
+	// it BEFORE any provisioning so every later ProvisionHiddenService call
+	// for this deployment loads the customer's address instead of minting
+	// fresh keys. Refuses if a key already exists (never clobber identity).
+	if p.OnionProfile != "" || p.OnionImport != nil {
+		hasOnion := false
+		for _, route := range p.Routes {
+			if route.Onion != nil && route.Onion.Enabled {
+				hasOnion = true
+			}
+		}
+		if !hasOnion || d.Tor == nil {
+			return failResult(cmd.ID, "onion identity/profile requires an enabled Tor route")
+		}
+		if p.OnionProfile == "" {
+			p.OnionProfile = "standard"
+		}
+		if err := d.Tor.CheckInitialProfile(ctx, p.OnionProfile); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+	}
+	if p.OnionImport != nil {
+		secret, err := base64.StdEncoding.DecodeString(p.OnionImport.SecretKeyB64)
+		if err != nil {
+			return failResult(cmd.ID, "onion_import.secret_key_b64 must be base64 of the hs_ed25519_secret_key file")
+		}
+		pubFile, err := base64.StdEncoding.DecodeString(p.OnionImport.PublicKeyB64)
+		if err != nil {
+			return failResult(cmd.ID, "onion_import.public_key_b64 must be base64 of the hs_ed25519_public_key file")
+		}
+		addr, err := d.Tor.ImportOnionKeyWithProfile(p.DeploymentID, secret, pubFile, p.OnionProfile)
+		if err != nil {
+			return failResult(cmd.ID, "onion key import refused: "+err.Error())
+		}
+		d.Log.Info("docker deploy: imported customer onion key",
+			"deployment_id", p.DeploymentID, "onion", addr)
+	}
+
+	if p.OnionProfile != "" && p.OnionImport == nil {
+		if err := d.Tor.PrepareInitialProfile(p.DeploymentID, p.OnionProfile); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+	}
 	primaryOnion := ""
 	onionOnlyIntent := false
 	for _, r := range p.Routes {
@@ -691,6 +743,9 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 		// idempotent success.
 		d.Log.Info("docker uninstall: no state dir, sweeping by label", "deployment_id", p.DeploymentID)
 		d.forceRemoveProjectContainers(ctx, p.DeploymentID)
+		if err := d.removeDeploymentExposure(ctx, p.DeploymentID); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
 		return sdkclient.DeployResult{CommandID: cmd.ID, Status: "success", DeploymentID: p.DeploymentID}
 	}
 
@@ -756,42 +811,47 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 			"deployment_id", p.DeploymentID, "dir", filepath.Join(appDir, "data"))
 	}
 
-	// Remove any Caddy routes that pointed at this deployment so we
-	// don't keep serving stale hostnames after an uninstall.
-	if d.Proxy != nil {
-		rmCtx, cancelRm := context.WithTimeout(ctx, composeQueryTimeout)
-		if err := d.Proxy.RemoveDeploymentRoutes(rmCtx, p.DeploymentID); err != nil {
-			d.Log.Warn("docker uninstall: caddy route remove failed",
-				"deployment_id", p.DeploymentID, "err", err)
-		}
-		cancelRm()
-	}
-
-	// Tear down the hidden service too. We DELETE the keys (so the
-	// next reinstall gets a fresh .onion); a future sticky-onion
-	// feature would move them into a parking dir instead.
-	if d.Tor != nil {
-		torRmCtx, cancelTorRm := context.WithTimeout(ctx, composeQueryTimeout)
-		if err := d.Tor.RemoveHiddenService(torRmCtx, p.DeploymentID); err != nil {
-			d.Log.Warn("docker uninstall: tor service remove failed",
-				"deployment_id", p.DeploymentID, "err", err)
-		}
-		cancelTorRm()
+	if err := d.removeDeploymentExposure(ctx, p.DeploymentID); err != nil {
+		return failResult(cmd.ID, err.Error())
 	}
 
 	res := sdkclient.DeployResult{CommandID: cmd.ID, Status: "success", DeploymentID: p.DeploymentID}
 	if downErr != nil {
-		// Still a success: the teardown ran and the fallback sweep took
-		// the containers out, so the control plane should retire the
-		// deployment rather than park it in `uninstalling` forever. But
-		// surface what went wrong — a recurring warning here means the
-		// compose file or the daemon needs a look.
 		res.LogsTail = fmt.Sprintf(
 			"compose down reported an error; cleanup completed via label sweep.\n%v\n%s",
 			downErr, tail(out, 1024),
 		)
 	}
 	return res
+}
+
+// Routing and Tor state live outside the application directory. A retry after
+// that directory was removed must finish exposure cleanup before reporting success.
+func (d *Docker) removeDeploymentExposure(ctx context.Context, deploymentID string) error {
+	// Remove any Caddy routes that pointed at this deployment so we
+	// don't keep serving stale hostnames after an uninstall.
+	if d.Proxy != nil {
+		rmCtx, cancelRm := context.WithTimeout(ctx, composeQueryTimeout)
+		if err := d.Proxy.RemoveDeploymentRoutes(rmCtx, deploymentID); err != nil {
+			cancelRm()
+			return fmt.Errorf("application stopped; route removal must be retried: %w", err)
+		}
+		cancelRm()
+	}
+
+	// Tear down the hidden service too. The keys are PARKED (not
+	// deleted) for Tor's ParkRetention so an accidental uninstall is
+	// recoverable; a reinstall still gets a fresh .onion.
+	if d.Tor != nil {
+		torRmCtx, cancelTorRm := context.WithTimeout(ctx, composeQueryTimeout)
+		if err := d.Tor.RemoveHiddenService(torRmCtx, deploymentID); err != nil {
+			cancelTorRm()
+			return fmt.Errorf("application stopped; onion removal must be retried: %w", err)
+		}
+		cancelTorRm()
+	}
+
+	return nil
 }
 
 // forceRemoveProjectContainers is the teardown of last resort: it finds
@@ -1181,6 +1241,123 @@ func (d *Docker) healthCheck(ctx context.Context, cmd *sdkclient.PollCommand) sd
 //     published address back via DeployResult.Onion. Server uses
 //     this to back-fill imprezaplatform_deployments.onion when the
 //     customer added .onion to an app that was running clearnet-only.
+//
+// onionKeyExport seals the hidden-service secret key to the
+// customer's X25519 public key. The plaintext never leaves this host — the
+// result carries the NaCl-sealed blob only.
+func (d *Docker) onionKeyExport(ctx context.Context, cmd *sdkclient.PollCommand) sdkclient.DeployResult {
+	var p sdkclient.OnionKeyExportPayload
+	if err := cmd.As(&p); err != nil {
+		return failResult(cmd.ID, "decode onion_key_export payload: "+err.Error())
+	}
+	if p.DeploymentID == "" {
+		return failResult(cmd.ID, "onion_key_export payload missing deployment_id")
+	}
+	if d.Tor == nil {
+		return failResult(cmd.ID, "tor proxy not available on this agent")
+	}
+	raw, err := base64.StdEncoding.DecodeString(p.RecipientPubkey)
+	if err != nil || len(raw) != 32 {
+		return failResult(cmd.ID, "recipient_pubkey must be base64 of a 32-byte X25519 public key")
+	}
+	var pub [32]byte
+	copy(pub[:], raw)
+	sealed, addr, err := d.Tor.ExportOnionKey(p.DeploymentID, &pub)
+	if err != nil {
+		return failResult(cmd.ID, err.Error())
+	}
+	res := sdkclient.DeployResult{CommandID: cmd.ID, Status: "success", DeploymentID: p.DeploymentID, Onion: addr}
+	res.OnionExportSealed = base64.StdEncoding.EncodeToString(sealed)
+	return res
+}
+
+// onionRotate parks the current key and provisions a fresh
+// hidden service — a NEW address. Destructive for visitors by design; the
+// control plane double-confirmed before enqueueing.
+func (d *Docker) onionRotate(ctx context.Context, cmd *sdkclient.PollCommand) sdkclient.DeployResult {
+	var p sdkclient.OnionRotatePayload
+	if err := cmd.As(&p); err != nil {
+		return failResult(cmd.ID, "decode onion_rotate payload: "+err.Error())
+	}
+	if p.DeploymentID == "" {
+		return failResult(cmd.ID, "onion_rotate payload missing deployment_id")
+	}
+	if d.Tor == nil {
+		return failResult(cmd.ID, "tor proxy not available on this agent")
+	}
+	rotCtx, cancelRot := context.WithTimeout(ctx, 3*time.Minute)
+	addr, err := d.Tor.RotateOnionIdentity(rotCtx, d.Proxy, p.DeploymentID, cmd.ID, p.ExpectedOnion)
+	cancelRot()
+	if err != nil {
+		return failResult(cmd.ID, err.Error())
+	}
+	return sdkclient.DeployResult{CommandID: cmd.ID, Status: "success", DeploymentID: p.DeploymentID, Onion: addr}
+}
+
+// onionProfileUpdate sets the hidden service's hardening
+// tier. PoW (max) additionally requires the pow module in the running Tor —
+// refused with a clear message rather than a silently ignored torrc line.
+func (d *Docker) onionProfileUpdate(ctx context.Context, cmd *sdkclient.PollCommand) sdkclient.DeployResult {
+	var p sdkclient.OnionProfileUpdatePayload
+	if err := cmd.As(&p); err != nil {
+		return failResult(cmd.ID, "decode onion_profile_update payload: "+err.Error())
+	}
+	if p.DeploymentID == "" {
+		return failResult(cmd.ID, "onion_profile_update payload missing deployment_id")
+	}
+	if d.Tor == nil {
+		return failResult(cmd.ID, "tor proxy not available on this agent")
+	}
+	if p.Profile == "max" {
+		modCtx, cancelMod := context.WithTimeout(ctx, 10*time.Second)
+		out, err := exec.CommandContext(modCtx, "docker", "exec", proxy.TorContainer,
+			"tor", "--list-modules").CombinedOutput()
+		cancelMod()
+		if err != nil || !strings.Contains(string(out), "pow: yes") {
+			return failResult(cmd.ID, "profile max requires the Tor PoW module, which the running daemon does not report (tor --list-modules: "+strings.TrimSpace(string(out))+")")
+		}
+	}
+	if err := d.Tor.SetOnionProfile(ctx, p.DeploymentID, p.Profile); err != nil {
+		return failResult(cmd.ID, err.Error())
+	}
+	return sdkclient.DeployResult{CommandID: cmd.ID, Status: "success", DeploymentID: p.DeploymentID}
+}
+
+// onionAuthUpdate syncs the restricted-discovery client list
+// of a deployment's hidden service. Full-sync semantics: the payload's list
+// becomes authorized_clients/ exactly; empty list makes the service public
+// again. Never rotates or even touches the service keys.
+func (d *Docker) onionAuthUpdate(ctx context.Context, cmd *sdkclient.PollCommand) sdkclient.DeployResult {
+	var p sdkclient.OnionAuthUpdatePayload
+	if err := cmd.As(&p); err != nil {
+		return failResult(cmd.ID, "decode onion_auth_update payload: "+err.Error())
+	}
+	if p.DeploymentID == "" {
+		return failResult(cmd.ID, "onion_auth_update payload missing deployment_id")
+	}
+	if d.Tor == nil {
+		return failResult(cmd.ID, "tor proxy not available on this agent")
+	}
+	if d.Proxy == nil {
+		return failResult(cmd.ID, "private onion listener unavailable")
+	}
+	if err := d.Proxy.ReconcileOnionListeners(ctx); err != nil {
+		return failResult(cmd.ID, "private onion listener could not be verified")
+	}
+	clients := make(map[string]string, len(p.Clients))
+	for _, c := range p.Clients {
+		if _, duplicate := clients[c.Name]; duplicate {
+			return failResult(cmd.ID, "duplicate onion client")
+		}
+		clients[c.Name] = c.Pubkey
+	}
+	if err := d.Tor.SetOnionClients(ctx, p.DeploymentID, clients); err != nil {
+		return failResult(cmd.ID, err.Error())
+	}
+	res := sdkclient.DeployResult{CommandID: cmd.ID, Status: "success", DeploymentID: p.DeploymentID}
+	return res
+}
+
 func (d *Docker) updateRoutes(ctx context.Context, cmd *sdkclient.PollCommand) sdkclient.DeployResult {
 	var p sdkclient.UpdateRoutesPayload
 	if err := cmd.As(&p); err != nil {
@@ -1211,6 +1388,14 @@ func (d *Docker) updateRoutes(ctx context.Context, cmd *sdkclient.PollCommand) s
 	// through (e.g. retry after a partial failure) we noop instead of
 	// rotating keys.
 	if p.ProvisionOnion && p.OnionAddr == "" && d.Tor != nil {
+		if p.OnionProfile != "" {
+			if err := d.Tor.CheckInitialProfile(ctx, p.OnionProfile); err != nil {
+				return failResult(cmd.ID, err.Error())
+			}
+			if err := d.Tor.PrepareInitialProfile(p.DeploymentID, p.OnionProfile); err != nil {
+				return failResult(cmd.ID, err.Error())
+			}
+		}
 		provCtx, cancelProv := context.WithTimeout(ctx, 90*time.Second)
 		addr, err := d.Tor.ProvisionHiddenService(provCtx, p.DeploymentID, 80)
 		cancelProv()

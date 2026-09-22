@@ -50,6 +50,23 @@ const (
 	// on the same agent: the target's fragment takes the hostname and the
 	// source keeps running untouched. Rollback is a fragment restore.
 	CommandTrafficSwitch CommandKind = "traffic_switch"
+	// CommandOnionAuthUpdate replaces the hidden service's
+	// restricted-discovery client list: the payload's clients become the
+	// exact contents of authorized_clients/ (absent names are revoked).
+	// Tor reloads via SIGHUP; the service address never changes.
+	CommandOnionAuthUpdate CommandKind = "onion_auth_update"
+	// CommandOnionProfileUpdate sets the hardening tier of a
+	// deployment's hidden service (standard|hardened|max). Address-stable.
+	CommandOnionProfileUpdate CommandKind = "onion_profile_update"
+	// CommandOnionKeyExport seals the deployment's hidden-
+	// service secret key to the customer's X25519 public key (NaCl
+	// anonymous box). The result's OnionExportSealed carries ciphertext
+	// only — the platform never sees plaintext.
+	CommandOnionKeyExport CommandKind = "onion_key_export"
+	// CommandOnionRotate parks the current hidden-service
+	// key and provisions a fresh one — a NEW address. Destructive for
+	// visitors; the control plane double-confirms before enqueueing.
+	CommandOnionRotate CommandKind = "onion_rotate"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -213,14 +230,21 @@ func (c *Client) AgentPoll(ctx context.Context, req *PollRequest) (*PollCommand,
 
 // DeployPayload is the payload of a CommandDeploy.
 type DeployPayload struct {
+	OnionProfile string `json:"onion_profile,omitempty"`
 	// Resolved only by authenticated preparation. Incoming values are discarded.
 	ServiceBindingRetirementAuthorizations []ServiceBindingRetirement `json:"service_binding_retirement_authorizations,omitempty"`
 	// GitCommitSHA pins the source revision supplied by a Git webhook.
-	GitCommitSHA string         `json:"git_commit_sha,omitempty"`
-	DeploymentID string         `json:"deployment_id"`
-	Manifest     AppManifest    `json:"manifest"`
-	Vars         map[string]any `json:"vars,omitempty"`
-	Routes       []Route        `json:"routes,omitempty"`
+	GitCommitSHA string `json:"git_commit_sha,omitempty"`
+
+	// OnionImport carries the C Tor key files of an
+	// existing onion service the customer is migrating from; the agent
+	// writes them before provisioning so the deployment keeps the same
+	// .onion it always had. Nil means "generate fresh keys".
+	OnionImport  *OnionImportKeys `json:"onion_import,omitempty"`
+	DeploymentID string           `json:"deployment_id"`
+	Manifest     AppManifest      `json:"manifest"`
+	Vars         map[string]any   `json:"vars,omitempty"`
+	Routes       []Route          `json:"routes,omitempty"`
 	// GitAuthMethod tells the agent how to authenticate a private git
 	// clone: "" / "none" (public), "deploy_key" (SSH), or "pat" (https
 	// token). The credential itself is NOT in the payload — the agent
@@ -327,11 +351,62 @@ type AgentUpgradePayload struct {
 //     — server should only set ProvisionOnion when row.onion is
 //     empty, but defense in depth).
 type UpdateRoutesPayload struct {
+	OnionProfile   string         `json:"onion_profile,omitempty"`
 	DeploymentID   string         `json:"deployment_id"`
 	Routes         []Route        `json:"routes,omitempty"`
 	Vars           map[string]any `json:"vars,omitempty"`
 	OnionAddr      string         `json:"onion_addr,omitempty"`
 	ProvisionOnion bool           `json:"provision_onion,omitempty"`
+}
+
+// OnionAuthClient is one authorized client of a restricted-discovery
+// (private) onion service: a friendly name plus the client's x25519 public
+// key (base32, 52 chars). The private key belongs to the visitor and never
+// crosses the platform.
+type OnionAuthClient struct {
+	Name   string `json:"name"`
+	Pubkey string `json:"pubkey"`
+}
+
+// OnionAuthUpdatePayload carries the DESIRED client list for one
+// deployment's hidden service (full sync, not deltas): the agent writes
+// exactly these authorized_clients/*.auth files and removes the rest.
+// An empty list makes the service public again.
+type OnionAuthUpdatePayload struct {
+	DeploymentID string            `json:"deployment_id"`
+	Clients      []OnionAuthClient `json:"clients"`
+}
+
+// OnionProfileUpdatePayload sets the hardening tier for one deployment's
+// hidden service: standard (IntroDoS), hardened (+ stream limits) or max
+// (+ experimental PoW — opt-in, one layer among several).
+type OnionProfileUpdatePayload struct {
+	DeploymentID string `json:"deployment_id"`
+	Profile      string `json:"profile"`
+}
+
+// OnionImportKeys is a C Tor key pair for bring-your-own-onion imports.
+// The address derives from the PUBLIC file; Tor enforces secret↔public
+// consistency on load (the secret file holds the expanded scalar, NOT the
+// public key — see agent-go tor_custody.go).
+type OnionImportKeys struct {
+	SecretKeyB64 string `json:"secret_key_b64"`
+	PublicKeyB64 string `json:"public_key_b64"`
+}
+
+// OnionKeyExportPayload asks the agent to seal the hidden-service secret
+// key to this X25519 public key (base64 std, 32 bytes) with an anonymous
+// NaCl box. One-time display is the control plane's contract.
+type OnionKeyExportPayload struct {
+	DeploymentID    string `json:"deployment_id"`
+	RecipientPubkey string `json:"recipient_pubkey"`
+}
+
+// OnionRotatePayload rotates a deployment's hidden-service key. The old
+// key is parked (recovery window), the service gets a NEW address.
+type OnionRotatePayload struct {
+	DeploymentID  string `json:"deployment_id"`
+	ExpectedOnion string `json:"expected_onion"`
 }
 
 // As decodes c.Payload into the typed target. Returns an error if the
@@ -370,6 +445,18 @@ type RuntimeSnapshot struct {
 	Protocol    string               `json:"protocol"`
 	Deployments []RuntimeObservation `json:"deployments"`
 	Complete    bool                 `json:"complete"`
+	// Tor is the health-only view of the shared hidden-service daemon
+	// (version, image, running) — present when the agent manages one.
+	Tor *TorRuntime `json:"tor,omitempty"`
+}
+
+// TorRuntime reports the hidden-service daemon's patch level so the control
+// plane can flag hosts running a stale Tor. Health only: no descriptors,
+// no service addresses.
+type TorRuntime struct {
+	Running bool   `json:"running"`
+	Version string `json:"version,omitempty"`
+	Image   string `json:"image,omitempty"`
 }
 
 type RuntimeObservation struct {
@@ -430,6 +517,7 @@ type DeployResult struct {
 	DeploymentID              string                           `json:"deployment_id,omitempty"`
 	Domain                    string                           `json:"domain,omitempty"`
 	Onion                     string                           `json:"onion,omitempty"`
+	OnionExportSealed         string                           `json:"onion_export_sealed,omitempty"`
 	AdminCredentials          map[string]string                `json:"admin_credentials,omitempty"`
 	Error                     string                           `json:"error,omitempty"`
 	LogsTail                  string                           `json:"logs_tail,omitempty"`

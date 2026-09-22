@@ -26,6 +26,7 @@ from ._http import (
     DEFAULT_TIMEOUT,
     USER_AGENT,
 )
+from ._tor import validate_onion_transport
 from .exceptions import (
     ApiError,
     AuthError,
@@ -54,6 +55,7 @@ class AsyncHttpClient:
         max_retries: int = DEFAULT_MAX_RETRIES,
         proxy: str | None = None,
     ) -> None:
+        proxy = validate_onion_transport(base_url, proxy)
         self._max_retries = max_retries
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -65,6 +67,7 @@ class AsyncHttpClient:
                 "User-Agent": USER_AGENT,
             },
             proxy=proxy,
+            trust_env=proxy is None,
             # See the sync twin in _http.py: credentials are custom headers, so a
             # followed redirect would carry them to whatever host it names.
             follow_redirects=False,

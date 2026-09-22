@@ -185,23 +185,33 @@ equivalent) and `impreza <TAB>` should suggest resource groups,
 
 ## Tor
 
-Inherited from the SDK. Three knobs:
+Four knobs, from the most persistent to the most one-off:
 
 ```bash
-# Per-context override at create time
-impreza context create offshore \
-  --key imp_... --secret ... \
-  # No --proxy flag yet; for now, set IMPREZA_USE_TOR before invoking
+# Persisted at context creation (writes [settings] use_tor=true)
+impreza context create offshore --key imp_... --secret ... --via-tor
+
+# Explicit SOCKS5 proxy instead (wins over use_tor; works for any
+# SOCKS5, not just Tor)
+impreza context create offshore --key imp_... --secret ...   --proxy socks5://127.0.0.1:9050
+
+# One-shot global flag on any command
+impreza --via-tor account info
 
 # Env var, picked up by the SDK transparently
 IMPREZA_USE_TOR=1 impreza account info
-
-# Programmatic via the SDK (Python users skip the CLI for this)
 ```
 
+All four route through the local Tor daemon's SOCKS5 port with remote
+DNS (no local lookup of the API hostname). Because exit nodes rotate,
+set the API key's IP factor to `tofu` or `keyonly` in the client area —
+`whitelist` cannot work without a stable egress IP. When the account
+uses the API's `.onion` mirror, the IP factor sees a stable loopback
+instead.
+
 The SDK's `auto_tor=True` path (probe Tor, fall back to clearnet)
-isn't surfaced through the CLI yet — coming in a future release
-alongside the `--via-tor` shortcut.
+isn't surfaced through the CLI yet — it is a fail-open convenience,
+which is the wrong default here.
 
 ## Error handling
 

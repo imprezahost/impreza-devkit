@@ -67,6 +67,11 @@ var (
 	deployGitRef        string
 	deployGitAuthMethod string
 	deployGitPat        string
+
+	deployOnionProfile          string
+	deployOnionImportSecretFile string
+	deployOnionImportPubFile    string
+	deployOnionImport           *sdkclient.OnionImportKeys
 )
 
 var deployCmd = &cobra.Command{
@@ -101,6 +106,16 @@ here until status flips out of pending/installing.`,
 func runDeploy(cmd *cobra.Command, _ []string) error {
 	if deployAgent == "" {
 		return fmt.Errorf("--agent is required (try: impreza platform servers list)")
+	}
+	if err := validateOnionProfileFlag(deployOnionProfile, deployOnion); err != nil {
+		return err
+	}
+	if deployOnionImportSecretFile != "" || deployOnionImportPubFile != "" {
+		keys, err := readOnionImportFiles(deployOnionImportSecretFile, deployOnionImportPubFile, deployOnion)
+		if err != nil {
+			return err
+		}
+		deployOnionImport = keys
 	}
 
 	// Git-source mode: clone a repo instead of packaging the local dir.
@@ -343,15 +358,17 @@ func submitCustomDeploy(
 	steps *Stepper,
 ) (*sdkclient.CustomDeployment, error) {
 	req := sdkclient.CustomDeployRequest{
-		Name:       name,
-		AgentID:    deployAgent,
-		Domain:     deployDomain,
-		Onion:      deployOnion,
-		Vars:       vars,
-		Cpus:       deployCpus,
-		MemoryMB:   deployMemoryMB,
-		TargetPort: deployTargetPort,
-		ContextID:  contextID,
+		Name:         name,
+		AgentID:      deployAgent,
+		Domain:       deployDomain,
+		Onion:        deployOnion,
+		OnionProfile: deployOnionProfile,
+		OnionImport:  deployOnionImport,
+		Vars:         vars,
+		Cpus:         deployCpus,
+		MemoryMB:     deployMemoryMB,
+		TargetPort:   deployTargetPort,
+		ContextID:    contextID,
 	}
 	if deployDockerfile != "" && deployDockerfile != "Dockerfile" {
 		req.DockerfilePath = deployDockerfile
@@ -678,6 +695,12 @@ func init() {
 		"Public hostname. Omit when --onion is set for an onion-only deploy.")
 	deployCmd.Flags().BoolVar(&deployOnion, "onion", false,
 		"Publish a Tor v3 hidden service mirror.")
+	deployCmd.Flags().StringVar(&deployOnionProfile, "onion-profile", "",
+		"Hardening tier for the hidden service: standard | hardened | max (requires --onion; default standard).")
+	deployCmd.Flags().StringVar(&deployOnionImportSecretFile, "onion-import-secret-file", "",
+		"Path to the Tor hs_ed25519_secret_key file (96 bytes) to keep an existing .onion (requires --onion and --onion-import-pub-file; deploy-time only).")
+	deployCmd.Flags().StringVar(&deployOnionImportPubFile, "onion-import-pub-file", "",
+		"Path to the Tor hs_ed25519_public_key file (64 bytes); the address derives from this file (required with --onion-import-secret-file).")
 	deployCmd.Flags().Float64Var(&deployCpus, "cpus", 0,
 		"CPU limit (cores, decimal OK). Default: server-side (1.0).")
 	deployCmd.Flags().IntVar(&deployMemoryMB, "memory-mb", 0,

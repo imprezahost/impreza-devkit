@@ -352,17 +352,19 @@ const (
 
 // Deployment is one app instance running on one agent.
 type Deployment struct {
-	ID           string           `json:"id"`
-	AppName      string           `json:"app_name"`
-	AppVersion   string           `json:"app_version"`
-	AgentID      string           `json:"agent_id"`
-	Status       DeploymentStatus `json:"status"`
-	Domain       string           `json:"domain,omitempty"`
-	Onion        string           `json:"onion,omitempty"`
-	Vars         map[string]any   `json:"vars,omitempty"`
-	CreatedAt    time.Time        `json:"created_at"`
-	LastHealthAt *time.Time       `json:"last_health_at,omitempty"`
-	LastError    string           `json:"last_error,omitempty"`
+	ID              string           `json:"id"`
+	AppName         string           `json:"app_name"`
+	AppVersion      string           `json:"app_version"`
+	AgentID         string           `json:"agent_id"`
+	Status          DeploymentStatus `json:"status"`
+	Domain          string           `json:"domain,omitempty"`
+	Onion           string           `json:"onion,omitempty"`
+	OnionProfile    string           `json:"onion_profile,omitempty"`
+	OnionExportedAt *time.Time       `json:"onion_exported_at,omitempty"`
+	Vars            map[string]any   `json:"vars,omitempty"`
+	CreatedAt       time.Time        `json:"created_at"`
+	LastHealthAt    *time.Time       `json:"last_health_at,omitempty"`
+	LastError       string           `json:"last_error,omitempty"`
 }
 
 // DeploymentListParams narrows the deployments listing.
@@ -379,12 +381,14 @@ type DeploymentList struct {
 
 // DeploymentCreateRequest is the body of POST /v1/platform/deployments.
 type DeploymentCreateRequest struct {
-	AppName    string         `json:"app_name"`
-	AppVersion string         `json:"app_version,omitempty"` // empty → latest
-	AgentID    string         `json:"agent_id"`
-	Vars       map[string]any `json:"vars,omitempty"`
-	Domain     string         `json:"domain,omitempty"`
-	Onion      bool           `json:"onion,omitempty"`
+	AppName      string         `json:"app_name"`
+	AppVersion   string         `json:"app_version,omitempty"` // empty → latest
+	AgentID      string         `json:"agent_id"`
+	Vars         map[string]any `json:"vars,omitempty"`
+	Domain       string         `json:"domain,omitempty"`
+	Onion        bool           `json:"onion,omitempty"`
+	OnionProfile string         `json:"onion_profile,omitempty"` // requires Onion; default "standard"
+	OnionImport  *OnionImportKeys `json:"onion_import,omitempty"`  // requires Onion; BYO C Tor key files, deploy-time only
 }
 
 // PlatformListDeployments returns deployments owned by the authenticated
@@ -544,14 +548,16 @@ const (
 // than one mode is a 400 INVALID_REQUEST.
 type CustomDeployRequest struct {
 	// Common fields ---------------------------------------------------
-	Name       string         `json:"name"`                  // per-client unique slug
-	AgentID    string         `json:"agent_id"`              // target server
-	Domain     string         `json:"domain,omitempty"`      // empty → auto-subdomain
-	Onion      bool           `json:"onion,omitempty"`       // also publish via Tor
-	Vars       map[string]any `json:"vars,omitempty"`        // env vars for container(s)
-	Cpus       float64        `json:"cpus,omitempty"`        // default 1.0
-	MemoryMB   int            `json:"memory_mb,omitempty"`   // default 512
-	TargetPort int            `json:"target_port,omitempty"` // default 80 (port the container listens on)
+	Name         string         `json:"name"`                  // per-client unique slug
+	AgentID      string         `json:"agent_id"`              // target server
+	Domain       string         `json:"domain,omitempty"`      // empty → auto-subdomain
+	Onion        bool           `json:"onion,omitempty"`       // also publish via Tor
+	OnionProfile string         `json:"onion_profile,omitempty"` // requires Onion; default "standard"
+	OnionImport  *OnionImportKeys `json:"onion_import,omitempty"`  // requires Onion; BYO C Tor key files, deploy-time only
+	Vars         map[string]any `json:"vars,omitempty"`        // env vars for container(s)
+	Cpus         float64        `json:"cpus,omitempty"`        // default 1.0
+	MemoryMB     int            `json:"memory_mb,omitempty"`   // default 512
+	TargetPort   int            `json:"target_port,omitempty"` // default 80 (port the container listens on)
 
 	// Mode-specific source --------------------------------------------
 	// Image mode:
@@ -581,23 +587,25 @@ type CustomDeployRequest struct {
 // both tables) but is exposed as a distinct type so callers can tell
 // at a glance whether an entry is a catalog install or a custom build.
 type CustomDeployment struct {
-	ID           string           `json:"id"`
-	Name         string           `json:"name"`
-	Mode         CustomDeployMode `json:"mode"`
-	AgentID      string           `json:"agent_id"`
-	Status       DeploymentStatus `json:"status"`
-	Domain       string           `json:"domain,omitempty"`
-	Onion        string           `json:"onion,omitempty"`
-	Image        string           `json:"image,omitempty"`
-	GitURL       string           `json:"git_url,omitempty"`
-	GitRef       string           `json:"git_ref,omitempty"`
-	GitAuth      *GitAuthInfo     `json:"git_auth,omitempty"`
-	Cpus         float64          `json:"cpus"`
-	MemoryMB     int              `json:"memory_mb"`
-	Vars         map[string]any   `json:"vars,omitempty"`
-	CreatedAt    time.Time        `json:"created_at"`
-	LastHealthAt *time.Time       `json:"last_health_at,omitempty"`
-	LastError    string           `json:"last_error,omitempty"`
+	ID              string           `json:"id"`
+	Name            string           `json:"name"`
+	Mode            CustomDeployMode `json:"mode"`
+	AgentID         string           `json:"agent_id"`
+	Status          DeploymentStatus `json:"status"`
+	Domain          string           `json:"domain,omitempty"`
+	Onion           string           `json:"onion,omitempty"`
+	OnionProfile    string           `json:"onion_profile,omitempty"`
+	OnionExportedAt *time.Time       `json:"onion_exported_at,omitempty"`
+	Image           string           `json:"image,omitempty"`
+	GitURL          string           `json:"git_url,omitempty"`
+	GitRef          string           `json:"git_ref,omitempty"`
+	GitAuth         *GitAuthInfo     `json:"git_auth,omitempty"`
+	Cpus            float64          `json:"cpus"`
+	MemoryMB        int              `json:"memory_mb"`
+	Vars            map[string]any   `json:"vars,omitempty"`
+	CreatedAt       time.Time        `json:"created_at"`
+	LastHealthAt    *time.Time       `json:"last_health_at,omitempty"`
+	LastError       string           `json:"last_error,omitempty"`
 }
 
 // GitAuthInfo surfaces the non-secret git-auth state of a custom

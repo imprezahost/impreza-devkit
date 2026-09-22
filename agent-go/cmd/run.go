@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -97,6 +98,39 @@ func runRun(cmd *cobra.Command, _ []string) error {
 				"err", err)
 		}
 		credCancel()
+	}
+
+	// Reconcile privacy boundaries before accepting commands on upgraded hosts.
+	if exec.Tor != nil && exec.Proxy != nil {
+		if entries, err := os.ReadDir(filepath.Join(stateDir, "proxy", "tor", "services")); err == nil && len(entries) > 0 {
+			torCtx, cancelTor := context.WithTimeout(cmd.Context(), 3*time.Minute)
+			err = exec.Proxy.EnsureNetwork(torCtx)
+			if err == nil {
+				err = exec.Proxy.EnsureRunning(torCtx)
+			}
+			if err == nil {
+				err = exec.Tor.RecoverOnionRotation(torCtx, exec.Proxy)
+			}
+			if err == nil {
+				err = exec.Proxy.ReconcileOnionListeners(torCtx)
+			}
+			if err == nil {
+				err = exec.Tor.RecoverOnionPolicy(torCtx)
+			}
+			if err == nil {
+				err = exec.Tor.RegenerateTorrc()
+			}
+			if err == nil {
+				err = exec.Tor.EnsureRunning(torCtx)
+			}
+			if err == nil {
+				err = exec.Tor.Reload(torCtx)
+			}
+			cancelTor()
+			if err != nil {
+				return fmt.Errorf("hidden-service security reconciliation failed: %w", err)
+			}
+		}
 	}
 
 	poller, err := poll.New(cfg, exec, version, log)

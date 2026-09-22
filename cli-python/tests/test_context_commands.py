@@ -16,6 +16,8 @@ from typer.testing import CliRunner
 
 from impreza_cli.config import Config
 from impreza_cli.main import app
+from impreza_cli.sdk import make_client
+from impreza_cli.state import GlobalState
 
 # Click 8.2+ removed `mix_stderr` from CliRunner — stderr is always
 # captured separately now via result.stderr.
@@ -322,3 +324,117 @@ def test_full_lifecycle(isolated_config: Path, output_fmt: str) -> None:
         assert result.exit_code == 0
         assert "work" in result.stdout
         assert "personal" not in result.stdout
+
+
+# ── Tor / proxy flags ─────────────────────────────────
+
+
+def test_create_via_tor_sets_use_tor_setting(isolated_config: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "context", "create", "tor",
+            "--key", _FAKE_KEY, "--secret", _FAKE_SECRET, "--via-tor",
+        ],
+    )
+    assert result.exit_code == 0
+    cfg = Config.load(isolated_config)
+    assert cfg.settings.use_tor is True
+    assert cfg.settings.proxy is None
+
+
+def test_create_with_proxy_sets_proxy_setting(isolated_config: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "context", "create", "tor",
+            "--key", _FAKE_KEY, "--secret", _FAKE_SECRET,
+            "--proxy", "socks5://127.0.0.1:9050",
+        ],
+    )
+    assert result.exit_code == 0
+    cfg = Config.load(isolated_config)
+    assert cfg.settings.proxy == "socks5://127.0.0.1:9050"
+    assert cfg.settings.use_tor is None  # proxy wins; use_tor untouched
+
+
+def test_create_without_tor_flags_leaves_settings_empty(
+    isolated_config: Path,
+) -> None:
+    result = runner.invoke(
+        app,
+        ["context", "create", "plain", "--key", _FAKE_KEY, "--secret", _FAKE_SECRET],
+    )
+    assert result.exit_code == 0
+    cfg = Config.load(isolated_config)
+    assert cfg.settings.use_tor is None
+    assert cfg.settings.proxy is None
+
+
+def _capture_client_kwargs(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    captured: dict[str, object] = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("impreza_cli.sdk.Client", _FakeClient)
+    return captured
+
+
+def test_make_client_proxy_setting_wins(
+    isolated_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner.invoke(
+        app,
+        [
+            "context", "create", "tor",
+            "--key", _FAKE_KEY, "--secret", _FAKE_SECRET,
+            "--via-tor", "--proxy", "socks5://127.0.0.1:9150",
+        ],
+    )
+    captured = _capture_client_kwargs(monkeypatch)
+    make_client(GlobalState())
+    assert captured.get("proxy") == "socks5://127.0.0.1:9150"
+    assert "use_tor" not in captured
+
+
+def test_make_client_use_tor_from_settings(
+    isolated_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner.invoke(
+        app,
+        [
+            "context", "create", "tor",
+            "--key", _FAKE_KEY, "--secret", _FAKE_SECRET, "--via-tor",
+        ],
+    )
+    captured = _capture_client_kwargs(monkeypatch)
+    make_client(GlobalState())
+    assert captured.get("use_tor") is True
+    assert "proxy" not in captured
+
+
+def test_make_client_global_via_tor_flag(
+    isolated_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner.invoke(
+        app,
+        ["context", "create", "plain", "--key", _FAKE_KEY, "--secret", _FAKE_SECRET],
+    )
+    captured = _capture_client_kwargs(monkeypatch)
+    make_client(GlobalState(via_tor=True))
+    assert captured.get("use_tor") is True
+
+
+def test_make_client_clearnet_default(
+    isolated_config: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner.invoke(
+        app,
+        ["context", "create", "plain", "--key", _FAKE_KEY, "--secret", _FAKE_SECRET],
+    )
+    captured = _capture_client_kwargs(monkeypatch)
+    make_client(GlobalState())
+    assert "use_tor" not in captured
+    assert "proxy" not in captured

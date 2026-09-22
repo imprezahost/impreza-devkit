@@ -62,6 +62,15 @@ def _root(
         "-c",
         help="Override the default context for this invocation.",
     ),
+    via_tor: bool = typer.Option(
+        False,
+        "--via-tor",
+        help=(
+            "Route this invocation through the local Tor daemon "
+            "(SOCKS5 127.0.0.1:9050). Overrides [settings] use_tor once; "
+            "persist it with `impreza context create --via-tor`."
+        ),
+    ),
     output: OutputFormat | None = typer.Option(
         None,
         "--output",
@@ -78,7 +87,7 @@ def _root(
     Global flags ``--context`` and ``--output`` apply to every
     subcommand and are inherited via Typer's context object.
     """
-    ctx.obj = GlobalState(context_override=context, output=output)
+    ctx.obj = GlobalState(context_override=context, output=output, via_tor=via_tor)
 
 
 # ── Subcommand mounts ────────────────────────────────────────────────

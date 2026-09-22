@@ -167,6 +167,7 @@ class _Settings:
 
     poll_interval: float | None = None
     use_tor: bool | None = None
+    proxy: str | None = None
 
     def to_toml_dict(self) -> dict[str, Any]:
         body: dict[str, Any] = {}
@@ -174,6 +175,8 @@ class _Settings:
             body["poll_interval"] = self.poll_interval
         if self.use_tor is not None:
             body["use_tor"] = self.use_tor
+        if self.proxy is not None:
+            body["proxy"] = self.proxy
         return body
 
 
@@ -267,6 +270,9 @@ class Config:
             tor = settings_raw.get("use_tor")
             if isinstance(tor, bool):
                 settings.use_tor = tor
+            proxy = settings_raw.get("proxy")
+            if isinstance(proxy, str) and proxy:
+                settings.proxy = proxy
 
         default_context = raw.get("default_context")
         if not isinstance(default_context, str):

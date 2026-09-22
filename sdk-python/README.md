@@ -211,7 +211,10 @@ c = Client.from_env(auto_tor=True)
 ```
 
 Backed by `httpx[socks]`. Sync and async parity. The probe used by
-`auto_tor=True` never raises — failure means clearnet.
+For a clearnet API URL, `auto_tor=True` may fall back to a direct connection.
+A v3 `.onion` API URL requires a SOCKS5 proxy or `use_tor=True`; an unavailable
+auto-detected proxy raises an error before DNS or HTTP. Explicit proxy routing
+does not inherit `HTTP_PROXY`, `HTTPS_PROXY` or `ALL_PROXY` from the environment.
 
 ## Error handling
 

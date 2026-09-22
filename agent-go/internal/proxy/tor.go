@@ -7,9 +7,8 @@ package proxy
 // .onion address into a `hostname` file there, which the agent reads
 // back and reports to the control plane.
 //
-// All hidden services map to the local Caddy container on port 80 —
-// Caddy distinguishes onion vs clearnet by Host header (since Tor
-// preserves the onion address as the Host).
+// Hidden services reach Caddy through a private Unix socket. Public HTTP
+// listeners cannot reach an onion route by spoofing its Host header.
 //
 // Persistence layout under <stateDir>/proxy/tor/:
 //
@@ -26,26 +25,34 @@ package proxy
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 )
 
 const (
 	// TorContainer is the singleton Tor container per host.
 	TorContainer = "impreza_tor"
-	// TorImage — small Alpine-based image that just runs `tor`. Pinned
-	// to a tag in production; `:latest` is fine for the MVP since we
-	// don't depend on specific features beyond v3 hidden services
-	// (default in any Tor >= 0.3.5, ~2018).
-	TorImage = "osminogin/tor-simple:latest"
+	// TorImage — our own image (agent-go/packaging/tor): official Debian
+	// base + tor from the Tor Project's apt repo, self-upgrading tor from
+	// upstream at every container start. The major tag is the pin: tor
+	// patches flow through the entrypoint's apt upgrade on any (re)start
+	// or recreation, and a CVE roll is one documented `docker restart
+	// impreza_tor` — no agent change needed. Image/base changes bump the
+	// tag and ride the agent release.
+	TorImage = "ghcr.io/imprezahost/tor:1"
 	// Default upstream Caddy listens on inside impreza-proxy.
-	torUpstream = ContainerName + ":80"
+	torUpstream = "unix:/run/impreza-onion/http.sock"
 	// How long we wait for Tor to publish a hostname file after
 	// adding a HiddenServiceDir. v3 publishes within a few seconds
 	// on a warm Tor (already bootstrapped); first deploy on a cold
@@ -54,10 +61,20 @@ const (
 	hostnamePollInterval = 1 * time.Second
 )
 
+// Docker CLI versions vary the capitalization of missing-object errors.
+// Transport and permission errors must still fail closed.
+func dockerObjectMissing(output []byte) bool {
+	message := strings.ToLower(string(output))
+	return strings.Contains(message, "no such object:") || strings.Contains(message, "no such container:")
+}
+
 // Tor owns the host's hidden-service-mode Tor instance.
 type Tor struct {
 	StateDir string // <agent-state>/proxy/tor
 	Log      *slog.Logger
+	reloadFn func(context.Context) error // test seam for daemon failure cases
+	pullFn   func(context.Context) error // test-only local candidate image
+	launchFn func(context.Context) error // test-only failed candidate startup
 }
 
 // NewTor builds a Tor manager rooted at <agentStateDir>/proxy/tor.
@@ -83,6 +100,10 @@ func (t *Tor) isRunning(ctx context.Context) bool {
 // Removes any stopped/exited container of the same name first — that
 // path runs when an earlier launch crashed and left a corpse behind.
 func (t *Tor) launch(ctx context.Context) error {
+	return t.launchImage(ctx, TorImage)
+}
+
+func (t *Tor) launchImage(ctx context.Context, image string) error {
 	// Best-effort cleanup of any stopped instance.
 	_ = exec.CommandContext(ctx, "docker", "rm", "-f", TorContainer).Run()
 
@@ -93,18 +114,202 @@ func (t *Tor) launch(ctx context.Context) error {
 		"--restart", "unless-stopped",
 		"--network", NetworkName,
 		// Run as root inside the container so Tor can chown the
-		// HiddenServiceDirs to itself if needed. The osminogin image
-		// is happy with this.
+		// HiddenServiceDirs to itself if needed. The image pulls the
+		// latest tor patch from deb.torproject.org at every start.
 		"-u", "root",
 		"-v", filepath.Join(t.StateDir, "torrc") + ":/etc/tor/torrc:ro",
 		"-v", filepath.Join(t.StateDir, "data") + ":/var/lib/tor",
 		"-v", filepath.Join(t.StateDir, "services") + ":/var/lib/tor/services",
-		TorImage,
+		"-v", filepath.Join(filepath.Dir(t.StateDir), "config", "onion-private") + ":/run/impreza-onion:ro",
+		image,
 	}
 	if out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("docker run tor: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// EnsureRunning keeps the daemon on the pinned image: an existing container
+// on an older image is recreated (hidden-service keys live on bind mounts,
+// so addresses survive), a stopped one is started, a missing one launched.
+// Mirrors the Caddy lifecycle so a Tor security release reaches hosts via
+// the explicit agent update path.
+func (t *Tor) EnsureRunning(ctx context.Context) error {
+	if err := t.guardRotation(); err != nil {
+		return err
+	}
+	if err := t.ensureDirs(); err != nil {
+		return err
+	}
+	// The retained container is the durable migration marker. Recover it before
+	// starting any candidate after an interrupted agent run or host reboot.
+	if err := t.recoverMigration(ctx); err != nil {
+		return err
+	}
+	out, inspectErr := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.State.Status}}|{{.Config.Image}}|{{range .HostConfig.Binds}}{{.}};{{end}}|{{.Image}}", TorContainer).CombinedOutput()
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "|", 4)
+	expectedMount := filepath.Join(filepath.Dir(t.StateDir), "config", "onion-private") + ":/run/impreza-onion:ro"
+	if inspectErr == nil && len(parts) != 4 {
+		return fmt.Errorf("invalid Tor container inspection")
+	}
+	if inspectErr == nil && parts[1] == TorImage && strings.Contains(parts[2], expectedMount) {
+		if parts[0] != "running" {
+			if err := exec.CommandContext(ctx, "docker", "start", TorContainer).Run(); err != nil {
+				return err
+			}
+		}
+		if err := t.waitReady(ctx); err != nil {
+			return err
+		}
+		return exec.CommandContext(ctx, "docker", "update", "--restart=unless-stopped", TorContainer).Run()
+	}
+	// Download and verify availability before stopping the previous daemon.
+	if t.pullFn != nil {
+		if err := t.pullFn(ctx); err != nil {
+			return err
+		}
+	} else if out, err := exec.CommandContext(ctx, "docker", "pull", TorImage).CombinedOutput(); err != nil {
+		return fmt.Errorf("Tor image unavailable: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	previous := TorContainer + "_previous"
+	if inspectErr == nil {
+		if err := exec.CommandContext(ctx, "docker", "inspect", previous).Run(); err == nil {
+			return fmt.Errorf("previous Tor migration requires recovery")
+		}
+		// Docker persists this policy before the rename. A reboot must not
+		// start two daemons using the same identity and data directory.
+		if err := exec.CommandContext(ctx, "docker", "update", "--restart=no", TorContainer).Run(); err != nil {
+			return err
+		}
+		if err := exec.CommandContext(ctx, "docker", "rename", TorContainer, previous).Run(); err != nil {
+			return err
+		}
+		if err := exec.CommandContext(ctx, "docker", "stop", previous).Run(); err != nil {
+			_ = exec.CommandContext(context.WithoutCancel(ctx), "docker", "rename", previous, TorContainer).Run()
+			return err
+		}
+	}
+	launch := t.launch
+	if t.launchFn != nil {
+		launch = t.launchFn
+	}
+	err := launch(ctx)
+	if err == nil {
+		err = t.waitReady(ctx)
+	}
+	if err != nil && inspectErr == nil {
+		recovery, cancel := context.WithTimeout(context.WithoutCancel(ctx), 120*time.Second)
+		defer cancel()
+		_ = exec.CommandContext(recovery, "docker", "rm", "-f", TorContainer).Run()
+		// Recreate the exact prior image with the secure Unix mount. Renaming
+		// a legacy container back would leave its old mount configuration unable
+		// to reach the new listener. Never restore a public HTTP onion route.
+		if restoreErr := t.launchImage(recovery, parts[3]); restoreErr != nil {
+			return fmt.Errorf("Tor migration recovery required: %w", restoreErr)
+		}
+		if restoreErr := t.waitReady(recovery); restoreErr != nil {
+			return fmt.Errorf("Tor migration recovery required: %w", restoreErr)
+		}
+		if restoreErr := exec.CommandContext(recovery, "docker", "rm", previous).Run(); restoreErr != nil {
+			return fmt.Errorf("Tor recovered; prior container cleanup failed: %w", restoreErr)
+		}
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if inspectErr == nil {
+		if err := exec.CommandContext(ctx, "docker", "rm", previous).Run(); err != nil {
+			return fmt.Errorf("Tor migrated; prior container cleanup failed: %w", err)
+		}
+	}
+	return nil
+}
+
+// recoverMigration never restarts the old mount layout. It uses the retained
+// image ID with the private socket mount, keeping the marker until readiness.
+func (t *Tor) recoverMigration(ctx context.Context) error {
+	previous := TorContainer + "_previous"
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.Image}}", previous).CombinedOutput()
+	if err != nil {
+		if dockerObjectMissing(out) {
+			return nil
+		}
+		return fmt.Errorf("cannot inspect Tor migration recovery: %w", err)
+	}
+	image := strings.TrimSpace(string(out))
+	if !regexp.MustCompile(`^sha256:[a-f0-9]{64}$`).MatchString(image) {
+		return fmt.Errorf("invalid retained Tor image identity")
+	}
+	recovery, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(recovery, "docker", "update", "--restart=no", previous).Run(); err != nil {
+		return err
+	}
+	if err := exec.CommandContext(recovery, "docker", "stop", previous).Run(); err != nil {
+		return err
+	}
+	if err := t.launchImage(recovery, image); err != nil {
+		return fmt.Errorf("Tor interrupted migration recovery required: %w", err)
+	}
+	if err := t.waitReady(recovery); err != nil {
+		return fmt.Errorf("Tor interrupted migration recovery required: %w", err)
+	}
+	if err := exec.CommandContext(recovery, "docker", "rm", previous).Run(); err != nil {
+		return fmt.Errorf("Tor recovered; retained container cleanup failed: %w", err)
+	}
+	return nil
+}
+
+func (t *Tor) waitReady(ctx context.Context) error {
+	deadline, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	for {
+		out, err := exec.CommandContext(deadline, "docker", "exec", TorContainer, "cat", "/proc/1/comm").Output()
+		if err == nil && strings.TrimSpace(string(out)) == "tor" {
+			return nil
+		}
+		state, inspectErr := exec.CommandContext(deadline, "docker", "inspect", "--format", "{{.State.Status}}", TorContainer).Output()
+		if inspectErr == nil && (strings.TrimSpace(string(state)) == "exited" || strings.TrimSpace(string(state)) == "dead") {
+			return fmt.Errorf("Tor container exited before daemon readiness")
+		}
+		select {
+		case <-deadline.Done():
+			return fmt.Errorf("Tor daemon startup did not finish: %w", deadline.Err())
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// Runtime samples the daemon for the heartbeat. Best-effort and cheap: one
+// inspect, one exec with a short budget; a down/absent container reports
+// Running=false rather than failing the report.
+func (t *Tor) Runtime(ctx context.Context) *sdkclient.TorRuntime {
+	rt := &sdkclient.TorRuntime{}
+	inspectCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(inspectCtx, "docker", "inspect",
+		"--format", "{{.State.Status}} {{.Config.Image}}", TorContainer).CombinedOutput()
+	if err != nil {
+		return rt
+	}
+	parts := strings.Fields(strings.TrimSpace(string(out)))
+	if len(parts) > 0 && parts[0] == "running" {
+		rt.Running = true
+	}
+	if len(parts) > 1 {
+		rt.Image = parts[1]
+	}
+	if rt.Running {
+		verCtx, cancelV := context.WithTimeout(ctx, 3*time.Second)
+		defer cancelV()
+		ver, err := exec.CommandContext(verCtx, "docker", "exec", TorContainer,
+			"tor", "--version").CombinedOutput()
+		if err == nil {
+			rt.Version = strings.TrimSpace(strings.SplitN(string(ver), "\n", 2)[0])
+		}
+	}
+	return rt
 }
 
 // ProvisionHiddenService creates a HiddenServiceDir for the given
@@ -122,6 +327,12 @@ func (t *Tor) launch(ctx context.Context) error {
 // inside `impreza-proxy`. For a deployment serving HTTP through
 // Caddy, this is 80.
 func (t *Tor) ProvisionHiddenService(ctx context.Context, deploymentID string, upstreamPort int) (string, error) {
+	if !onionDeploymentID.MatchString(deploymentID) {
+		return "", fmt.Errorf("invalid deployment ID")
+	}
+	if err := t.guardRotation(); err != nil {
+		return "", err
+	}
 	if err := t.ensureDirs(); err != nil {
 		return "", err
 	}
@@ -139,7 +350,9 @@ func (t *Tor) ProvisionHiddenService(ctx context.Context, deploymentID string, u
 	if !t.isRunning(ctx) {
 		// Cold path: launch Tor with the fresh torrc. It provisions
 		// the service during normal startup; no SIGHUP needed.
-		if err := t.launch(ctx); err != nil {
+		// EnsureRunning also rolls the daemon onto the pinned image
+		// when the running one drifted (agent update path).
+		if err := t.EnsureRunning(ctx); err != nil {
 			return "", err
 		}
 	} else {
@@ -185,31 +398,265 @@ func (t *Tor) ProvisionHiddenService(ctx context.Context, deploymentID string, u
 	}
 }
 
-// RemoveHiddenService deletes the deployment's HiddenServiceDir and
-// reloads Tor. Safe to call when no service exists for that
-// deployment (the regenerated torrc just won't include the entry).
+// ParkRetention is how long a parked hidden-service key set is kept for
+// recovery after uninstall. Rotating into a NEW address stays the default —
+// parking only means "not irrecoverable the same second the app is deleted".
+const ParkRetention = 30 * 24 * time.Hour
+
+// RemoveHiddenService unpublishes the deployment's hidden service and moves
+// its HiddenServiceDir to parked/<deployment_id> instead of deleting it.
+// Safe to call when no service exists for that deployment (the regenerated
+// torrc just won't include the entry).
 //
-// Removing the dir also drops the onion's keys, so a re-deploy of
-// the same deployment_id will get a NEW .onion. (If we want sticky
-// onions across reinstalls we keep the keys around — TODO Phase 9.5.1.)
+// The .onion stops being served immediately (the service leaves torrc and
+// the services/ dir Tor reads), but the keys survive in parked/ for
+// ParkRetention so an accidental uninstall is recoverable. A re-deploy of
+// the same deployment_id still gets a NEW .onion — parked keys are never
+// reused automatically; recovery is an explicit operator action. Prune runs
+// on every call. (Resolves the Phase 9.5.1 TODO.)
 func (t *Tor) RemoveHiddenService(ctx context.Context, deploymentID string) error {
-	svcDir := filepath.Join(t.StateDir, "services", deploymentID)
-	if err := os.RemoveAll(svcDir); err != nil {
-		return fmt.Errorf("remove hidden service dir: %w", err)
+	if !onionDeploymentID.MatchString(deploymentID) {
+		return fmt.Errorf("invalid deployment ID")
 	}
+	if err := t.guardRotation(); err != nil {
+		return err
+	}
+	svcDir := filepath.Join(t.StateDir, "services", deploymentID)
+	parkedDir := filepath.Join(t.StateDir, "parked")
+	if _, err := os.Lstat(svcDir); err == nil {
+		if _, err := t.serviceDir(deploymentID); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(parkedDir, 0o700); err != nil {
+			return fmt.Errorf("mkdir parked dir: %w", err)
+		}
+		if err := torSafeDirectory(parkedDir); err != nil {
+			return err
+		}
+		target := filepath.Join(parkedDir, deploymentID)
+		if _, err := os.Lstat(target); err == nil {
+			// Keep every recovery copy until its own retention expires.
+			suffix := make([]byte, 16)
+			if _, err := rand.Read(suffix); err != nil {
+				return err
+			}
+			target = filepath.Join(parkedDir, fmt.Sprintf("%s-%x", deploymentID, suffix))
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.Rename(svcDir, target); err != nil {
+			return fmt.Errorf("park hidden service dir: %w", err)
+		}
+		if err := os.Chtimes(target, time.Now(), time.Now()); err != nil {
+			return err
+		}
+		if err := syncRoutingDir(parkedDir); err != nil {
+			return err
+		}
+		if err := syncRoutingDir(filepath.Dir(svcDir)); err != nil {
+			return err
+		}
+		t.Log.Info("proxy/tor: hidden service parked (keys retained for recovery)",
+			"deployment_id", deploymentID, "retention", ParkRetention)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	t.pruneParked()
 	if err := t.regenerateTorrc(); err != nil {
 		return err
 	}
-	hupCtx, cancelHup := context.WithTimeout(ctx, 5*time.Second)
-	defer cancelHup()
-	out, err := exec.CommandContext(hupCtx, "docker", "kill", "-s", "HUP", TorContainer).CombinedOutput()
+	if t.reloadFn != nil {
+		return t.reloadSecurity(ctx)
+	}
+	out, err := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.State.Status}}", TorContainer).CombinedOutput()
 	if err != nil {
-		t.Log.Warn("proxy/tor: SIGHUP on remove failed",
-			"err", err, "out", strings.TrimSpace(string(out)))
-		// Non-fatal — service is dropped from filesystem; Tor will
-		// catch up on next restart.
+		// A missing daemon cannot serve the removed identity. Other errors
+		// (including an unavailable Docker API) cannot prove removal.
+		if dockerObjectMissing(out) {
+			return nil
+		}
+		return fmt.Errorf("cannot verify Tor service removal: %w", err)
+	}
+	if strings.TrimSpace(string(out)) == "running" {
+		return t.reloadSecurity(ctx)
 	}
 	return nil
+}
+
+// pruneParked deletes parked key sets older than ParkRetention. Best-effort:
+// a prune failure never blocks an uninstall.
+func (t *Tor) pruneParked() {
+	parkedDir := filepath.Join(t.StateDir, "parked")
+	entries, err := os.ReadDir(parkedDir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-ParkRetention)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			if err := os.RemoveAll(filepath.Join(parkedDir, e.Name())); err != nil {
+				t.Log.Warn("proxy/tor: parked prune failed", "name", e.Name(), "err", err)
+			} else {
+				t.Log.Info("proxy/tor: parked hidden service pruned past retention", "name", e.Name())
+			}
+		}
+	}
+}
+
+// Validation shapes for restricted-discovery client entries. The name
+// becomes a filename; the pubkey is a base32 x25519 key (52 chars, no
+// padding) as Tor Browser shows it.
+var (
+	onionClientNameRe   = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+	onionClientPubkeyRe = regexp.MustCompile(`(?i)^[a-z2-7]{52}$`)
+)
+
+// SetOnionClients replaces the deployment's authorized_clients/ directory
+// with exactly the given name→pubkey map (full sync: names absent from the
+// map are revoked). An empty map makes the service public again — Tor has
+// no auth files left to check. Restarts Tor to revoke existing access; the address
+// never changes.
+//
+// Private keys never touch this host: the file content is
+// `descriptor:x25519:<PUBKEY>` — the public half only.
+func (t *Tor) SetOnionClients(ctx context.Context, deploymentID string, clients map[string]string) (result error) {
+	if err := t.guardRotation(); err != nil {
+		return err
+	}
+	svcDir, err := t.serviceDir(deploymentID)
+	if err != nil {
+		return err
+	}
+	authDir := filepath.Join(svcDir, "authorized_clients")
+
+	// Validate everything before touching disk — a bad entry must not
+	// revoke the good ones already in place.
+	for name, pub := range clients {
+		if !onionClientNameRe.MatchString(name) {
+			return fmt.Errorf("invalid client name %q (lowercase alnum, '-', '_', up to 32)", name)
+		}
+		if !onionClientPubkeyRe.MatchString(pub) || !validOnionClientKey(pub) {
+			return fmt.Errorf("invalid x25519 pubkey for client %q (base32, 52 chars)", name)
+		}
+	}
+
+	if err := os.MkdirAll(authDir, 0o700); err != nil {
+		return fmt.Errorf("mkdir authorized_clients: %w", err)
+	}
+	if err := torSafeDirectory(authDir); err != nil {
+		return err
+	}
+
+	// Save the previous set for rollback. Install valid new keys before
+	// removing old ones: a failed write must not empty a private service.
+	entries, err := os.ReadDir(authDir)
+	if err != nil {
+		return fmt.Errorf("read authorized_clients: %w", err)
+	}
+	previous := map[string][]byte{}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".auth") {
+			if !e.Type().IsRegular() {
+				return fmt.Errorf("unsafe client authorization file")
+			}
+			info, err := e.Info()
+			if err != nil {
+				return err
+			}
+			if info.Size() > 256 || len(previous) >= 256 {
+				return fmt.Errorf("authorization state exceeds recovery limits")
+			}
+			data, err := os.ReadFile(filepath.Join(authDir, e.Name()))
+			if err != nil {
+				return err
+			}
+			name, _ := strings.CutSuffix(e.Name(), ".auth")
+			pub, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "descriptor:x25519:")
+			if !onionClientNameRe.MatchString(name) || !ok || !validOnionClientKey(pub) {
+				return fmt.Errorf("invalid existing authorization state")
+			}
+			previous[e.Name()] = data
+		}
+	}
+	running, err := t.runningForRecovery(ctx)
+	if err != nil {
+		return err
+	}
+	if err := t.beginPolicyChange(onionPolicyChange{Deployment: deploymentID, Kind: "auth", Auth: previous, Resume: running}); err != nil {
+		return err
+	}
+	defer t.finishPolicyChange(ctx, &result)
+	if err := t.pauseSecurity(ctx); err != nil {
+		return err
+	}
+	for name, pub := range clients {
+		content := "descriptor:x25519:" + strings.ToUpper(pub) + "\n"
+		if err := torPrivateWrite(filepath.Join(authDir, name+".auth"), []byte(content)); err != nil {
+			return fmt.Errorf("write client: %w", err)
+		}
+	}
+	for _, e := range entries {
+		name, isAuth := strings.CutSuffix(e.Name(), ".auth")
+		if !e.IsDir() && isAuth {
+			if _, keep := clients[name]; !keep {
+				if err := os.Remove(filepath.Join(authDir, e.Name())); err != nil {
+					return fmt.Errorf("revoke client %q: %w", name, err)
+				}
+			}
+		}
+	}
+
+	t.Log.Info("proxy/tor: restricted-discovery client list updated",
+		"deployment_id", deploymentID, "clients", len(clients))
+
+	if err := syncRoutingDir(authDir); err != nil {
+		return err
+	}
+	return t.restartSecurity(ctx)
+}
+
+// OnionClientNames lists the currently authorized client names (never the
+// keys) for one deployment — nil when the service has no restricted
+// discovery configured.
+func (t *Tor) OnionClientNames(deploymentID string) ([]string, error) {
+	svcDir, err := t.serviceDir(deploymentID)
+	if err != nil {
+		return nil, err
+	}
+	authDir := filepath.Join(svcDir, "authorized_clients")
+	if err := torSafeDirectory(authDir); err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	entries, err := os.ReadDir(authDir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, e := range entries {
+		if name, ok := strings.CutSuffix(e.Name(), ".auth"); ok && !e.IsDir() {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// RegenerateTorrc refreshes the managed torrc from the on-disk service list.
+// Exported for the agent-startup reconciliation: hosts created before a
+// torrc baseline change (e.g. SafeLogging/MetricsPort) adopt it on the next
+// agent start, without waiting for a provision event.
+func (t *Tor) RegenerateTorrc() error {
+	return t.regenerateTorrc()
 }
 
 // regenerateTorrc emits a torrc file enumerating every
@@ -235,17 +682,155 @@ func (t *Tor) regenerateTorrc() error {
 	// Defaults: only hidden services, no SOCKS / control port exposed.
 	sb.WriteString("SocksPort 0\n")
 	sb.WriteString("RunAsDaemon 0\n")
+	// SafeLogging: never log client addresses; notices only, to stdout.
+	// MetricsPort stays on the container loopback — the agent reads it via
+	// `docker exec`, it is never on any network.
+	sb.WriteString("SafeLogging 1\n")
 	sb.WriteString("Log notice stdout\n")
+	sb.WriteString("MetricsPort 127.0.0.1:9052\n")
+	// Without an explicit policy the listener opens but answers nothing at
+	// all (observed live on 0.4.9.12). Loopback only, always.
+	sb.WriteString("MetricsPortPolicy accept 127.0.0.1\n")
 	sb.WriteString("DataDirectory /var/lib/tor\n\n")
 
 	for _, n := range names {
+		profile, err := t.readProfile(n)
+		if err != nil {
+			return err
+		}
 		// Path is the container-internal path (mounted from the host).
 		fmt.Fprintf(&sb, "HiddenServiceDir /var/lib/tor/services/%s\n", n)
 		fmt.Fprintf(&sb, "HiddenServicePort 80 %s\n", torUpstream)
-		sb.WriteString("HiddenServiceVersion 3\n\n")
+		sb.WriteString("HiddenServiceVersion 3\n")
+		sb.WriteString(profileTorrc(profile))
+		sb.WriteString("\n")
 	}
 
 	return os.WriteFile(filepath.Join(t.StateDir, "torrc"), []byte(sb.String()), 0o644)
+}
+
+// OnionProfile is the hardening tier rendered into a service's torrc block.
+type OnionProfile string
+
+const (
+	ProfileStandard OnionProfile = "standard" // IntroDoS only — safe upstream default
+	ProfileHardened OnionProfile = "hardened" // tighter IntroDoS + stream limits
+	ProfileMax      OnionProfile = "max"      // + experimental PoW (opt-in)
+)
+
+// validOnionProfile reports whether s is a tier we know how to render.
+func validOnionProfile(s string) bool {
+	switch OnionProfile(s) {
+	case ProfileStandard, ProfileHardened, ProfileMax:
+		return true
+	}
+	return false
+}
+
+// Missing profile metadata means a legacy standard service. Unreadable or
+// corrupted metadata must not silently downgrade an explicitly chosen policy.
+func (t *Tor) readProfile(deploymentID string) (OnionProfile, error) {
+	dir, err := t.serviceDir(deploymentID)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "profile.json")
+	st, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return ProfileStandard, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !st.Mode().IsRegular() || st.Size() > 1024 {
+		return "", fmt.Errorf("unsafe onion profile metadata")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var p struct {
+		Profile string `json:"profile"`
+	}
+	if json.Unmarshal(data, &p) != nil || !validOnionProfile(p.Profile) {
+		return "", fmt.Errorf("invalid onion profile metadata")
+	}
+	return OnionProfile(p.Profile), nil
+}
+
+// profileTorrc renders the per-service hardening lines. IntroDoS rides every
+// tier (upstream's safe default, same call Tor Manager made); stream limits
+// start at hardened; PoW is the experimental layer and only ever comes with
+// an explicit max. Circuit export stays OUT until Caddy speaks PROXY
+// protocol — enabling it without the listener would break routing.
+func profileTorrc(p OnionProfile) string {
+	var sb strings.Builder
+	switch p {
+	case ProfileHardened:
+		fmt.Fprintf(&sb, "HiddenServiceEnableIntroDoSDefense 1\n")
+		fmt.Fprintf(&sb, "HiddenServiceEnableIntroDoSRatePerSec 50\n")
+		fmt.Fprintf(&sb, "HiddenServiceEnableIntroDoSBurstPerSec 400\n")
+		fmt.Fprintf(&sb, "HiddenServiceMaxStreams 48\n")
+		fmt.Fprintf(&sb, "HiddenServiceMaxStreamsCloseCircuit 1\n")
+	case ProfileMax:
+		fmt.Fprintf(&sb, "HiddenServiceEnableIntroDoSDefense 1\n")
+		fmt.Fprintf(&sb, "HiddenServiceEnableIntroDoSRatePerSec 100\n")
+		fmt.Fprintf(&sb, "HiddenServiceEnableIntroDoSBurstPerSec 800\n")
+		fmt.Fprintf(&sb, "HiddenServiceMaxStreams 16\n")
+		fmt.Fprintf(&sb, "HiddenServiceMaxStreamsCloseCircuit 1\n")
+		// Experimental upstream — one layer among several, never sold as
+		// guaranteed DDoS protection.
+		fmt.Fprintf(&sb, "HiddenServicePoWDefensesEnabled 1\n")
+		fmt.Fprintf(&sb, "HiddenServicePoWQueueRate 250\n")
+		fmt.Fprintf(&sb, "HiddenServicePoWQueueBurst 2500\n")
+	default: // standard
+		fmt.Fprintf(&sb, "HiddenServiceEnableIntroDoSDefense 1\n")
+		fmt.Fprintf(&sb, "HiddenServiceEnableIntroDoSRatePerSec 25\n")
+		fmt.Fprintf(&sb, "HiddenServiceEnableIntroDoSBurstPerSec 200\n")
+	}
+	return sb.String()
+}
+
+// SetOnionProfile pins a deployment's service to a hardening tier and
+// reloads Tor. The address never changes; a downgrade is equally allowed —
+// profile is defense posture, not identity.
+func (t *Tor) SetOnionProfile(ctx context.Context, deploymentID string, profile string) (result error) {
+	if err := t.guardRotation(); err != nil {
+		return err
+	}
+	if !validOnionProfile(profile) {
+		return fmt.Errorf("invalid onion profile %q (standard|hardened|max)", profile)
+	}
+	svcDir, err := t.serviceDir(deploymentID)
+	if err != nil {
+		return err
+	}
+	if _, err := t.readProfile(deploymentID); err != nil {
+		return err
+	}
+	previous, readErr := os.ReadFile(filepath.Join(svcDir, "profile.json"))
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return readErr
+	}
+	body, err := json.Marshal(map[string]string{"profile": profile})
+	if err != nil {
+		return err
+	}
+	if err := t.beginPolicyChange(onionPolicyChange{Deployment: deploymentID, Kind: "profile", Profile: previous, HadProfile: readErr == nil}); err != nil {
+		return err
+	}
+	defer t.finishPolicyChange(ctx, &result)
+	if err := torPrivateWrite(filepath.Join(svcDir, "profile.json"), append(body, '\n')); err != nil {
+		return fmt.Errorf("write onion profile: %w", err)
+	}
+	if err := t.regenerateTorrc(); err != nil {
+		return err
+	}
+	if err := t.reloadSecurity(ctx); err != nil {
+		return err
+	}
+	t.Log.Info("proxy/tor: onion hardening profile updated", "deployment_id", deploymentID, "profile", profile)
+	return nil
 }
 
 // ensureDirs creates the tor state dir tree.
@@ -255,6 +840,12 @@ func (t *Tor) ensureDirs() error {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
+		if err := torSafeDirectory(d); err != nil {
+			return err
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(t.StateDir), "config", "onion-private"), 0o700); err != nil {
+		return err
 	}
 	return nil
 }
@@ -267,5 +858,5 @@ func OnionRouteFragment(onion, upstream string) string {
 	if onion == "" || upstream == "" {
 		return ""
 	}
-	return fmt.Sprintf("http://%s {\n  reverse_proxy %s\n}\n", onion, upstream)
+	return fmt.Sprintf("http://%s {\n  bind unix//config/onion-private/http.sock|0600\n  reverse_proxy %s\n}\n", onion, upstream)
 }

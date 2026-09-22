@@ -91,3 +91,40 @@ func TestApplyDeploymentRoutesRefusesBadGateBeforeWriting(t *testing.T) {
 		t.Fatal("refused route must not leave a fragment behind")
 	}
 }
+
+// Dual-stack routes advertise the onion mirror on the clearnet block so Tor
+// Browser shows ".onion available"; onion-only and clearnet-only routes emit
+// no header.
+func TestRenderFragmentOnionLocation(t *testing.T) {
+	dual := renderFragment("dpl_x", []Route{{
+		Hostname:  "app.example.test",
+		OnionAddr: "abcdef.onion",
+		Upstream:  "dpl_x-app:8080",
+		TLSMode:   "internal",
+	}})
+	if !strings.Contains(dual, "header Onion-Location \"http://abcdef.onion/\"") {
+		t.Fatalf("dual-stack clearnet block missing Onion-Location:\n%s", dual)
+	}
+	// The header belongs to the clearnet block, not the onion one.
+	onionBlock := dual[strings.Index(dual, "http://abcdef.onion {"):]
+	if strings.Contains(onionBlock, "Onion-Location") {
+		t.Fatalf("onion block should not carry the header:\n%s", onionBlock)
+	}
+
+	clearnetOnly := renderFragment("dpl_y", []Route{{
+		Hostname: "app.example.test",
+		Upstream: "dpl_y-app:8080",
+		TLSMode:  "internal",
+	}})
+	if strings.Contains(clearnetOnly, "Onion-Location") {
+		t.Fatalf("clearnet-only route grew the header:\n%s", clearnetOnly)
+	}
+
+	onionOnly := renderFragment("dpl_z", []Route{{
+		OnionAddr: "abcdef.onion",
+		Upstream:  "dpl_z-app:8080",
+	}})
+	if strings.Contains(onionOnly, "Onion-Location") {
+		t.Fatalf("onion-only route grew the header:\n%s", onionOnly)
+	}
+}

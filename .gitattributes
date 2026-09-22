@@ -1,0 +1,2 @@
+# Linux image entrypoints must retain LF on Windows checkouts too.
+agent-go/packaging/tor/entrypoint.sh text eol=lf

@@ -88,6 +88,18 @@ def create(
         help="Optional default output format for this context.",
         case_sensitive=False,
     ),
+    via_tor: bool = typer.Option(
+        False,
+        "--via-tor",
+        help="Route API calls through the local Tor daemon "
+        "(sets [settings] use_tor=true, CLI-wide).",
+    ),
+    proxy: str | None = typer.Option(
+        None,
+        "--proxy",
+        help="Explicit SOCKS5 proxy, e.g. socks5://127.0.0.1:9050 "
+        "(sets [settings] proxy, CLI-wide; wins over use_tor).",
+    ),
     overwrite: bool = typer.Option(
         False,
         "--overwrite",
@@ -108,6 +120,12 @@ def create(
         )
     except (ContextAlreadyExists, InvalidContextName) as exc:
         _exit_on_config_error(exc)
+
+    if via_tor or proxy:
+        if via_tor:
+            cfg.settings.use_tor = True
+        if proxy:
+            cfg.settings.proxy = proxy
     cfg.save()
 
     is_default = cfg.default_context == name

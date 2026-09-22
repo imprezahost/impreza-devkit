@@ -23,6 +23,11 @@ func (d *Docker) CollectRuntime(ctx context.Context) *sdkclient.RuntimeSnapshot 
 	snapshot := &sdkclient.RuntimeSnapshot{Protocol: "runtime-v1", Deployments: []sdkclient.RuntimeObservation{}, Complete: true}
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
+	// Hidden-service daemon health rides the same snapshot (bounded, no
+	// descriptors, no addresses — version/image/running only).
+	if d.Tor != nil {
+		snapshot.Tor = d.Tor.Runtime(ctx)
+	}
 	dir, err := os.Open(filepath.Join(d.StateDir, "apps"))
 	if err != nil {
 		snapshot.Complete = errors.Is(err, os.ErrNotExist)
