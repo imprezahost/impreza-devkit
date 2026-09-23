@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base32"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,6 +58,60 @@ func TestOnionAuthRejectsLowOrderAndNoncanonicalKeys(t *testing.T) {
 		if err := tor.SetOnionClients(context.Background(), "dpl_private", map[string]string{"client": key}); err == nil {
 			t.Fatal("unsafe key accepted")
 		}
+	}
+}
+
+// Failed client additions retain the recovery journal and previous policy.
+func TestOnionClientAdditionIsJournaled(t *testing.T) {
+	tor := newTestTor(t)
+	dir := filepath.Join(tor.StateDir, "services", "dpl_private")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := tor.SetOnionClients(ctx, "dpl_private", map[string]string{"alice": testPubkey}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(tor.policyPath()); !os.IsNotExist(err) {
+		t.Fatal("committed initial sync left a recovery journal behind")
+	}
+	tor.reloadFn = func(context.Context) error { return fmt.Errorf("injected reload failure") }
+	if err := tor.SetOnionClients(ctx, "dpl_private", map[string]string{"alice": testPubkey, "bob": testPubkey}); err == nil {
+		t.Fatal("addition accepted without a working daemon")
+	}
+	if _, err := os.Stat(tor.policyPath()); err != nil {
+		t.Fatal("failed addition skipped the recovery journal")
+	}
+	// The previous policy survives the failed addition.
+	names, err := tor.OnionClientNames("dpl_private")
+	if err != nil || len(names) != 1 || names[0] != "alice" {
+		t.Fatalf("failed addition changed the policy: %v %v", names, err)
+	}
+}
+
+// Key replacement widens access semantics and is a revocation of the old
+// key: journaled like any other change.
+func TestOnionClientKeyReplacementJournals(t *testing.T) {
+	other := clientPubkeyFixture(t, "replacement")
+	tor := newTestTor(t)
+	dir := filepath.Join(tor.StateDir, "services", "dpl_private")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := tor.SetOnionClients(ctx, "dpl_private", map[string]string{"alice": testPubkey}); err != nil {
+		t.Fatal(err)
+	}
+	tor.reloadFn = func(context.Context) error { return fmt.Errorf("injected reload failure") }
+	if err := tor.SetOnionClients(ctx, "dpl_private", map[string]string{"alice": other}); err == nil {
+		t.Fatal("key replacement accepted without a working daemon")
+	}
+	if _, err := os.Stat(tor.policyPath()); err != nil {
+		t.Fatal("key replacement skipped the recovery journal")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "authorized_clients", "alice.auth"))
+	if err != nil || !strings.Contains(string(data), strings.ToUpper(testPubkey)) {
+		t.Fatalf("failed replacement changed the installed key: %v", err)
 	}
 }
 
@@ -182,4 +238,10 @@ func TestOnionRemovalFailureAndRepeatedParking(t *testing.T) {
 	if err != nil || string(old) != "first" {
 		t.Fatal("original parked identity overwritten")
 	}
+}
+
+func clientPubkeyFixture(t *testing.T, seed string) string {
+	t.Helper()
+	sum := sha256.Sum256([]byte("impreza-onion-client-" + seed))
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:])
 }

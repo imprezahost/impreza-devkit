@@ -55,6 +55,12 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 		))
 	}
 
+	if p.Manifest.Runtime.TorEgress && d.Proxy != nil {
+		if err := proxy.ConnectTorEgressIngress(ctx, p.DeploymentID); err != nil {
+			return failStartup(err.Error())
+		}
+	}
+
 	// 2.1 Settle gate. `up -d` exiting 0 means "containers created", not
 	//     "app works" — see the settleVerdict docs. A crash-looping
 	//     container is the one failure we can assert rather than guess,

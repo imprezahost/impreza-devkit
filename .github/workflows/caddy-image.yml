@@ -1,25 +1,5 @@
-# GitHub Actions: build + push the custom Caddy image used by impreza-agent.
-#
-# The image bundles caddy-dns/cloudflare so the agent can do ACME
-# DNS-01 challenges against the imprezaapps.com Cloudflare zone — see
-# agent-go/packaging/caddy/Dockerfile for the full rationale.
-#
-# Triggers:
-#   - Tag push matching `caddy-v<X.Y.Z>` (e.g. `caddy-v2.8.4`).
-#     Cuts a new release: builds multi-arch + pushes 3 tags to GHCR.
-#   - Manual `workflow_dispatch` — re-run an existing release after a
-#     base image bump.
-#
-# Output (3 tags per release, all multi-arch linux/amd64 + linux/arm64):
-#   - ghcr.io/imprezahost/caddy:<X.Y.Z>-cf   (immutable)
-#   - ghcr.io/imprezahost/caddy:2-cf         (major-version stream — what
-#                                             the agent's caddy.go pins
-#                                             to)
-#   - ghcr.io/imprezahost/caddy:latest-cf    (latest stable cf-enabled)
-#
-# Required secrets: none — uses the auto-provided GITHUB_TOKEN with
-# `packages: write` to publish to ghcr.io/imprezahost/.
-
+# Build the locked Caddy application and publish its reviewed image.
+# The -cf suffix is a compatibility name; DNS uses the Impreza provider.
 name: Build + push Caddy image
 
 on:
@@ -29,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Caddy version to build (e.g. 2.8.4). The image tags will use this verbatim.'
+        description: 'Caddy version to build (e.g. 2.11.4). The image tags will use this verbatim.'
         required: true
 
 permissions:
@@ -38,26 +18,49 @@ permissions:
 
 jobs:
   build-push:
-    name: Build + push multi-arch Caddy + cloudflare DNS
+    name: Audit and publish multi-arch Caddy with Impreza DNS
     runs-on: ubuntu-latest
 
     steps:
       - name: Check out
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up reviewed Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache-dependency-path: agent-go/packaging/caddy/application/go.sum
+
+      - name: Audit the complete Caddy application
+        working-directory: agent-go/packaging/caddy/application
+        env:
+          GOTOOLCHAIN: go1.26.6
+          GOWORK: 'off'
+          CGO_ENABLED: '0'
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          go mod verify
+          govulncheck ./...
+          git diff --exit-code -- go.mod go.sum
 
       - name: Resolve version
         id: ver
-        # tag-triggered: GITHUB_REF_NAME is e.g. `caddy-v2.8.4`, strip
-        # the `caddy-v` prefix → `2.8.4`.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        # tag-triggered: GITHUB_REF_NAME is e.g. `caddy-v2.11.4`, strip
+        # the `caddy-v` prefix → `2.11.4`.
         # manual: just use the dispatch input.
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.version }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$INPUT_VERSION"
           else
             VERSION="${GITHUB_REF_NAME#caddy-v}"
           fi
-          if [ -z "$VERSION" ]; then
-            echo "FATAL: could not resolve version"; exit 1
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "FATAL: expected X.Y.Z version"; exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Resolved Caddy version: $VERSION"
@@ -92,18 +95,18 @@ jobs:
           push: true
           build-args: |
             CADDY_VERSION=${{ steps.ver.outputs.version }}
-          # Three tags per build: pinned, major-version stream, latest.
-          # The major-version stream (`2-cf`) is what agent-go pins to,
+          # Three tags per build: version, major-version stream, latest.
+          # The major-version stream (`2-cf`) is what the agent uses,
           # so a new release auto-rolls out to fresh agent installs.
-          # Existing agents are unaffected until Caddy is restarted (the
-          # agent does not auto-pull; restart happens on agent upgrade
-          # or manual `docker pull` + `docker restart impreza_caddy`).
+          # Existing containers retain their image. Updating requires a
+          # reviewed pull and container recreation that preserves proxy
+          # state and credentials; docker restart alone keeps the old image.
           tags: |
             ghcr.io/imprezahost/caddy:${{ steps.ver.outputs.version }}-cf
             ghcr.io/imprezahost/caddy:2-cf
             ghcr.io/imprezahost/caddy:latest-cf
           labels: |
             org.opencontainers.image.source=https://github.com/imprezahost/impreza-devkit
-            org.opencontainers.image.description=Caddy ${{ steps.ver.outputs.version }} + caddy-dns/cloudflare, for impreza-agent DNS-01 challenges
+            org.opencontainers.image.description=Caddy ${{ steps.ver.outputs.version }} with the Impreza DNS provider
             org.opencontainers.image.licenses=Apache-2.0
             org.opencontainers.image.revision=${{ github.sha }}

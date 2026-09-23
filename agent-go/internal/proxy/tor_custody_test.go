@@ -66,7 +66,7 @@ func TestKeyFileValidation(t *testing.T) {
 		t.Fatal("pub file parse returned wrong pub/address")
 	}
 	// The public key is NOT read from the secret file: body[32:64] is the
-	// nonce prefix, and treating it as a pubkey would use the wrong key format.
+	// nonce prefix, and treating it as a pubkey was the C4 live-test bug.
 	if err := ValidSecretKeyFile(azFormSecret()[:95]); err == nil {
 		t.Fatal("truncated secret accepted")
 	}

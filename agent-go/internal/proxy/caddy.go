@@ -46,10 +46,6 @@ const (
 	// caddy-dns-impreza/README.md for the rationale). The :2-cf tag
 	// tracks the latest 2.x release of our image.
 	//
-	// Published to GitHub Container Registry by the
-	// .github/workflows/caddy-image.yml workflow on every caddy-v<X.Y.Z>
-	// tag; the ghcr.io/imprezahost/caddy package is public so customer
-	// VPSes can pull it without credentials.
 	Image = "ghcr.io/imprezahost/caddy:2-cf"
 	// Env-var names the Caddy container reads to authenticate against
 	// the Impreza public API on every DNS-01 present/cleanup. These
@@ -232,14 +228,14 @@ func (c *Caddy) EnsureRunning(ctx context.Context) error {
 				return err
 			}
 		} else if existing.Status == "running" {
-			return nil
+			return c.reconcileTorEgressNetworks(ctx)
 		} else {
 			// Exists, same shape, but not running — start it.
 			c.Log.Info("proxy: starting existing caddy container", "state", existing.Status)
 			if out, err := exec.CommandContext(ctx, "docker", "start", ContainerName).CombinedOutput(); err != nil {
 				return fmt.Errorf("docker start %s: %v: %s", ContainerName, err, strings.TrimSpace(string(out)))
 			}
-			return nil
+			return c.reconcileTorEgressNetworks(ctx)
 		}
 	}
 
@@ -262,7 +258,7 @@ func (c *Caddy) EnsureRunning(ctx context.Context) error {
 	if out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("docker run caddy: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	return c.reconcileTorEgressNetworks(ctx)
 }
 
 // envFilePath is the bind-mounted env-file that exposes
@@ -630,7 +626,9 @@ func (c *Caddy) regenerateCaddyfile() error {
 			return fmt.Errorf("read routing fragment %s: %w", n, err)
 		}
 		secured, err := secureOnionFragment(string(data))
-		if err != nil { return fmt.Errorf("secure onion fragment %s: %w",n,err) }
+		if err != nil {
+			return fmt.Errorf("secure onion fragment %s: %w", n, err)
+		}
 		sb.WriteString(secured)
 		if !strings.HasSuffix(string(data), "\n") {
 			sb.WriteByte('\n')

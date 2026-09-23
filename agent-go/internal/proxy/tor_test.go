@@ -136,7 +136,7 @@ func TestRemoveHiddenServiceNoop(t *testing.T) {
 	}
 }
 
-// ── restricted discovery (private onion) ─────────────────────────────
+// ── C3: restricted discovery (private onion) ─────────────────────────────
 
 const testPubkey = `beaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` // X25519 basepoint 9
 
@@ -231,7 +231,7 @@ func TestSetOnionClientsValidation(t *testing.T) {
 	}
 }
 
-// the managed torrc always carries the privacy/observability baseline.
+// C1: the managed torrc always carries the privacy/observability baseline.
 func TestTorrcBaseline(t *testing.T) {
 	tor := newTestTor(t)
 	if err := tor.ensureDirs(); err != nil {
@@ -261,7 +261,7 @@ func TestTorrcBaseline(t *testing.T) {
 	}
 }
 
-// ── hardening profiles ───────────────────────────────────────────────
+// ── C2: hardening profiles ───────────────────────────────────────────────
 
 func TestOnionProfilesRender(t *testing.T) {
 	tor := newTestTor(t)

@@ -67,6 +67,11 @@ const (
 	// key and provisions a fresh one — a NEW address. Destructive for
 	// visitors; the control plane double-confirms before enqueueing.
 	CommandOnionRotate CommandKind = "onion_rotate"
+	// CommandOnionPurge irreversibly deletes the parked
+	// recovery copies of ONE address of one deployment. The customer
+	// confirmed the exact address; the agent deletes only parked
+	// directories whose hostname matches it — never the live identity.
+	CommandOnionPurge CommandKind = "onion_purge"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -230,7 +235,8 @@ func (c *Client) AgentPoll(ctx context.Context, req *PollRequest) (*PollCommand,
 
 // DeployPayload is the payload of a CommandDeploy.
 type DeployPayload struct {
-	OnionProfile string `json:"onion_profile,omitempty"`
+	InitialOnionClients []OnionAuthClient `json:"initial_onion_clients,omitempty"`
+	OnionProfile        string            `json:"onion_profile,omitempty"`
 	// Resolved only by authenticated preparation. Incoming values are discarded.
 	ServiceBindingRetirementAuthorizations []ServiceBindingRetirement `json:"service_binding_retirement_authorizations,omitempty"`
 	// GitCommitSHA pins the source revision supplied by a Git webhook.
@@ -409,6 +415,14 @@ type OnionRotatePayload struct {
 	ExpectedOnion string `json:"expected_onion"`
 }
 
+// OnionPurgePayload destroys the parked recovery material of one address.
+// The address must NOT be the deployment's current one — rotation moves an
+// identity to parked/ before it becomes purgeable.
+type OnionPurgePayload struct {
+	DeploymentID string `json:"deployment_id"`
+	Onion        string `json:"onion"`
+}
+
 // As decodes c.Payload into the typed target. Returns an error if the
 // JSON does not match the target struct. The caller is expected to
 // pick the right target based on c.Kind.
@@ -518,11 +532,13 @@ type DeployResult struct {
 	Domain                    string                           `json:"domain,omitempty"`
 	Onion                     string                           `json:"onion,omitempty"`
 	OnionExportSealed         string                           `json:"onion_export_sealed,omitempty"`
+	OnionPurgedCopies         int                              `json:"onion_purged_copies"`
 	AdminCredentials          map[string]string                `json:"admin_credentials,omitempty"`
 	Error                     string                           `json:"error,omitempty"`
 	LogsTail                  string                           `json:"logs_tail,omitempty"`
 	Release                   *DeploymentRelease               `json:"release,omitempty"`
 	Rollback                  *DeploymentRollback              `json:"rollback,omitempty"`
+	SourceScan                *json.RawMessage                 `json:"source_scan,omitempty"`
 }
 
 // DeploymentRelease describes local immutable runtime configuration, never secrets.

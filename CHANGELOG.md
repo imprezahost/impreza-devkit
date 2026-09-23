@@ -12,6 +12,19 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## Agent 0.6.20 and Go CLI 0.3.1 — 2026-09-23
+
+- Add private onion previews whose reviewer keys are installed before first publication;
+  redeploy preserves later revocations and refuses a transition to public discovery.
+- Fetch HTTP/HTTPS onion Git sources through Tor with remote DNS and no direct fallback.
+- Purge retained onion identity copies with explicit confirmation, protected active
+  identities and accurate reporting of local deletion versus external backups.
+- Add per-application Tor runtime isolation, IPv6 egress filtering and a local source
+  advisory scanner using a signed, bounded vulnerability database.
+- Update the locked Caddy application and incorporated Go dependencies.
+- Agent updates remain explicit customer actions. Python packages are unchanged.
+
+
 ## [0.7.0] — 2026-09-22
 
 - Support explicit Tor and SOCKS proxy settings in the Python SDK and CLI.

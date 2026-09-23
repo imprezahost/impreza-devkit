@@ -196,6 +196,70 @@ operations finish; identity, configuration and applications are preserved.
 
 The IPv4 egress baseline covers forwarded traffic entering standard Docker bridges.
 It blocks outbound mail and private/metadata destinations and limits new connections.
-It does not cover IPv6, host networking, custom bridge names or all forms of abuse.
+The IPv4 baseline does not cover host networking, custom bridge names or all forms of abuse; IPv6 coverage is described below.
 Installation failure is reported and does not stop the agent; this is not a complete
 network sandbox. See the deployment-safety and service-bindings guides for limits.
+
+## Runtime isolation and source review (0.6.20)
+
+Agent 0.6.20 adds IPv6 filtering for forwarded traffic entering standard
+Docker bridges. Host networking, alternative drivers and host INPUT traffic
+remain outside this baseline; it is not a complete network sandbox.
+
+The `tor-egress-v1` capability enables the custom-deployment `tor_egress` option
+in the portal/API/MCP. It requires Docker Engine 28+ with isolated gateway
+support. Applications receive SOCKS5h proxy settings and an internal network;
+only their per-app Tor sidecar has an uplink. Direct external DNS and IPv4/IPv6
+runtime connections are refused. Source fetching and builds are outside this
+policy. Use SOCKS-aware libraries; this is not transparent UDP forwarding.
+Catalog installs, imported manifests and external service bindings are not
+supported by the option. See the [Tor guide](https://docs.imprezahost.com/onion-services.html#runtime-egress)
+for release availability and customer verification.
+
+Source builds attach a bounded advisory `source_scan`, including incomplete and
+unavailable-database states. The scanner reads only the fetched build context,
+never the application's persisted data or injected secrets. It does not execute
+source code or upload file contents or dependency inventories. The scanner
+matches explicit versions and OSV intervals for npm, Packagist and Go using
+ecosystem-specific ordering. It consumes `advisories.signed.json` in the private
+agent state directory, signed with Ed25519 by the configured trusted publisher.
+There is no unsigned fallback. The agent refreshes at startup and every six
+hours; updates use a credential-free HTTPS client and honor the agent's Tor/SOCKS
+configuration without direct fallback. Failed downloads/signatures retain the
+verified cache. Expired caches are marked stale; missing trust/data is unavailable.
+Explicit operator commands are `impreza-agent advisories status` and
+`impreza-agent advisories update`. Neither command updates the agent binary.
+
+The central `tools/advisory` collector selects GitHub-reviewed and official Go
+records from OSV exports, removes withdrawn records, preserves source attribution
+and reports unsupported data. Collection and signing are separate commands; the
+collector never receives a signing key. The agent embeds the production public key. Operator testing
+can explicitly set `IMPREZA_ADVISORY_PUBLIC_KEY` (base64 Ed25519 public key) and
+`IMPREZA_ADVISORY_URL` (HTTPS, no query/credentials/redirects) in the root-owned
+service environment. Applications cannot configure either setting. Never use a
+test signing key for a release or put a private signing key on an agent.
+
+A missing or partial database cannot
+produce a clean dependency assessment. `go.sum` can include unused versions;
+matching does not prove vulnerable code is reachable. See
+[source review limits](https://docs.imprezahost.com/deployment-safety.html#source-scan).
+
+The advisory status includes `trusted_key_sha256`. The prepared production trust
+fingerprint is `29a64f4eff2331ef46891bfe6537f939a1c051f4cba28a79476bbefa5c64d6b3`.
+A public fingerprint is not a signing credential.
+
+## Private previews and onion identity retention (0.6.20)
+
+`onion-private-preview-v1` allows the control plane to supply reviewer keys as
+part of the first deploy. The service is never intentionally published without
+its initial authorization policy. Repeated deploys preserve later revocations;
+the agent refuses to silently convert a private preview to public discovery.
+Client authorization files use `<56-character-service-id>:descriptor:x25519:<private-key>`.
+
+HTTP and HTTPS onion Git sources use a temporary Tor client with remote DNS.
+Redirects and direct network fallback are disabled. This protects the repository
+request path; image pulls, dependency downloads and build steps are separate.
+
+The Go CLI supports confirmed purge of retained onion identity copies. Active
+identities are protected. Completion reports copies removed from the managed
+host; it does not erase exports, backups or previously disclosed key material.

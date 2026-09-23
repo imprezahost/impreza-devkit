@@ -234,17 +234,80 @@ with onion-custody-v1 (422 on older agents).`,
 	},
 }
 
+var (
+	platformOnionKeyPurgeConfirm        bool
+	platformOnionKeyPurgeConfirmAddress string
+)
+
+var platformOnionKeyPurgeCmd = &cobra.Command{
+	Use:   "purge <deployment-id>",
+	Short: "Destroy a RETAINED onion identity — parked recovery copies and reservation (irreversible).",
+	Long: `Destroy every parked recovery copy of one .onion address of a
+deployment, and release the platform-side reservation of that address.
+
+Agent success confirms deletion of retained copies on the current host.
+Deletion is irreversible, but prior exports and external backups are unaffected.
+A queued command is not confirmation that deletion has finished.
+
+The address must be a RETAINED identity: a prior address left by
+onion-key rotate, or the stale address of an uninstalled deployment.
+Purging the CURRENT address of a running deployment is refused — export it
+first (onion-key export) and rotate if you need it gone.
+
+Requires --confirm AND --confirm-address with the address being destroyed,
+verbatim. Agent mode requires an agent with onion-purge-v1 (422 on older
+agents); addresses that only live in control-plane records are released
+without an agent command.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if !platformOnionKeyPurgeConfirm {
+			return fmt.Errorf("deleting retained key copies is irreversible — re-run with --confirm")
+		}
+		if platformOnionKeyPurgeConfirmAddress == "" {
+			return fmt.Errorf("--confirm-address is required: the retained .onion being destroyed, verbatim")
+		}
+		c, _, err := newClient()
+		if err != nil {
+			return err
+		}
+		out, err := c.PlatformPurgeOnionKey(cmd.Context(), args[0], platformOnionKeyPurgeConfirmAddress)
+		if err != nil {
+			return err
+		}
+		f, err := resolveFormat()
+		if err != nil {
+			return err
+		}
+		if f != output.FormatTable {
+			return renderJSONOrYAML(cmd.OutOrStdout(), out, f)
+		}
+		w := cmd.OutOrStdout()
+		if out.Mode == "agent" {
+			fmt.Fprintf(w, "Purge enqueued. command_id=%s\n", out.CommandID)
+		} else {
+			fmt.Fprintf(w, "Reservation released only; key deletion on the former host is NOT verified.\n")
+		}
+		if out.Note != "" {
+			fmt.Fprintf(w, "Note: %s\n", out.Note)
+		}
+		return nil
+	},
+}
+
 func init() {
 	platformOnionKeyExportCmd.Flags().StringVar(&platformOnionKeyExportRecipient, "recipient-pubkey", "", "Standard base64 of your locally generated 32-byte X25519 public key (required).")
 	platformOnionKeyExportCmd.Flags().BoolVar(&platformOnionKeyExportFetch, "fetch", false, "Wait for the agent and read the sealed blob immediately (read-once).")
 	platformOnionKeyFetchCmd.Flags().StringVar(&platformOnionKeyFetchCommandID, "command-id", "", "The cmd_... id from onion-key export (required).")
 	platformOnionKeyRotateCmd.Flags().BoolVar(&platformOnionKeyRotateConfirm, "confirm", false, "Required gate — rotation changes the .onion address permanently.")
 	platformOnionKeyRotateCmd.Flags().StringVar(&platformOnionKeyRotateConfirmAddress, "confirm-address", "", "The CURRENT .onion address, verbatim (required).")
+	platformOnionKeyPurgeCmd.Flags().BoolVar(&platformOnionKeyPurgeConfirm, "confirm", false, "Required gate — purge destroys the retained identity irreversibly.")
+	platformOnionKeyPurgeCmd.Flags().StringVar(&platformOnionKeyPurgeConfirmAddress, "confirm-address", "", "The retained .onion address being destroyed, verbatim (required).")
 
 	platformOnionKeyCmd.AddCommand(
 		platformOnionKeyExportCmd,
 		platformOnionKeyFetchCmd,
 		platformOnionKeyRotateCmd,
+		platformOnionKeyPurgeCmd,
 	)
 	platformCmd.AddCommand(platformOnionKeyCmd)
 }

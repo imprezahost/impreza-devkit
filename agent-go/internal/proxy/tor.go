@@ -521,8 +521,10 @@ var (
 // SetOnionClients replaces the deployment's authorized_clients/ directory
 // with exactly the given name→pubkey map (full sync: names absent from the
 // map are revoked). An empty map makes the service public again — Tor has
-// no auth files left to check. Restarts Tor to revoke existing access; the address
-// never changes.
+// no auth files left to check. The address never changes.
+//
+// Every policy change uses the journaled stop/restart path so recovery
+// can restore a complete policy and discard prior rendezvous state.
 //
 // Private keys never touch this host: the file content is
 // `descriptor:x25519:<PUBKEY>` — the public half only.
@@ -596,6 +598,23 @@ func (t *Tor) SetOnionClients(ctx context.Context, deploymentID string, clients 
 	if err := t.pauseSecurity(ctx); err != nil {
 		return err
 	}
+	if err := applyOnionClients(authDir, clients, entries); err != nil {
+		return err
+	}
+
+	t.Log.Info("proxy/tor: restricted-discovery client list updated",
+		"deployment_id", deploymentID, "clients", len(clients))
+
+	if err := syncRoutingDir(authDir); err != nil {
+		return err
+	}
+	return t.restartSecurity(ctx)
+}
+
+// applyOnionClients installs the desired client files and revokes the ones
+// absent from the map. Installs happen before removals so a failed write
+// cannot empty a private service; every write is atomic and durable.
+func applyOnionClients(authDir string, clients map[string]string, entries []os.DirEntry) error {
 	for name, pub := range clients {
 		content := "descriptor:x25519:" + strings.ToUpper(pub) + "\n"
 		if err := torPrivateWrite(filepath.Join(authDir, name+".auth"), []byte(content)); err != nil {
@@ -612,14 +631,7 @@ func (t *Tor) SetOnionClients(ctx context.Context, deploymentID string, clients 
 			}
 		}
 	}
-
-	t.Log.Info("proxy/tor: restricted-discovery client list updated",
-		"deployment_id", deploymentID, "clients", len(clients))
-
-	if err := syncRoutingDir(authDir); err != nil {
-		return err
-	}
-	return t.restartSecurity(ctx)
+	return nil
 }
 
 // OnionClientNames lists the currently authorized client names (never the

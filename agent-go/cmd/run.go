@@ -17,6 +17,7 @@ import (
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/egress"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/executor"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/poll"
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/scanner"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/state"
 )
 
@@ -83,6 +84,14 @@ func runRun(cmd *cobra.Command, _ []string) error {
 			"err", err)
 	}
 	egressCancel()
+	egressCtx, egressCancel = context.WithTimeout(cmd.Context(), 20*time.Second)
+	if err := egress.Apply6(egressCtx, stateDir); err != nil {
+		// Same contract as v4: fail-open, every attempt recorded.
+		log.Warn("egress v6 baseline not applied; tenant egress over IPv6 remains unrestricted for this run",
+			"err", err)
+	}
+
+	egressCancel()
 
 	// Phase 9.11d v2: hand the agent's own credentials to the Caddy
 	// sidecar's env-file. The bundled caddy-dns-impreza plugin uses
@@ -143,6 +152,7 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	// observable everywhere in the loop.
 	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
+	go scanner.RunAdvisoryUpdates(ctx, stateDir, cfg.UseTor, cfg.Proxy, log)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)

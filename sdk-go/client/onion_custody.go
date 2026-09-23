@@ -110,3 +110,34 @@ func (c *Client) PlatformRotateOnionKey(ctx context.Context, id, confirmAddress 
 	}
 	return &out, nil
 }
+
+// OnionPurgeResponse is the data payload of POST .../onion/purge: either an
+// enqueued agent command (202, purged copies land on its result) or an
+// immediate release (200) when only control-plane records held the address
+// (for example an uninstalled deployment's stale row).
+type OnionPurgeResponse struct {
+	CommandID string `json:"command_id,omitempty"`
+	Mode      string `json:"mode"` // "agent" | "released"
+	Note      string `json:"note"`
+}
+
+// PlatformPurgeOnionKey wraps POST /v1/platform/deployments/{id}/onion/purge.
+// IRREVERSIBLE: destroys the parked recovery copies of address on the
+// deployment's host and releases the platform-side reservation. The address
+// must be a RETAINED identity (a prior address after rotation, or the stale
+// row of an uninstalled deployment) — never the deployment's current one.
+// Sends confirm:true. 422 when the agent lacks onion-purge-v1 (agent mode).
+func (c *Client) PlatformPurgeOnionKey(ctx context.Context, id, address string) (*OnionPurgeResponse, error) {
+	if id == "" {
+		return nil, fmt.Errorf("deployment id is required")
+	}
+	if !onionV3Address.MatchString(address) {
+		return nil, fmt.Errorf("address must be the retained .onion being destroyed, verbatim (56 base32 chars + .onion)")
+	}
+	var out OnionPurgeResponse
+	if err := c.Post(ctx, "/v1/platform/deployments/"+url.PathEscape(id)+"/onion/purge",
+		map[string]any{"confirm": true, "confirm_address": address}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}

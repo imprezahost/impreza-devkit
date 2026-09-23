@@ -57,20 +57,21 @@ type ManifestStartup struct {
 // customer's footgun (Docker compose will pick `build:` and ignore
 // the image hint).
 type ManifestRuntime struct {
-	ServiceBindingProtocol           string                       `json:"service_binding_protocol,omitempty"`
-	ServiceBindings                  []ServiceBindingRef          `json:"service_bindings,omitempty"`
-	ServiceBindingRetirementProtocol string                       `json:"service_binding_retirement_protocol,omitempty"`
-	ServiceBindingRetirements        []ServiceBindingRef          `json:"service_binding_retirements,omitempty"`
+	ServiceBindingProtocol           string                        `json:"service_binding_protocol,omitempty"`
+	ServiceBindings                  []ServiceBindingRef           `json:"service_bindings,omitempty"`
+	ServiceBindingRetirementProtocol string                        `json:"service_binding_retirement_protocol,omitempty"`
+	ServiceBindingRetirements        []ServiceBindingRef           `json:"service_binding_retirements,omitempty"`
 	ServiceBindingRotationProtocol   string                        `json:"service_binding_rotation_protocol,omitempty"`
 	ServiceBindingRotation           *ServiceBindingRotationIntent `json:"service_binding_rotation,omitempty"`
 	BackupDatabase                   *BackupDatabaseSpec           `json:"backup_database,omitempty"`
 	RestoreDatabase                  *RestoreDatabaseSpec          `json:"restore_database,omitempty"`
-	Startup                          *ManifestStartup             `json:"startup,omitempty"`
-	Type                             string                       `json:"type"` // docker-compose | docker | systemd | raw
-	Isolated                         bool                         `json:"isolated,omitempty"`
-	ComposeYAML                      string                       `json:"compose_yaml,omitempty"`
-	DataDir                          *DataDirConfig               `json:"data_dir,omitempty"`
-	Build                            *BuildContext                `json:"build,omitempty"`
+	Startup                          *ManifestStartup              `json:"startup,omitempty"`
+	Type                             string                        `json:"type"` // docker-compose | docker | systemd | raw
+	Isolated                         bool                          `json:"isolated,omitempty"`
+	ComposeYAML                      string                        `json:"compose_yaml,omitempty"`
+	DataDir                          *DataDirConfig                `json:"data_dir,omitempty"`
+	Build                            *BuildContext                 `json:"build,omitempty"`
+	TorEgress                        bool                          `json:"tor_egress,omitempty"`
 }
 
 // BuildContext tells the agent to fetch + extract a build context
@@ -253,8 +254,8 @@ const PreviewBasicAuthProtocol = "preview-basic-auth-v1"
 // agent never sees the plaintext. Caddy verifies credentials in constant
 // time against the hash.
 type RouteBasicAuth struct {
-	Username    string `json:"username"`
-	BCryptHash  string `json:"bcrypt_hash"`
+	Username   string `json:"username"`
+	BCryptHash string `json:"bcrypt_hash"`
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -381,13 +382,13 @@ type DeploymentList struct {
 
 // DeploymentCreateRequest is the body of POST /v1/platform/deployments.
 type DeploymentCreateRequest struct {
-	AppName      string         `json:"app_name"`
-	AppVersion   string         `json:"app_version,omitempty"` // empty → latest
-	AgentID      string         `json:"agent_id"`
-	Vars         map[string]any `json:"vars,omitempty"`
-	Domain       string         `json:"domain,omitempty"`
-	Onion        bool           `json:"onion,omitempty"`
-	OnionProfile string         `json:"onion_profile,omitempty"` // requires Onion; default "standard"
+	AppName      string           `json:"app_name"`
+	AppVersion   string           `json:"app_version,omitempty"` // empty → latest
+	AgentID      string           `json:"agent_id"`
+	Vars         map[string]any   `json:"vars,omitempty"`
+	Domain       string           `json:"domain,omitempty"`
+	Onion        bool             `json:"onion,omitempty"`
+	OnionProfile string           `json:"onion_profile,omitempty"` // requires Onion; default "standard"
 	OnionImport  *OnionImportKeys `json:"onion_import,omitempty"`  // requires Onion; BYO C Tor key files, deploy-time only
 }
 
@@ -548,16 +549,16 @@ const (
 // than one mode is a 400 INVALID_REQUEST.
 type CustomDeployRequest struct {
 	// Common fields ---------------------------------------------------
-	Name         string         `json:"name"`                  // per-client unique slug
-	AgentID      string         `json:"agent_id"`              // target server
-	Domain       string         `json:"domain,omitempty"`      // empty → auto-subdomain
-	Onion        bool           `json:"onion,omitempty"`       // also publish via Tor
-	OnionProfile string         `json:"onion_profile,omitempty"` // requires Onion; default "standard"
+	Name         string           `json:"name"`                    // per-client unique slug
+	AgentID      string           `json:"agent_id"`                // target server
+	Domain       string           `json:"domain,omitempty"`        // empty → auto-subdomain
+	Onion        bool             `json:"onion,omitempty"`         // also publish via Tor
+	OnionProfile string           `json:"onion_profile,omitempty"` // requires Onion; default "standard"
 	OnionImport  *OnionImportKeys `json:"onion_import,omitempty"`  // requires Onion; BYO C Tor key files, deploy-time only
-	Vars         map[string]any `json:"vars,omitempty"`        // env vars for container(s)
-	Cpus         float64        `json:"cpus,omitempty"`        // default 1.0
-	MemoryMB     int            `json:"memory_mb,omitempty"`   // default 512
-	TargetPort   int            `json:"target_port,omitempty"` // default 80 (port the container listens on)
+	Vars         map[string]any   `json:"vars,omitempty"`          // env vars for container(s)
+	Cpus         float64          `json:"cpus,omitempty"`          // default 1.0
+	MemoryMB     int              `json:"memory_mb,omitempty"`     // default 512
+	TargetPort   int              `json:"target_port,omitempty"`   // default 80 (port the container listens on)
 
 	// Mode-specific source --------------------------------------------
 	// Image mode:

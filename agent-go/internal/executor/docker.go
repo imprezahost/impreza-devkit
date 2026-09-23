@@ -38,6 +38,8 @@ import (
 
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/proxy"
 	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
+
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/scanner"
 )
 
 const (
@@ -172,6 +174,8 @@ func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) (resul
 		return d.onionKeyExport(ctx, cmd)
 	case sdkclient.CommandOnionRotate:
 		return d.onionRotate(ctx, cmd)
+	case sdkclient.CommandOnionPurge:
+		return d.onionPurge(ctx, cmd)
 	case sdkclient.CommandTrafficSwitch:
 		return d.trafficSwitch(ctx, cmd)
 	default:
@@ -350,6 +354,19 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		)
 	}
 
+	// Scan only fetched source, never persisted app data or runtime/build secrets.
+	var sourceScan *json.RawMessage
+	if p.Manifest.Runtime.Build != nil {
+		report, _ := scanner.ScanDirContext(ctx, filepath.Join(appDir, "build-ctx"), scanner.LoadAdvisoryBase(d.StateDir))
+		if report != nil {
+			raw, err := json.Marshal(report)
+			if err == nil {
+				sourceScan = (*json.RawMessage)(&raw)
+			}
+		}
+	}
+	defer func() { result.SourceScan = sourceScan }()
+
 	hasBuildSecrets := p.Manifest.Runtime.Build != nil && len(p.Manifest.Runtime.Build.SecretNames) > 0
 	if hasBuildSecrets {
 		defer func() {
@@ -461,6 +478,24 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	if err := writeStartupPolicy(appDir, p.Manifest.Runtime.Startup); err != nil {
 		return failResult(cmd.ID, "write startup policy: "+err.Error())
 	}
+	// When the runtime opts into tor egress, merge the SOCKS sidecar
+	// and the internal network into the compose, and inject the proxy vars.
+	// Fail-closed by network isolation: the internal network has no
+	// external access; only the sidecar bridges.
+	if p.Manifest.Runtime.TorEgress {
+		var torErr error
+		composeYAML, torErr = applyTorEgress(composeYAML, p.DeploymentID, p.Vars)
+		if torErr != nil {
+			return failResult(cmd.ID, torErr.Error())
+		}
+		if len(p.Manifest.Runtime.ServiceBindings) > 0 {
+			return failResult(cmd.ID, "Tor egress cannot join external service binding networks")
+		}
+		if err := d.prepareTorEgress(ctx, p.DeploymentID); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+	}
+
 	if err := writeAtomic(filepath.Join(appDir, "compose.yaml"), []byte(composeYAML+"\n"), 0o644); err != nil {
 		return failResult(cmd.ID, "write compose.yaml: "+err.Error())
 	}
@@ -505,11 +540,11 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	// later-provisioning path; the clearnet DOMAIN/DOMAIN_URL is
 	// already correct in .env from deploy time, and the onion only
 	// supplements it.
-	// Identity import: the customer brought an existing hidden-service key. Write
+	// C4 import: the customer brought an existing hidden-service key. Write
 	// it BEFORE any provisioning so every later ProvisionHiddenService call
 	// for this deployment loads the customer's address instead of minting
 	// fresh keys. Refuses if a key already exists (never clobber identity).
-	if p.OnionProfile != "" || p.OnionImport != nil {
+	if p.OnionProfile != "" || p.OnionImport != nil || len(p.InitialOnionClients) > 0 {
 		hasOnion := false
 		for _, route := range p.Routes {
 			if route.Onion != nil && route.Onion.Enabled {
@@ -543,7 +578,26 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 			"deployment_id", p.DeploymentID, "onion", addr)
 	}
 
-	if p.OnionProfile != "" && p.OnionImport == nil {
+	if len(p.InitialOnionClients) > 0 {
+		if p.OnionImport != nil {
+			return failResult(cmd.ID, "initial private preview cannot import an identity")
+		}
+		clients := map[string]string{}
+		for _, c := range p.InitialOnionClients {
+			if _, exists := clients[c.Name]; exists {
+				return failResult(cmd.ID, "duplicate initial onion client")
+			}
+			clients[c.Name] = c.Pubkey
+		}
+		for _, r := range p.Routes {
+			if r.Hostname != "" {
+				return failResult(cmd.ID, "initial private preview cannot expose a clearnet route")
+			}
+		}
+		if err := d.Tor.PrepareInitialPrivate(p.DeploymentID, p.OnionProfile, clients); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+	} else if p.OnionProfile != "" && p.OnionImport == nil {
 		if err := d.Tor.PrepareInitialProfile(p.DeploymentID, p.OnionProfile); err != nil {
 			return failResult(cmd.ID, err.Error())
 		}
@@ -652,7 +706,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	// outcome is the verified table count attached after finishReplacement,
 	// and a one-shot stack has no replacement to supervise.
 	if d.SupervisePreparation && d.SaveReplacement != nil && recovery != nil && recovery.Phase == "replacing" && p.Manifest.Runtime.RestoreDatabase == nil {
-		work, err := d.createReplacementWork(cmd, p, previousRelease, isRedeploy, recovery.Containers)
+		work, err := d.createReplacementWork(cmd, p, previousRelease, isRedeploy, recovery.Containers, sourceScan)
 		if err != nil {
 			return failResult(cmd.ID, "prepare supervised replacement: "+err.Error())
 		}
@@ -746,6 +800,10 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 		if err := d.removeDeploymentExposure(ctx, p.DeploymentID); err != nil {
 			return failResult(cmd.ID, err.Error())
 		}
+		if err := proxy.RemoveTorEgressNetwork(ctx, p.DeploymentID); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+
 		return sdkclient.DeployResult{CommandID: cmd.ID, Status: "success", DeploymentID: p.DeploymentID}
 	}
 
@@ -777,6 +835,10 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 		d.Log.Warn("docker compose down failed, falling back to label sweep",
 			"deployment_id", p.DeploymentID, "err", downErr, "out", tail(out, 512))
 		d.forceRemoveProjectContainers(ctx, p.DeploymentID)
+	}
+
+	if err := proxy.RemoveTorEgressNetwork(ctx, p.DeploymentID); err != nil {
+		return failResult(cmd.ID, err.Error())
 	}
 
 	// Release archives also contain secrets, and their private image tags
@@ -1292,6 +1354,33 @@ func (d *Docker) onionRotate(ctx context.Context, cmd *sdkclient.PollCommand) sd
 		return failResult(cmd.ID, err.Error())
 	}
 	return sdkclient.DeployResult{CommandID: cmd.ID, Status: "success", DeploymentID: p.DeploymentID, Onion: addr}
+}
+
+// onionPurge destroys the parked recovery copies of one
+// address. The control plane confirmed the exact address with the customer
+// and guarantees it is not the deployment's current identity; the agent
+// re-checks that on the live service directory before deleting anything.
+func (d *Docker) onionPurge(ctx context.Context, cmd *sdkclient.PollCommand) sdkclient.DeployResult {
+	var p sdkclient.OnionPurgePayload
+	if err := cmd.As(&p); err != nil {
+		return failResult(cmd.ID, "decode onion_purge payload: "+err.Error())
+	}
+	if p.DeploymentID == "" {
+		return failResult(cmd.ID, "onion_purge payload missing deployment_id")
+	}
+	if p.Onion == "" {
+		return failResult(cmd.ID, "onion_purge payload missing onion")
+	}
+	if d.Tor == nil {
+		return failResult(cmd.ID, "tor proxy not available on this agent")
+	}
+	purged, err := d.Tor.PurgeOnionIdentity(ctx, p.DeploymentID, p.Onion)
+	if err != nil {
+		return failResult(cmd.ID, err.Error())
+	}
+	res := sdkclient.DeployResult{CommandID: cmd.ID, Status: "success", DeploymentID: p.DeploymentID}
+	res.OnionPurgedCopies = len(purged)
+	return res
 }
 
 // onionProfileUpdate sets the hidden service's hardening
@@ -2124,9 +2213,10 @@ func gitCloneIntoBuildContext(
 	var credential string
 	switch authMethod {
 	case "", "none":
-		// Public clone — https only (mirrors the server validator).
-		if !strings.HasPrefix(g.URL, "https://") {
-			return fmt.Errorf("git URL must start with https:// for a public clone (got: %q)", g.URL)
+		// Public clone — https only, except over Tor: an onion forge serves
+		// plain HTTP because the circuit itself is the encryption (T7).
+		if !strings.HasPrefix(g.URL, "https://") && !(strings.HasPrefix(g.URL, "http://") && onionGitHost(g.URL)) {
+			return fmt.Errorf("git URL must start with https:// for a public clone (or http:// for a .onion forge) (got: %q)", g.URL)
 		}
 	case "deploy_key", "pat":
 		if cli == nil {
@@ -2175,6 +2265,8 @@ func gitCloneIntoBuildContext(
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
 		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=" + os.DevNull,
 		"GIT_HTTP_LOW_SPEED_LIMIT=1024",
 		"GIT_HTTP_LOW_SPEED_TIME=60",
 	}
@@ -2182,10 +2274,20 @@ func gitCloneIntoBuildContext(
 		"clone", "--depth=1", "--single-branch", "--no-tags",
 		"--branch", ref, "--", g.URL, destDir,
 	}
-	var preArgs []string // git-level `-c` options, before the `clone` verb
+	if onionGitHost(g.URL) {
+		// Onion forges are often plain static file servers (dumb HTTP),
+		// which cannot serve shallow capabilities. A full clone of a
+		// self-hosted forge over Tor is the compatible mode, and the
+		// pinned-commit checkout below still lands on the exact revision.
+		cloneArgs = []string{"clone", "--branch", ref, "--", g.URL, destDir}
+	}
+	preArgs := []string{"-c", "http.followRedirects=false", "-c", "credential.helper="} // Never forward credentials across redirects or inherit helpers.
 
 	switch authMethod {
 	case "deploy_key":
+		if onionGitHost(g.URL) {
+			return errors.New("SSH git URLs on .onion are not supported yet; serve the forge over HTTPS and use pat or public access")
+		}
 		// Write the fetched private key to a 0600 temp file and point ssh
 		// at it; PrivateTmp=true on the systemd unit already isolates /tmp.
 		keyFile, err := os.CreateTemp("", "impreza-deploykey-*")
@@ -2214,22 +2316,50 @@ func gitCloneIntoBuildContext(
 			" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"+
 			" -o UserKnownHostsFile=/dev/null -o PasswordAuthentication=no -o BatchMode=yes")
 	case "pat":
-		if !strings.HasPrefix(g.URL, "https://") {
-			return fmt.Errorf("git URL must start with https:// for a PAT clone (got: %q)", g.URL)
+		if !strings.HasPrefix(g.URL, "https://") && !(strings.HasPrefix(g.URL, "http://") && onionGitHost(g.URL)) {
+			return fmt.Errorf("git URL must start with https:// for a PAT clone (or http:// for a .onion forge) (got: %q)", g.URL)
 		}
 		// The credential helper reads the token from the env, so it never
 		// appears in argv or the URL. The empty `credential.helper=` first
 		// resets any inherited system/global helper chain.
 		env = append(env, "IMPREZA_GIT_TOKEN="+credential)
-		preArgs = []string{
+		preArgs = append(preArgs, []string{
 			"-c", "credential.helper=",
 			"-c", `credential.helper=!f(){ echo username=x; echo "password=$IMPREZA_GIT_TOKEN"; };f`,
-		}
+		}...)
 	}
 
-	cmd := exec.CommandContext(cloneCtx, "git", append(preArgs, cloneArgs...)...)
-	cmd.Env = env
-	out, err := cmd.CombinedOutput()
+	// Onion sources clone through a disposable Tor client (T7). Its env
+	// rides the clone AND the pinned-commit checkout below, and the client
+	// is destroyed when this function returns. Tor circuits are expected to
+	// fail transiently (descriptor fetch races), so an onion clone gets a
+	// few bounded attempts before reporting failure.
+	onionProxy, err := startOnionCloneProxy(cloneCtx, g.URL)
+	if err != nil {
+		return fmt.Errorf("git clone %s @ %s: %w", g.URL, ref, err)
+	}
+	defer onionProxy.stop()
+	if onionProxy != nil {
+		env = append(env, onionProxy.envEntries()...)
+	}
+	attempts := 1
+	if onionProxy != nil {
+		attempts = 3
+	}
+	var out []byte
+	for attempt := 1; ; attempt++ {
+		cmd := exec.CommandContext(cloneCtx, "git", append(preArgs, cloneArgs...)...)
+		cmd.Env = env
+		out, err = cmd.CombinedOutput()
+		if err == nil || attempt >= attempts {
+			break
+		}
+		select {
+		case <-cloneCtx.Done():
+			return fmt.Errorf("git clone %s @ %s: %w\n%s", g.URL, ref, cloneCtx.Err(), tail(out, 1024))
+		case <-time.After(20 * time.Second):
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("git clone %s @ %s: %w\n%s", g.URL, ref, err, tail(out, 1024))
 	}

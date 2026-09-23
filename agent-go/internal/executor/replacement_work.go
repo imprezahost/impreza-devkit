@@ -53,6 +53,7 @@ type replacementRequest struct {
 	Previous     *runtimeRelease         `json:"previous,omitempty"`
 	Redeploy     bool                    `json:"redeploy"`
 	Proxy        bool                    `json:"proxy"`
+	SourceScan   *json.RawMessage        `json:"source_scan,omitempty"`
 }
 type replacementReceipt struct {
 	Version       int                    `json:"version"`
@@ -80,7 +81,7 @@ func (d *Docker) replacementDirectory(id string) (string, error) {
 }
 func replacementPayload(p sdkclient.DeployPayload) sdkclient.DeployPayload {
 	// The worker needs no source URLs, Git authentication or control-plane token.
-	runtime := sdkclient.ManifestRuntime{Type: p.Manifest.Runtime.Type, Startup: p.Manifest.Runtime.Startup, ServiceBindingRetirementProtocol: p.Manifest.Runtime.ServiceBindingRetirementProtocol, ServiceBindingRetirements: p.Manifest.Runtime.ServiceBindingRetirements, BackupDatabase: p.Manifest.Runtime.BackupDatabase, RestoreDatabase: p.Manifest.Runtime.RestoreDatabase}
+	runtime := sdkclient.ManifestRuntime{TorEgress: p.Manifest.Runtime.TorEgress, Type: p.Manifest.Runtime.Type, Startup: p.Manifest.Runtime.Startup, ServiceBindingRetirementProtocol: p.Manifest.Runtime.ServiceBindingRetirementProtocol, ServiceBindingRetirements: p.Manifest.Runtime.ServiceBindingRetirements, BackupDatabase: p.Manifest.Runtime.BackupDatabase, RestoreDatabase: p.Manifest.Runtime.RestoreDatabase}
 	// A rotation needs its reviewed intent and serving reference so the worker
 	// can verify and retire the unused generation. The serving credential is
 	// already resolved into Vars; plain bindings are never re-validated there.
@@ -92,7 +93,7 @@ func replacementPayload(p sdkclient.DeployPayload) sdkclient.DeployPayload {
 	}
 	return sdkclient.DeployPayload{DeploymentID: p.DeploymentID, Vars: p.Vars, Routes: p.Routes, ServiceBindingRetirementAuthorizations: p.ServiceBindingRetirementAuthorizations, RestorePlanID: p.RestorePlanID, Manifest: sdkclient.AppManifest{Runtime: runtime, Lifecycle: p.Manifest.Lifecycle}}
 }
-func (d *Docker) createReplacementWork(cmd *sdkclient.PollCommand, p sdkclient.DeployPayload, previous *runtimeRelease, redeploy bool, containers []string) (*ReplacementWork, error) {
+func (d *Docker) createReplacementWork(cmd *sdkclient.PollCommand, p sdkclient.DeployPayload, previous *runtimeRelease, redeploy bool, containers []string, sourceScan ...*json.RawMessage) (*ReplacementWork, error) {
 	docker, err := exec.LookPath("docker")
 	if err != nil {
 		return nil, err
@@ -126,6 +127,9 @@ func (d *Docker) createReplacementWork(cmd *sdkclient.PollCommand, p sdkclient.D
 		return nil, err
 	}
 	request := replacementRequest{Version: 1, ID: w.ID, CommandID: w.CommandID, StateDir: d.StateDir, Docker: docker, Env: preparationEnvironment(d), ConfigSHA256: hash, Containers: containers, Payload: replacementPayload(p), Previous: previous, Redeploy: redeploy, Proxy: d.Proxy != nil}
+	if len(sourceScan) == 1 {
+		request.SourceScan = sourceScan[0]
+	}
 	raw, err := json.Marshal(request)
 	if err != nil {
 		return nil, err
@@ -375,6 +379,7 @@ func RunReplacementWorker(stateDir, id string) error {
 	}
 	cmd := &sdkclient.PollCommand{ID: w.CommandID, Kind: sdkclient.CommandDeploy, ProgressProtocol: sdkclient.DeploymentProgressProtocol}
 	result := d.finishReplacement(ctx, cmd, request.Payload, request.Previous, request.Redeploy, "")
+	result.SourceScan = request.SourceScan
 	if ctx.Err() != nil {
 		return errors.New("replacement exceeded worker deadline; review required")
 	}

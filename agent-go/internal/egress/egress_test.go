@@ -165,11 +165,11 @@ func readApplied(t *testing.T, dir string) Status {
 	if err != nil {
 		t.Fatal("egress status not recorded")
 	}
-	var s Status
-	if err := json.Unmarshal(raw, &s); err != nil {
+	var f statusFile
+	if err := json.Unmarshal(raw, &f); err != nil {
 		t.Fatal(err)
 	}
-	return s
+	return f.V4
 }
 
 func TestApplyIdempotentAndReconciles(t *testing.T) {

@@ -10,7 +10,7 @@
 // default-deny.
 //
 // Scope and known limits of this phase:
-//   - IPv4 only. IPv6 egress is not covered yet (no ip6tables baseline).
+//   - This file covers IPv4; egress6.go installs the separate IPv6 baseline.
 //   - Rule precedence inside the chain: established flows, then DNS to the
 //     host's own resolvers, then metadata (169.254.0.0/16), RFC1918
 //     destinations, outbound SMTP (25/465/587) and a per-source-IP rate limit
@@ -41,7 +41,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -106,57 +105,6 @@ func Rules(resolvers []string) [][]string {
 		}
 	}
 	return append(rules, []string{"-j", "RETURN"})
-}
-
-// ReadResolvers parses a resolv.conf. The path may be a symlink only when it
-// resolves to a regular file (systemd-resolved stubs are standard); dangling
-// or non-regular targets are refused. Only IPv4 nameserver addresses are
-// returned, deduplicated, in file order.
-func ReadResolvers(path string) ([]string, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, errors.New("resolver configuration unreadable")
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		resolved, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			return nil, errors.New("resolver configuration symlink cannot be resolved")
-		}
-		target, err := os.Lstat(resolved)
-		if err != nil || !target.Mode().IsRegular() {
-			return nil, errors.New("resolver configuration does not resolve to a regular file")
-		}
-		path = resolved
-		info = target
-	}
-	if !info.Mode().IsRegular() || info.Size() > resolvConfLimit {
-		return nil, errors.New("resolver configuration is not a regular file")
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil || len(raw) > resolvConfLimit {
-		return nil, errors.New("resolver configuration unreadable")
-	}
-	var resolvers []string
-	seen := map[string]bool{}
-	for _, line := range strings.Split(string(raw), "\n") {
-		if i := strings.IndexAny(line, "#;"); i >= 0 {
-			line = line[:i]
-		}
-		fields := strings.Fields(line)
-		if len(fields) != 2 || fields[0] != "nameserver" || len(resolvers) >= 8 {
-			continue
-		}
-		addr, err := netip.ParseAddr(fields[1])
-		if err != nil || !addr.Is4() || seen[fields[1]] {
-			continue
-		}
-		seen[fields[1]] = true
-		resolvers = append(resolvers, addr.String())
-	}
-	if len(resolvers) == 0 {
-		return nil, errors.New("no IPv4 resolver configured")
-	}
-	return resolvers, nil
 }
 
 func realRunner(ctx context.Context, args ...string) ([]byte, error) {
@@ -258,20 +206,20 @@ func statusPath(stateDir string) (string, error) {
 }
 
 func readStatus(stateDir string) Status {
-	var s Status
+	var f statusFile
 	path, err := statusPath(stateDir)
 	if err != nil {
-		return s
-	}
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 4096 {
-		return s
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil || json.Unmarshal(raw, &s) != nil {
 		return Status{}
 	}
-	return s
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 8192 {
+		return Status{}
+	}
+	raw, err := readStatusFile(path)
+	if err != nil || json.Unmarshal(raw, &f) != nil {
+		return Status{}
+	}
+	return f.V4
 }
 
 func writeStatus(stateDir string, status Status) error {
@@ -282,7 +230,12 @@ func writeStatus(stateDir string, status Status) error {
 	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
 		return errors.New("egress status path is not a regular file")
 	}
-	raw, err := json.Marshal(status)
+	var f statusFile
+	if raw, err := readStatusFile(path); err == nil {
+		_ = json.Unmarshal(raw, &f)
+	}
+	f.V4 = status
+	raw, err := json.Marshal(f)
 	if err != nil {
 		return err
 	}
@@ -291,15 +244,15 @@ func writeStatus(stateDir string, status Status) error {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	if _, err = tmp.Write(raw); err != nil {
+	if _, err := tmp.Write(raw); err != nil {
 		tmp.Close()
 		return err
 	}
-	if err = tmp.Sync(); err != nil {
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		return err
 	}
-	if err = tmp.Close(); err != nil {
+	if err := tmp.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)

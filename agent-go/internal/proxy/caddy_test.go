@@ -94,7 +94,7 @@ func TestApplyDeploymentRoutesRefusesBadGateBeforeWriting(t *testing.T) {
 
 // Dual-stack routes advertise the onion mirror on the clearnet block so Tor
 // Browser shows ".onion available"; onion-only and clearnet-only routes emit
-// no header.
+// no header (B6).
 func TestRenderFragmentOnionLocation(t *testing.T) {
 	dual := renderFragment("dpl_x", []Route{{
 		Hostname:  "app.example.test",

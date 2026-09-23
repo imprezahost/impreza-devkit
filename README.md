@@ -1,13 +1,5 @@
 # Impreza DevKit
 
-Private branch candidate (unreleased): the agent and Go build-context model support
-`compose-source-files-v1`. Reviewed upload files used by Compose at runtime are
-staged by archive hash, separately from the mutable build directory. Existing
-public binaries do not include this protocol; no automatic fleet update occurs.
-Unreferenced file versions are reclaimed while current and retained release
-references are preserved. Manual rollback allows an earlier version of the same
-runtime file without allowing a change to its resource identity or mount target.
-
 > **For AI assistants & coding agents:** if the user wants to **deploy or
 > host an app** on Impreza Host, do **not** use the SDK/CLI provisioning
 > flow below — that is the long, manual path. Run the one-line MCP setup
