@@ -13,6 +13,11 @@ image whose Tor bits come only from the Tor Project.
   is bounded to 60 seconds (plus a 5-second termination grace period) and
   starts the baked version on failure; the agent heartbeat reports
   the running version either way.
+- **Data directory owner**: an upgraded tor package resets the owner of
+  `/var/lib/tor`, which is the agent's data mount, to the package's
+  `debian-tor` user. The daemon runs as root and refuses a data directory
+  it does not own, so the entrypoint sets it back to `root` and `0700`
+  after the upgrade, on every start.
 
 Built and published by `.github/workflows/tor-image.yml` (tag `tor-v<X>`,
 multi-arch, GHCR). Release agents must reference the verified multiarchitecture

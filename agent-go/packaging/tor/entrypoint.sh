@@ -19,4 +19,13 @@ if ! timeout --signal=TERM --kill-after=5s 60s sh -c 'apt-get -o Acquire::Retrie
   echo "impreza/tor: apt self-update skipped or failed; starting with the baked-in tor version" >&2
 fi
 
+# A tor package upgrade re-applies the package's owner (debian-tor, 2700) to
+# /var/lib/tor, which is the agent's data mount. The daemon runs as root and
+# refuses a data directory it does not own, so one upstream tor release would
+# stop every start after it. Re-assert the owner on every start, after the
+# upgrade and before the daemon reads the directory.
+if ! chown root:root /var/lib/tor || ! chmod 0700 /var/lib/tor; then
+  echo "impreza/tor: could not reset /var/lib/tor to root 0700; tor may refuse its data directory" >&2
+fi
+
 exec tor -f /etc/tor/torrc
