@@ -45,12 +45,14 @@ const (
 	TorContainer = "impreza_tor"
 	// TorImage — our own image (agent-go/packaging/tor): official Debian
 	// base + tor from the Tor Project's apt repo, self-upgrading tor from
-	// upstream at every container start. The major tag is the pin: tor
-	// patches flow through the entrypoint's apt upgrade on any (re)start
-	// or recreation, and a CVE roll is one documented `docker restart
-	// impreza_tor` — no agent change needed. Image/base changes bump the
-	// tag and ride the agent release.
-	TorImage = "ghcr.io/imprezahost/tor@sha256:5b1c45733facd9540767855dc54275b6cb54e0f76393f442f6cb5a03d0adbe54"
+	// upstream at every container start. Pinned by the multi-architecture
+	// manifest digest: tor patches flow through the entrypoint's apt upgrade
+	// on any (re)start or recreation, and a CVE roll is one documented
+	// `docker restart impreza_tor` — no agent change needed. Image/base or
+	// entrypoint changes publish a new image and ride the agent release.
+	// 1.0.1: the entrypoint restores the data directory owner that an
+	// upgraded tor package resets (TorDataOwnerProtocol).
+	TorImage = "ghcr.io/imprezahost/tor@sha256:b8382d4c4a08b935e3a3a704cb3dcb2882a83330c6b0d4128a77f28ef68284b5"
 	// Default upstream Caddy listens on inside impreza-proxy.
 	torUpstream = "unix:/run/impreza-onion/http.sock"
 	// How long we wait for Tor to publish a hostname file after

@@ -12,6 +12,16 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## Agent 0.6.21 — 2026-09-24
+
+- Pin Tor image 1.0.1. An upgraded tor package resets the owner of the Tor data
+  directory, and the daemon, which runs as root, refused to start after it; the
+  entrypoint now restores the owner on every start. After the update, the agent
+  moves Tor to the new image when it starts on a server with onion services, or
+  at the first onion deployment otherwise.
+- Announce `tor-data-owner-v1`, so the control plane can tell an agent with the
+  corrected image from an earlier one before it provisions an onion service.
+
 ## Agent 0.6.20 and Go CLI 0.3.1 — 2026-09-23
 
 - Add private onion previews whose reviewer keys are installed before first publication;
