@@ -18,18 +18,23 @@ func TestRulesScopeAndOperatorPolicy(t *testing.T) {
 		if strings.Contains(line, "ACCEPT") {
 			t.Fatal("baseline bypasses later operator policy")
 		}
-		if strings.HasSuffix(line, "-j DROP") && !(strings.HasPrefix(line, "-i docker0 ") || strings.HasPrefix(line, "-i br+ ")) {
+		if strings.HasSuffix(line, "-j DROP") && line != "-d 169.254.0.0/16 -j DROP" && !(strings.HasPrefix(line, "-i docker0 ") || strings.HasPrefix(line, "-i br+ ")) {
 			t.Fatal("drop affects ingress or unrelated forwarding")
 		}
 	}
 	if strings.Join(rules[0], " ") != "-m physdev --physdev-is-bridged -j RETURN" {
 		t.Fatal("same bridge exemption absent")
 	}
+	// The metadata range is the one interface-agnostic drop: custom-named
+	// bridges and macvlan-style tenant paths must not reach it either.
+	if strings.Join(rules[1], " ") != "-d 169.254.0.0/16 -j DROP" {
+		t.Fatal("interface-agnostic metadata drop absent or misplaced")
+	}
 	if strings.Join(rules[len(rules)-1], " ") != "-j RETURN" {
 		t.Fatal("operator continuation absent")
 	}
 	for _, iface := range []string{"docker0", "br+"} {
-		for _, dest := range []string{"169.254.0.0/16", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"} {
+		for _, dest := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"} {
 			found := false
 			for _, rule := range rules {
 				if strings.Join(rule, " ") == "-i "+iface+" -d "+dest+" -j DROP" {
@@ -39,6 +44,46 @@ func TestRulesScopeAndOperatorPolicy(t *testing.T) {
 			if !found {
 				t.Fatalf("missing restriction %s %s", iface, dest)
 			}
+		}
+	}
+}
+
+func TestHostRulesScopeAndShape(t *testing.T) {
+	rules := HostRules()
+	if len(rules) != 6 {
+		t.Fatalf("unexpected host rule count: %d", len(rules))
+	}
+	for _, iface := range []string{"docker0", "br+"} {
+		est := false
+		icmp := false
+		drop := false
+		for _, rule := range rules {
+			line := strings.Join(rule, " ")
+			if !strings.HasPrefix(line, "-i "+iface+" ") {
+				continue
+			}
+			switch {
+			case strings.Contains(line, "ESTABLISHED,RELATED") && strings.HasSuffix(line, "-j RETURN"):
+				est = true
+			case strings.Contains(line, "-p icmp") && strings.HasSuffix(line, "-j RETURN"):
+				icmp = true
+			case strings.HasSuffix(line, "-j DROP"):
+				drop = true
+			}
+		}
+		if !est || !icmp || !drop {
+			t.Fatalf("host rules incomplete for %s: established=%v icmp=%v drop=%v", iface, est, icmp, drop)
+		}
+	}
+	// Nothing matches traffic that does not arrive from a Docker bridge: the
+	// operator's INPUT policy (and remote management) stays in charge.
+	for _, rule := range rules {
+		line := strings.Join(rule, " ")
+		if !strings.HasPrefix(line, "-i docker0 ") && !strings.HasPrefix(line, "-i br+ ") {
+			t.Fatalf("host rule without bridge scope: %s", line)
+		}
+		if strings.Contains(line, "ACCEPT") {
+			t.Fatal("host chain accepts instead of returning to operator policy")
 		}
 	}
 }
@@ -229,5 +274,54 @@ func TestApplyFailOpenWithoutIPTables(t *testing.T) {
 	}
 	if len(fake.chains[Chain]) != 0 {
 		t.Fatal("failed apply left partial rules")
+	}
+}
+
+// The host INPUT half reconciles like the FORWARD half (create, drift
+// refill, idempotent no-op) but links into INPUT, records its own status
+// section, and never flushes anything but the agent-owned chain.
+func TestApplyHostChain(t *testing.T) {
+	ctx, fake, _, dir := applyFixture(t)
+	fake.chains["INPUT"] = [][]string{{"-A", "INPUT", "-j", "ACCEPT"}}
+	if err := applyHostAll(ctx, fake.run, dir); err != nil {
+		t.Fatal(err)
+	}
+	wanted := HostRules()
+	if len(fake.chains[HostChain]) != len(wanted) {
+		t.Fatalf("host chain content mismatch: %d rules, want %d", len(fake.chains[HostChain]), len(wanted))
+	}
+	if len(fake.chains["INPUT"]) != 2 || !reflect.DeepEqual(fake.chains["INPUT"][0], []string{"-j", HostChain}) || !reflect.DeepEqual(fake.chains["INPUT"][1], []string{"-A", "INPUT", "-j", "ACCEPT"}) {
+		t.Fatal("host chain not linked at the top of INPUT without touching operator rules")
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "egress.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f statusFile
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatal(err)
+	}
+	if f.V4Host == nil || !f.V4Host.Applied || f.V4Host.Fingerprint == "" || f.V4Host.Rules != len(wanted) || f.V4Host.Resolvers != 0 {
+		t.Fatalf("host status section not recorded: %+v", f.V4Host)
+	}
+	mutations := fake.mutations
+	if err := applyHostAll(ctx, fake.run, dir); err != nil {
+		t.Fatal(err)
+	}
+	if fake.mutations != mutations {
+		t.Fatal("second host apply mutated the firewall")
+	}
+	// External drift to the host chain reconciles; INPUT keeps its shape.
+	fake.chains[HostChain] = nil
+	if err := applyHostAll(ctx, fake.run, dir); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.chains[HostChain]) != len(wanted) || len(fake.chains["INPUT"]) != 2 {
+		t.Fatal("drifted host chain was not reconciled or INPUT was rewritten")
+	}
+	// A vanished INPUT chain is a fail-open error, never a flush.
+	delete(fake.chains, "INPUT")
+	if err := applyHostAll(ctx, fake.run, dir); err == nil {
+		t.Fatal("missing INPUT was not reported fail-open")
 	}
 }

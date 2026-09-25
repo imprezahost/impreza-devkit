@@ -30,6 +30,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -43,10 +44,15 @@ const (
 	// Caddy can complete ACME DNS-01 challenges by proxying TXT-record
 	// writes through the Impreza public API (the operator's CF token
 	// stays IP-restricted on the control plane — see
-	// caddy-dns-impreza/README.md for the rationale). The :2-cf tag
-	// tracks the latest 2.x release of our image.
+	// caddy-dns-impreza/README.md for the rationale). This build, published
+	// as caddy:2.11.4-s1, adds the Impreza Shield stack: Coraza WAF with the
+	// embedded OWASP CRS, the shield_pow proof-of-work gate and
+	// shield_rate_limit. It is pinned by the digest of its multi-arch index;
+	// EnsureRunning recreates the proxy container whenever the running image
+	// differs, keeping the bind-mounted /data. The 2-cf stream keeps serving
+	// agents up to 0.6.21 unchanged.
 	//
-	Image = "ghcr.io/imprezahost/caddy:2-cf"
+	Image = "ghcr.io/imprezahost/caddy@sha256:2635ee3746c1cf3c8e2a9c91400bf5c016068a836025b4ade04d5a7dd707d83f"
 	// Env-var names the Caddy container reads to authenticate against
 	// the Impreza public API on every DNS-01 present/cleanup. These
 	// are set by SetImprezaCredentials via a bind-mounted env-file and
@@ -91,6 +97,10 @@ type Route struct {
 	// response. Validated on write; an invalid hash is refused, never
 	// silently dropped (that would serve the route publicly).
 	BasicAuth *BasicAuth
+	// Shield (capability shield-v1) stamps the deployment's Impreza
+	// Shield policy (profile + mode) onto both the clearnet and onion site
+	// blocks. Nil means profile off — no directives.
+	Shield *ShieldConfig
 }
 
 // BasicAuth is one HTTP Basic credential gate for a route.
@@ -127,9 +137,15 @@ func validateBasicAuth(b *BasicAuth) error {
 
 // Caddy owns the host's reverse-proxy state.
 type Caddy struct {
-	StateDir     string // <agent-state>/proxy
-	Log          *slog.Logger
-	switchReload func(context.Context) error // test seam for reload failure boundaries
+	StateDir      string // <agent-state>/proxy
+	Log           *slog.Logger
+	switchReload  func(context.Context) error           // test seam for reload failure boundaries
+	containerList func(context.Context) ([]byte, error) // test seam for Docker availability
+
+	// Proxy-metrics scrape state: previous exposition snapshot for
+	// per-cycle deltas. Memory only, deployment-labeled series only.
+	scrapeMu   sync.Mutex
+	lastScrape map[scrapeKey]float64
 }
 
 // New constructs a Caddy under <agentStateDir>/proxy.
@@ -361,13 +377,18 @@ func (c *Caddy) ApplyDeploymentRoutes(ctx context.Context, deploymentID string, 
 	fragPath := filepath.Join(c.StateDir, "deployments", deploymentID+".caddy")
 
 	if len(routes) == 0 {
-		_ = os.Remove(fragPath)
+		if err := os.Remove(fragPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove routing fragment: %w", err)
+		}
 	} else {
 		// Refuse a malformed gate up front: writing it would either break
 		// `caddy reload` for every deployment on the box or, worse, skip
 		// the auth directive and serve a protected route publicly.
 		for _, r := range routes {
 			if err := validateBasicAuth(r.BasicAuth); err != nil {
+				return fmt.Errorf("route %s: %w", r.Hostname+r.OnionAddr, err)
+			}
+			if err := r.Shield.validate(); err != nil {
 				return fmt.Errorf("route %s: %w", r.Hostname+r.OnionAddr, err)
 			}
 		}
@@ -379,7 +400,33 @@ func (c *Caddy) ApplyDeploymentRoutes(ctx context.Context, deploymentID string, 
 	if err := c.regenerateCaddyfile(); err != nil {
 		return err
 	}
-	return c.reload(ctx)
+	if len(routes) == 0 {
+		// Database-only hosts and internal jobs may never have created Caddy.
+		// Prove absence through a successful daemon query; an unavailable
+		// daemon or an existing stopped proxy is not proof of safe removal.
+		absent, err := c.routingContainerAbsent(ctx)
+		if err != nil {
+			return err
+		}
+		if absent {
+			return nil
+		}
+	}
+	return c.reloadSwitch(ctx)
+}
+
+func (c *Caddy) routingContainerAbsent(ctx context.Context) (bool, error) {
+	query := c.containerList
+	if query == nil {
+		query = func(ctx context.Context) ([]byte, error) {
+			return exec.CommandContext(ctx, "docker", "container", "ls", "--all", "--filter", "name=^/"+ContainerName+"$", "--format", "{{.ID}}").Output()
+		}
+	}
+	out, err := query(ctx)
+	if err != nil {
+		return false, fmt.Errorf("verify routing container before cleanup: %w", err)
+	}
+	return len(strings.TrimSpace(string(out))) == 0, nil
 }
 
 // RemoveDeploymentRoutes deletes the per-deployment fragment and reloads.
@@ -620,6 +667,8 @@ func (c *Caddy) regenerateCaddyfile() error {
 
 	var sb strings.Builder
 	sb.WriteString("# managed by impreza-agent — do not edit\n\n")
+	anyShield := false
+	anyFragment := false
 	for _, n := range names {
 		data, err := os.ReadFile(filepath.Join(dir, n))
 		if err != nil {
@@ -629,12 +678,21 @@ func (c *Caddy) regenerateCaddyfile() error {
 		if err != nil {
 			return fmt.Errorf("secure onion fragment %s: %w", n, err)
 		}
+		anyShield = anyShield || fragmentUsesShield(secured)
+		anyFragment = true
 		sb.WriteString(secured)
 		if !strings.HasSuffix(string(data), "\n") {
 			sb.WriteByte('\n')
 		}
 		sb.WriteByte('\n')
 	}
+	body := sb.String()
+	sb.Reset()
+	sb.WriteString("# managed by impreza-agent — do not edit\n\n")
+	// The metrics listener backs the per-deployment proxy counters
+	// and the Shield telemetry; loopback inside the proxy container.
+	sb.WriteString(shieldGlobalOptions(anyFragment))
+	sb.WriteString(body)
 	// Preserve the inode mounted into Caddy, but make its content durable before
 	// the switch recovery record can be cleared.
 	f, err := os.OpenFile(filepath.Join(c.StateDir, "Caddyfile"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
@@ -708,9 +766,15 @@ func renderFragment(deploymentID string, routes []Route) string {
 			continue
 		}
 
-		// Clearnet site block.
+		// Clearnet site block. TLSMode "none" is plain HTTP: the http://
+		// site-address prefix is what actually disables Caddy auto-HTTPS —
+		// a bare hostname 308-redirects to a certificate that cannot issue.
 		if r.Hostname != "" {
-			fmt.Fprintf(&sb, "%s {\n", r.Hostname)
+			if r.TLSMode == "none" {
+				fmt.Fprintf(&sb, "http://%s {\n", r.Hostname)
+			} else {
+				fmt.Fprintf(&sb, "%s {\n", r.Hostname)
+			}
 			switch r.TLSMode {
 			case "letsencrypt", "":
 				switch r.TLSDNSProvider {
@@ -762,6 +826,10 @@ func renderFragment(deploymentID string, routes []Route) string {
 				// shorthand here.
 			}
 			writeBasicAuth(&sb, r.BasicAuth)
+			// A Secure cookie attribute is only correct on TLS; plain-HTTP
+			// clearnet (TLSMode none) drops it just like an onion origin.
+			writeShieldDirectives(&sb, deploymentID, r.Shield, r.TLSMode != "none")
+			writeProxyMetrics(&sb, deploymentID)
 			// Dual-stack deployments advertise their onion mirror so Tor
 			// Browser shows ".onion available" on the clearnet site. The
 			// header is ignored on plain-HTTP clearnet (spec requires a
@@ -781,6 +849,9 @@ func renderFragment(deploymentID string, routes []Route) string {
 			fmt.Fprintf(&sb, "http://%s {\n", r.OnionAddr)
 			sb.WriteString("  bind unix//config/onion-private/http.sock|0600\n")
 			writeBasicAuth(&sb, r.BasicAuth)
+			// No Secure cookie attribute on plain-HTTP onion origins.
+			writeShieldDirectives(&sb, deploymentID, r.Shield, false)
+			writeProxyMetrics(&sb, deploymentID)
 			fmt.Fprintf(&sb, "  reverse_proxy %s\n", r.Upstream)
 			fmt.Fprintf(&sb, "}\n")
 		}

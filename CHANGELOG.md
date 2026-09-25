@@ -12,6 +12,38 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## Agent 0.6.22 — 2026-09-25
+
+- Change an application's domain through a verified handover
+  (`domain-handover-v1`). The previous hostname stays reserved and keeps serving
+  until the new route passes a pinned TLS check; a failed check restores the
+  previous route and environment. Agents before 0.6.22 are refused before
+  anything changes.
+- Apply agent updates requested from the portal, API or MCP
+  (`agent-upgrade-v1`). The bundled updater installs only the exact version named
+  by the signed channel manifest and restores the previous executable if the new
+  one does not start. Update 0.6.21 and earlier once with `update.sh`.
+- Verify the signed release manifest of the stable channel in `update.sh`. Once a
+  server has accepted a manifest, a missing, expired, rolled-back or altered one
+  refuses the update instead of falling back to checksums.
+- Run the Impreza Shield proxy image `caddy:2.11.4-s1`, pinned by digest
+  (`shield-v1`). New deployments start on the standard profile, which runs the
+  WAF in audit mode and never blocks; existing deployments keep Shield off until
+  changed. The hardened and max profiles add a proof-of-work gate and rate
+  limits and can block after the audit findings are reviewed. The agent moves the
+  shared proxy to this image when it starts on a server with onion services, or
+  at the next deployment otherwise; certificates and ACME state are kept.
+- Report per-application proxy request counters with the metrics
+  (`proxy-metrics-v1`). The counters carry the deployment only, never a visitor
+  identity.
+- Run applications in the confined, time-limited sandbox runtime class
+  (`agent-sandbox-v1`).
+- Removing the temporary containers of backups, restores, tasks, file reads and
+  CLI runs no longer reports a failure after the removal succeeded (agents 0.6.20
+  and 0.6.21).
+- The Go SDK gains the agent protocol types for these features. Agent updates
+  remain explicit customer actions; Python packages and the Go CLI are unchanged.
+
 ## Agent 0.6.21 — 2026-09-24
 
 - Pin Tor image 1.0.1. An upgraded tor package resets the owner of the Tor data

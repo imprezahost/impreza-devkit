@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/proxy"
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/upgrade"
 	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/scanner"
@@ -137,7 +138,8 @@ func NewDocker(stateDir string, log *slog.Logger) *Docker {
 // Execute dispatches a poll command to the right per-kind handler.
 func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) (result sdkclient.DeployResult) {
 	var identity struct {
-		DeploymentID string `json:"deployment_id"`
+		DeploymentID      string   `json:"deployment_id"`
+		FenceDependencies []string `json:"fence_dependencies"`
 	}
 	_ = cmd.As(&identity)
 	redactions, redactionErr := d.runtimeServiceBindingRedactions(identity.DeploymentID)
@@ -150,6 +152,11 @@ func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) (resul
 		}
 		redactServiceBindingResult(&result, redactions)
 	}()
+	if blocksWhileFenced(cmd.Kind) && identity.DeploymentID != "" {
+		if err := d.checkCommandFences(cmd.Kind, identity.DeploymentID, identity.FenceDependencies); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+	}
 
 	switch cmd.Kind {
 	case sdkclient.CommandDeploy:
@@ -178,13 +185,35 @@ func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) (resul
 		return d.onionPurge(ctx, cmd)
 	case sdkclient.CommandTrafficSwitch:
 		return d.trafficSwitch(ctx, cmd)
+	case sdkclient.CommandHostFailoverFence:
+		return d.hostFailoverFence(ctx, cmd)
+	case sdkclient.CommandOnionTransferRecipient:
+		return d.onionTransferRecipient(ctx, cmd)
+	case sdkclient.CommandHostFailoverRelease:
+		return d.hostFailoverRelease(ctx, cmd)
+	case sdkclient.CommandAgentUpgrade:
+		return d.prepareAgentUpgrade(cmd)
 	default:
 		message := fmt.Sprintf("Unsupported command %q. No operation was performed. Check agent and platform compatibility.", cmd.Kind)
-		if cmd.Kind == sdkclient.CommandAgentUpgrade {
-			message += " Use the agent update command shown in the portal; queued agent upgrades are not supported."
-		}
 		return failResult(cmd.ID, message)
 	}
+}
+
+func (d *Docker) prepareAgentUpgrade(cmd *sdkclient.PollCommand) sdkclient.DeployResult {
+	var payload sdkclient.AgentUpgradePayload
+	if err := cmd.As(&payload); err != nil || payload.Protocol != upgrade.Protocol {
+		return failResult(cmd.ID, "Invalid agent update protocol; no update was scheduled.")
+	}
+	if err := upgrade.Prepare(d.StateDir, cmd.ID, payload.Channel, payload.TargetVersion); err != nil {
+		return failResult(cmd.ID, "Managed agent update could not be prepared: "+err.Error())
+	}
+	// The poller starts the isolated helper only after this receipt is
+	// acknowledged. A later heartbeat, not this receipt, verifies the swap.
+	return sdkclient.DeployResult{CommandID: cmd.ID, Status: "success"}
+}
+
+func (d *Docker) StartAgentUpgrade(commandID string) error {
+	return upgrade.Start(d.StateDir, commandID)
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -478,7 +507,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	if err := writeStartupPolicy(appDir, p.Manifest.Runtime.Startup); err != nil {
 		return failResult(cmd.ID, "write startup policy: "+err.Error())
 	}
-	// When the runtime opts into tor egress, merge the SOCKS sidecar
+	// When the runtime opts into Tor egress, merge the SOCKS sidecar
 	// and the internal network into the compose, and inject the proxy vars.
 	// Fail-closed by network isolation: the internal network has no
 	// external access; only the sidecar bridges.
@@ -494,6 +523,20 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		if err := d.prepareTorEgress(ctx, p.DeploymentID); err != nil {
 			return failResult(cmd.ID, err.Error())
 		}
+	}
+	// The sandbox runtime class rewrites the compose structurally
+	// and records the wall-clock budget the poller reconciles.
+	if p.Manifest.Runtime.Sandbox != nil {
+		var sandboxErr error
+		composeYAML, sandboxErr = applySandbox(composeYAML, p.DeploymentID, *p.Manifest.Runtime.Sandbox)
+		if sandboxErr != nil {
+			return failResult(cmd.ID, sandboxErr.Error())
+		}
+		if err := writeSandboxDeadline(d.appDir(p.DeploymentID), *p.Manifest.Runtime.Sandbox); err != nil {
+			return failResult(cmd.ID, "write sandbox deadline: "+err.Error())
+		}
+	} else {
+		clearSandboxDeadline(d.appDir(p.DeploymentID))
 	}
 
 	if err := writeAtomic(filepath.Join(appDir, "compose.yaml"), []byte(composeYAML+"\n"), 0o644); err != nil {
@@ -904,7 +947,10 @@ func (d *Docker) removeDeploymentExposure(ctx context.Context, deploymentID stri
 	// Tear down the hidden service too. The keys are PARKED (not
 	// deleted) for Tor's ParkRetention so an accidental uninstall is
 	// recoverable; a reinstall still gets a fresh .onion.
-	if d.Tor != nil {
+	// Internal job IDs never have a hidden-service identity. The Tor manager
+	// intentionally accepts only application IDs; do not weaken that boundary
+	// merely to tear down a temporary backup/restore/CLI stack.
+	if d.Tor != nil && !failoverTransportID.MatchString(deploymentID) {
 		torRmCtx, cancelTorRm := context.WithTimeout(ctx, composeQueryTimeout)
 		if err := d.Tor.RemoveHiddenService(torRmCtx, deploymentID); err != nil {
 			cancelTorRm()
@@ -1455,6 +1501,9 @@ func (d *Docker) updateRoutes(ctx context.Context, cmd *sdkclient.PollCommand) s
 	if p.DeploymentID == "" {
 		return failResult(cmd.ID, "update_routes payload missing deployment_id")
 	}
+	if p.DomainHandover != nil {
+		return d.domainHandover(ctx, cmd, p)
+	}
 	appDir := d.appDir(p.DeploymentID)
 	if !exists(appDir) {
 		return failResult(cmd.ID, "no state dir for deployment "+p.DeploymentID)
@@ -1464,6 +1513,44 @@ func (d *Docker) updateRoutes(ctx context.Context, cmd *sdkclient.PollCommand) s
 	p.Vars, bindingErr = d.preserveServiceBindingVars(ctx, p.DeploymentID, p.Vars)
 	if bindingErr != nil {
 		return failResult(cmd.ID, bindingErr.Error())
+	}
+
+	// onion-transfer-v1: the reviewed failover target receives the
+	// source's identity sealed to its own one-cutover recipient. Import and
+	// publish it BEFORE the routes, and fail unless Tor publishes exactly the
+	// reviewed address; the control plane never saw the key in plaintext.
+	if p.OnionTransfer != nil {
+		hasOnion := false
+		for _, r := range p.Routes {
+			if r.Onion != nil && r.Onion.Enabled {
+				hasOnion = true
+			}
+		}
+		if d.Tor == nil || p.ProvisionOnion || !hasOnion || p.OnionAddr == "" ||
+			!failoverCutoverID.MatchString(p.OnionTransfer.CutoverID) {
+			return failResult(cmd.ID, "Invalid onion transfer activation.")
+		}
+		profile := p.OnionProfile
+		if profile == "" {
+			profile = "standard"
+		}
+		if err := d.Tor.CheckInitialProfile(ctx, profile); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+		if _, err := d.Tor.ImportTransferredOnionKey(p.DeploymentID, p.OnionTransfer.CutoverID,
+			p.OnionAddr, p.OnionTransfer.Sealed, profile); err != nil {
+			return failResult(cmd.ID, "Transferred onion identity was refused: "+err.Error())
+		}
+		provCtx, cancelProv := context.WithTimeout(ctx, 3*time.Minute)
+		addr, err := d.Tor.ProvisionHiddenService(provCtx, p.DeploymentID, 80)
+		cancelProv()
+		if err != nil {
+			return failResult(cmd.ID, "publish transferred hidden service: "+err.Error())
+		}
+		if addr != p.OnionAddr {
+			return failResult(cmd.ID, "Published onion differs from the transferred identity.")
+		}
+		d.Log.Info("update_routes: published transferred onion", "deployment_id", p.DeploymentID)
 	}
 
 	// Phase 89 — post-deploy onion provisioning. When the server asks
@@ -1560,6 +1647,7 @@ func (d *Docker) updateRoutes(ctx context.Context, cmd *sdkclient.PollCommand) s
 				TLSEmail:       email,
 				TLSDNSProvider: dnsProvider,
 				BasicAuth:      basicAuthFromPayload(r.BasicAuth),
+				Shield:         shieldFromPayload(r.Shield),
 			})
 		}
 		applyCtx, cancelApply := context.WithTimeout(ctx, composeQueryTimeout)
@@ -1806,6 +1894,19 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 // spaces` correctly as long as there are no `#` mid-line. For values
 // containing `#` or backslashes, the manifest author is expected to
 // keep them out of vars (they'd be in compose_yaml instead).
+// shieldFromPayload maps the server's shield policy onto the proxy route.
+// A nil or empty policy stays nil: profile off renders no directives.
+func shieldFromPayload(s *sdkclient.RouteShield) *proxy.ShieldConfig {
+	if s == nil || s.Profile == "" {
+		return nil
+	}
+	mode := s.Mode
+	if mode == "" {
+		mode = "audit"
+	}
+	return &proxy.ShieldConfig{Profile: s.Profile, Mode: mode}
+}
+
 // basicAuthFromPayload maps the server's route credential gate onto the
 // proxy's. The payload carries only the bcrypt hash of the generated
 // password — the agent never sees the plaintext.

@@ -40,7 +40,7 @@ func ReadResolversAny(path string) ([]netip.Addr, error) {
 	if !info.Mode().IsRegular() || info.Size() > resolvConfLimit {
 		return nil, errors.New("resolver configuration is not a regular file")
 	}
-	raw, err := readStatusFile(path)
+	raw, err := readBoundedRegularFile(path, resolvConfLimit)
 	if err != nil || len(raw) > resolvConfLimit {
 		return nil, errors.New("resolver configuration unreadable")
 	}
@@ -106,8 +106,10 @@ func status6Path(stateDir string) (string, error) {
 }
 
 type statusFile struct {
-	V4 Status  `json:"v4"`
-	V6 *Status `json:"v6,omitempty"`
+	V4     Status  `json:"v4"`
+	V6     *Status `json:"v6,omitempty"`
+	V4Host *Status `json:"v4_host,omitempty"`
+	V6Host *Status `json:"v6_host,omitempty"`
 }
 
 func readStatus6(stateDir string) Status {
@@ -116,7 +118,7 @@ func readStatus6(stateDir string) Status {
 	if err != nil {
 		return s
 	}
-	raw, err := readStatusFile(path)
+	raw, err := readBoundedRegularFile(path, 8192)
 	if err != nil {
 		return s
 	}
@@ -128,6 +130,47 @@ func readStatus6(stateDir string) Status {
 }
 
 func writeStatus6(stateDir string, status Status) error {
+	return mutateStatus(stateDir, func(f *statusFile) { f.V6 = &status })
+}
+
+func readHostStatus4(stateDir string) Status {
+	return readSection(stateDir, func(f *statusFile) *Status { return f.V4Host })
+}
+
+func writeHostStatus4(stateDir string, status Status) error {
+	return mutateStatus(stateDir, func(f *statusFile) { f.V4Host = &status })
+}
+
+func readHostStatus6(stateDir string) Status {
+	return readSection(stateDir, func(f *statusFile) *Status { return f.V6Host })
+}
+
+func writeHostStatus6(stateDir string, status Status) error {
+	return mutateStatus(stateDir, func(f *statusFile) { f.V6Host = &status })
+}
+
+func readSection(stateDir string, get func(*statusFile) *Status) Status {
+	path, err := status6Path(stateDir)
+	if err != nil {
+		return Status{}
+	}
+	raw, err := readBoundedRegularFile(path, 8192)
+	if err != nil {
+		return Status{}
+	}
+	var f statusFile
+	if json.Unmarshal(raw, &f) != nil {
+		return Status{}
+	}
+	if s := get(&f); s != nil {
+		return *s
+	}
+	return Status{}
+}
+
+// mutateStatus rewrites egress.json atomically, preserving every section it
+// does not touch.
+func mutateStatus(stateDir string, mutate func(*statusFile)) error {
 	path, err := status6Path(stateDir)
 	if err != nil {
 		return err
@@ -136,15 +179,15 @@ func writeStatus6(stateDir string, status Status) error {
 		return errors.New("egress status path is not a regular file")
 	}
 	var f statusFile
-	if raw, err := readStatusFile(path); err == nil {
+	if raw, err := readBoundedRegularFile(path, 8192); err == nil {
 		_ = json.Unmarshal(raw, &f)
 	}
-	f.V6 = &status
+	mutate(&f)
 	raw, err := json.Marshal(f)
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(stateDir, ".egress6-*")
+	tmp, err := os.CreateTemp(stateDir, ".egress-*")
 	if err != nil {
 		return err
 	}
@@ -163,20 +206,20 @@ func writeStatus6(stateDir string, status Status) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// Status is private agent state, but stale/corrupt files must not consume unbounded memory.
-func readStatusFile(path string) ([]byte, error) {
+// Bound private state reads and reject symlinks/special files before parsing.
+func readBoundedRegularFile(path string, limit int64) ([]byte, error) {
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 8192 {
-		return nil, errors.New("invalid egress status file")
+	if err != nil || !info.Mode().IsRegular() || info.Size() > limit {
+		return nil, errors.New("invalid regular file")
 	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	raw, err := io.ReadAll(io.LimitReader(f, 8193))
-	if err != nil || len(raw) > 8192 {
-		return nil, errors.New("invalid egress status file")
+	raw, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil || int64(len(raw)) > limit {
+		return nil, errors.New("invalid regular file")
 	}
 	return raw, nil
 }

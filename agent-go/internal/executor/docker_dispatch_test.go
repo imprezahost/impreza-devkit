@@ -19,7 +19,7 @@ func TestDockerRejectsUnsupportedCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &Docker{StateDir: root}
-	for _, kind := range []sdkclient.CommandKind{sdkclient.CommandUpdate, sdkclient.CommandAgentUpgrade, "future_operation", "", "unknown\noperation"} {
+	for _, kind := range []sdkclient.CommandKind{sdkclient.CommandUpdate, "future_operation", "", "unknown\noperation"} {
 		t.Run(string(kind), func(t *testing.T) {
 			cmd := &sdkclient.PollCommand{ID: "cmd_fixture", Kind: kind, Payload: json.RawMessage(`{"secret":"must-not-appear"}`)}
 			result := d.Execute(context.Background(), cmd)
@@ -28,9 +28,6 @@ func TestDockerRejectsUnsupportedCommands(t *testing.T) {
 			}
 			if strings.Contains(result.Error, "\n") || strings.Contains(result.Error, "must-not-appear") || result.LogsTail != "" {
 				t.Fatalf("unsafe diagnostic: %+v", result)
-			}
-			if kind == sdkclient.CommandAgentUpgrade && !strings.Contains(result.Error, "portal") {
-				t.Fatal("missing update guidance")
 			}
 			data, err := os.ReadFile(marker)
 			if err != nil || string(data) != "application state" {
@@ -41,6 +38,21 @@ func TestDockerRejectsUnsupportedCommands(t *testing.T) {
 				t.Fatal("created unexpected state")
 			}
 		})
+	}
+}
+
+func TestDockerRejectsMalformedAgentUpgradeBeforeStaging(t *testing.T) {
+	root := t.TempDir()
+	d := &Docker{StateDir: root}
+	result := d.Execute(context.Background(), &sdkclient.PollCommand{
+		ID: "cmd_0123456789abcdef", Kind: sdkclient.CommandAgentUpgrade,
+		Payload: json.RawMessage(`{"protocol":"wrong","channel":"stable","target_version":"0.6.21"}`),
+	})
+	if result.Status != "failed" || !strings.Contains(result.Error, "Invalid agent update protocol") {
+		t.Fatalf("malformed upgrade was accepted: %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(root, "upgrade-jobs")); !os.IsNotExist(err) {
+		t.Fatal("malformed upgrade staged a helper")
 	}
 }
 

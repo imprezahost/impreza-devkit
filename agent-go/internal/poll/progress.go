@@ -36,6 +36,44 @@ func (p *Poller) resumeRecord(ctx context.Context) error {
 		_, _ = p.reportProgress(ctx, "resending_result")
 		return p.sendSavedResult(ctx)
 	}
+	if p.active.DomainHandover != nil {
+		d, ok := p.exec.(*executor.Docker)
+		if !ok {
+			return errors.New("domain handover recovery requires Docker executor")
+		}
+		result, err := d.RecoverDomainHandover(ctx, p.active.CommandID, p.active.DomainHandover)
+		if err != nil {
+			return err
+		}
+		result.ControlToken = p.active.ControlToken
+		p.active.Result = &result
+		if err := p.journal.save(p.active); err != nil {
+			return err
+		}
+		return p.sendSavedResult(ctx)
+	}
+	if p.active.Kind == sdkclient.CommandHostFailoverFence {
+		// A fence writes its persistent tombstone before touching routes or
+		// containers. Re-executing the SAME reviewed command after a crash is
+		// safe; the executor refuses an older or different epoch. Never turn
+		// this into a generic deploy preparation recovery.
+		if !validFencePayload(p.active.Payload) {
+			return errors.New("saved host failover fence cannot be verified")
+		}
+		cmd := &sdkclient.PollCommand{ID: p.active.CommandID, Kind: p.active.Kind,
+			ControlToken: p.active.ControlToken, ProgressProtocol: p.active.ProgressProtocol,
+			Payload: p.active.Payload}
+		result := p.exec.Execute(ctx, cmd)
+		if result.CommandID != cmd.ID {
+			return errors.New("fence executor returned a result for another command")
+		}
+		result.ControlToken = cmd.ControlToken
+		p.active.Result = &result
+		if err := p.journal.save(p.active); err != nil {
+			return fmt.Errorf("persist recovered fence result: %w", err)
+		}
+		return p.sendSavedResult(ctx)
+	}
 
 	if p.active.Replacement != nil {
 		return p.resumeReplacement(ctx)
@@ -101,6 +139,22 @@ func (p *Poller) resumeRecord(ctx context.Context) error {
 func (p *Poller) sendSavedResult(ctx context.Context) error {
 	for ctx.Err() == nil {
 		if err := p.client.AgentDeployResult(ctx, *p.active.Result); err == nil {
+			if p.active.Kind == sdkclient.CommandAgentUpgrade && p.active.Result.Status == "success" {
+				docker, ok := p.exec.(*executor.Docker)
+				if !ok {
+					return errors.New("managed update requires Docker executor")
+				}
+				if err := docker.StartAgentUpgrade(p.active.CommandID); err != nil {
+					return fmt.Errorf("start acknowledged managed agent update: %w", err)
+				}
+			}
+			if p.active.DomainHandover != nil && p.active.Result.DomainHandover != nil && p.active.Result.DomainHandover.Status != "recovery_required" {
+				if d, ok := p.exec.(*executor.Docker); ok {
+					if err := d.ForgetDomainHandover(p.active.CommandID); err != nil {
+						return err
+					}
+				}
+			}
 			p.forgetPreparationWork()
 			p.forgetReplacementWork()
 			if err := p.journal.clear(); err != nil {

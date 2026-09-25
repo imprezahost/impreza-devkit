@@ -3,6 +3,7 @@ package poll
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/config"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/executor"
@@ -20,6 +21,63 @@ import (
 	"time"
 )
 
+func TestDomainRecoveryPrecedesPrivacyGateAndFreshPolling(t *testing.T) {
+	var accepted atomic.Bool
+	var polls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/agent/deploy-result" {
+			var result sdkclient.DeployResult
+			if json.NewDecoder(r.Body).Decode(&result) != nil || result.ControlToken != "domain-control" || result.DomainHandover == nil || result.DomainHandover.Status != "unchanged" {
+				t.Error("invalid domain recovery receipt")
+			}
+			accepted.Store(true)
+			w.WriteHeader(204)
+			return
+		}
+		polls.Add(1)
+		w.WriteHeader(503)
+	}))
+	defer server.Close()
+	d := executor.NewDocker(t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	p, err := New(&config.Config{AgentID: "agt_fixture", AgentSecret: "fixture", ControlPlaneURL: server.URL}, d, "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := p.journal.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := &commandRecord{Version: 1, AgentID: "agt_fixture", ControlPlaneURL: server.URL, CommandID: "cmd_aaaaaaaaaaaaaaaa", Kind: sdkclient.CommandUpdateRoutes,
+		ControlToken: "domain-control", ProgressProtocol: sdkclient.DeploymentProgressProtocol, Step: "preparing",
+		DomainHandover: &executor.DomainHandoverIdentity{DeploymentID: "dpl_aaaaaaaaaaaaaaaa", Before: "before.example.test", After: "after.example.test"}}
+	if err := p.journal.save(record); err != nil {
+		t.Fatal(err)
+	}
+	lock.Close()
+	gateErr := errors.New("privacy gate refused by fixture")
+	p.BeforeCommands = func(context.Context) error {
+		if !accepted.Load() {
+			t.Error("privacy gate ran before domain recovery acknowledgement")
+		}
+		if saved, err := p.journal.load(); err != nil || saved != nil {
+			t.Error("acknowledged operation still pending")
+		}
+		if other, err := p.journal.open(); err == nil {
+			other.Close()
+			t.Error("privacy gate did not hold the operation lock")
+		}
+		return gateErr
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := p.Run(ctx); !errors.Is(err, gateErr) {
+		t.Fatal("privacy gate outcome lost", err)
+	}
+	if polls.Load() != 0 {
+		t.Fatal("fresh commands or heartbeat escaped an unverified privacy gate")
+	}
+}
+
 type receiptExecutor struct {
 	calls  atomic.Int32
 	status string
@@ -27,7 +85,93 @@ type receiptExecutor struct {
 
 func (e *receiptExecutor) Execute(ctx context.Context, c *sdkclient.PollCommand) sdkclient.DeployResult {
 	e.calls.Add(1)
+	if c.Kind == sdkclient.CommandHostFailoverFence {
+		var p sdkclient.HostFailoverFencePayload
+		if err := c.As(&p); err != nil {
+			return sdkclient.DeployResult{CommandID: c.ID, Status: "failed", Error: err.Error()}
+		}
+		return sdkclient.DeployResult{CommandID: c.ID, Status: "success", DeploymentID: p.DeploymentID,
+			HostFailoverFence: &sdkclient.HostFailoverFenceResult{DeploymentID: p.DeploymentID,
+				Hostname: p.Hostname, Epoch: p.Epoch, CutoverID: p.CutoverID,
+				RoutesRemoved: true, ContainersStopped: true}}
+	}
 	return sdkclient.DeployResult{CommandID: c.ID, Status: e.status, PreparationRestored: e.status == "cancelled", LogsTail: "saved exactly", AdminCredentials: map[string]string{"password": "private-fixture"}}
+}
+
+func TestInterruptedFenceReplaysOnlySavedReviewedPayload(t *testing.T) {
+	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	ctx2, stop2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop2()
+	var accepted atomic.Bool
+	var polls, posts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/agent/report":
+			w.WriteHeader(204)
+		case "/v1/agent/command-progress":
+			fmt.Fprint(w, `{"success":true,"data":{"command_id":"cmd_fence","terminal":false,"status":"in_progress"}}`)
+		case "/v1/agent/poll":
+			polls.Add(1)
+			stop2()
+			w.WriteHeader(204)
+		case "/v1/agent/deploy-result":
+			var result sdkclient.DeployResult
+			if err := json.NewDecoder(r.Body).Decode(&result); err != nil {
+				t.Error(err)
+			}
+			if result.ControlToken != "fence-control" || result.HostFailoverFence == nil ||
+				!result.HostFailoverFence.RoutesRemoved || !result.HostFailoverFence.ContainersStopped ||
+				result.HostFailoverFence.Epoch != 2 {
+				t.Errorf("invalid fence receipt: %+v", result)
+			}
+			posts.Add(1)
+			if !accepted.Load() {
+				w.WriteHeader(503)
+				stop()
+				return
+			}
+			w.WriteHeader(204)
+		default:
+			t.Errorf("unexpected request %s", r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	e := &receiptExecutor{}
+	p := testPoller(t, server.URL, dir, e)
+	payload := json.RawMessage(`{"deployment_id":"dpl_aaaaaaaaaaaaaaaa","hostname":"site-abcdef.imprezaapps.com","epoch":2,"cutover_id":"fov_aaaaaaaaaaaaaaaaaaaaaaaa"}`)
+	record := &commandRecord{Version: 1, AgentID: "agt_fixture", ControlPlaneURL: server.URL,
+		CommandID: "cmd_fence", Kind: sdkclient.CommandHostFailoverFence,
+		ControlToken: "fence-control", ProgressProtocol: sdkclient.DeploymentProgressProtocol,
+		Step: "preparing", Payload: payload}
+	lock, err := p.journal.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.journal.save(record); err != nil {
+		lock.Close()
+		t.Fatal(err)
+	}
+	lock.Close()
+	if err := p.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := p.journal.load()
+	if err != nil || saved == nil || saved.Result == nil || e.calls.Load() != 1 || posts.Load() != 1 || polls.Load() != 0 {
+		t.Fatalf("fence not durably retried: saved=%+v err=%v calls=%d posts=%d polls=%d", saved, err, e.calls.Load(), posts.Load(), polls.Load())
+	}
+	accepted.Store(true)
+	p2 := testPoller(t, server.URL, dir, e)
+	if err := p2.Run(ctx2); err != nil {
+		t.Fatal(err)
+	}
+	saved, err = p2.journal.load()
+	if err != nil || saved != nil || e.calls.Load() != 1 || posts.Load() != 2 || polls.Load() != 1 {
+		t.Fatalf("fence ACK replay mismatch: saved=%+v err=%v calls=%d posts=%d polls=%d", saved, err, e.calls.Load(), posts.Load(), polls.Load())
+	}
 }
 func testPoller(t *testing.T, url, dir string, e *receiptExecutor) *Poller {
 	t.Helper()

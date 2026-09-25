@@ -39,7 +39,7 @@ func TestPollReportsUnsupportedAndContinues(t *testing.T) {
 				w.WriteHeader(400)
 				return
 			}
-			expected := []string{executor.TorEgressProtocol, executor.TorDataOwnerProtocol, "onion-auth-v1", "onion-profile-v1", "onion-deploy-profile-v1", "onion-custody-v1", "onion-purge-v1", "onion-private-preview-v1", "startup-health-v1", "deploy-cancel-v1", "build-secrets-v1", "compose-source-files-v1", sdkclient.ServiceBindingProtocol, sdkclient.ServiceBindingRetirementProtocol, sdkclient.ServiceBindingGenerationProtocol, sdkclient.ServiceBindingGenerationRetirementProtocol, sdkclient.ServiceBindingRotationProtocol, sdkclient.ServiceBindingBackupProtocol, sdkclient.TrafficSwitchProtocol, sdkclient.PreviewBasicAuthProtocol, sdkclient.ServiceBindingRestoreProtocol, sdkclient.DeploymentProgressProtocol, sdkclient.MysqlServiceBindingGenerationProtocol, sdkclient.MysqlServiceBindingGenerationRetirementProtocol, sdkclient.MysqlServiceBindingRotationProtocol, sdkclient.MysqlServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingRestoreProtocol}
+			expected := []string{executor.TorEgressProtocol, executor.TorDataOwnerProtocol, "onion-auth-v1", "onion-profile-v1", "onion-deploy-profile-v1", "onion-custody-v1", "onion-purge-v1", "onion-private-preview-v1", "startup-health-v1", "deploy-cancel-v1", "build-secrets-v1", "compose-source-files-v1", sdkclient.ServiceBindingProtocol, sdkclient.ServiceBindingRetirementProtocol, sdkclient.ServiceBindingGenerationProtocol, sdkclient.ServiceBindingGenerationRetirementProtocol, sdkclient.ServiceBindingRotationProtocol, sdkclient.ServiceBindingBackupProtocol, sdkclient.TrafficSwitchProtocol, sdkclient.PreviewBasicAuthProtocol, sdkclient.ServiceBindingRestoreProtocol, sdkclient.DeploymentProgressProtocol, sdkclient.HostFailoverFenceProtocol, sdkclient.DomainHandoverProtocol, sdkclient.OnionTransferProtocol, sdkclient.HostFailoverReleaseProtocol, sdkclient.MysqlServiceBindingGenerationProtocol, sdkclient.MysqlServiceBindingGenerationRetirementProtocol, sdkclient.MysqlServiceBindingRotationProtocol, sdkclient.MysqlServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingRestoreProtocol, sdkclient.ShieldProtocol, sdkclient.ProxyMetricsProtocol, sdkclient.SandboxProtocol}
 			seen := map[string]bool{}
 			for _, capability := range request.Capabilities {
 				if seen[capability] {
@@ -120,7 +120,10 @@ func TestPollReportsUnsupportedAndContinues(t *testing.T) {
 			if result.CommandID != fmt.Sprintf("cmd_%d", i) || result.Status != "failed" {
 				t.Fatalf("incorrect report: %+v", result)
 			}
-			if i < 3 && !strings.Contains(result.Error, "Unsupported command") {
+			if i == 0 && !strings.Contains(result.Error, "Invalid agent update protocol") {
+				t.Fatalf("missing upgrade protocol refusal: %+v", result)
+			}
+			if i > 0 && i < 3 && !strings.Contains(result.Error, "Unsupported command") {
 				t.Fatalf("missing refusal: %+v", result)
 			}
 			if i == 3 && (strings.Contains(result.Error, "Unsupported command") || !strings.Contains(result.Error, "missing deployment_id")) {

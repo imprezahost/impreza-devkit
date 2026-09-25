@@ -21,7 +21,11 @@ type AppMetrics struct {
 	MemoryBytes      int64     `json:"memory_bytes"`
 	MemoryLimitBytes int64     `json:"memory_limit_bytes"`
 	VolumeBytes      int64     `json:"volume_bytes"`
-	CollectedAt      time.Time `json:"collected_at"`
+	// Proxy carries the deployment's proxy counters for the cycle. Nil on
+	// agents before the proxy-metrics middleware existed — old reports are
+	// unchanged on the wire.
+	Proxy            *AppProxyMetrics `json:"proxy,omitempty"`
+	CollectedAt      time.Time        `json:"collected_at"`
 }
 
 // AppMetricsReport is one metrics cycle for the whole agent.
@@ -44,4 +48,29 @@ func (c *Client) AgentMetricsReport(ctx context.Context, r AppMetricsReport) err
 		}
 	}
 	return c.Post(ctx, "/v1/agent/metrics", r, nil)
+}
+
+// ProxyMetricsProtocol versions the proxy request metrics the agent folds
+// into its per-minute report. Deltas per report cycle; the counters
+// behind them never carry a visitor identity — deployment id only.
+const ProxyMetricsProtocol = "proxy-metrics-v1"
+
+// AppProxyMetrics is one deployment's proxy counters for one cycle.
+type AppProxyMetrics struct {
+	Requests      int64   `json:"requests"`
+	Status1xx     int64   `json:"status_1xx,omitempty"`
+	Status2xx     int64   `json:"status_2xx,omitempty"`
+	Status3xx     int64   `json:"status_3xx,omitempty"`
+	Status4xx     int64   `json:"status_4xx,omitempty"`
+	Status5xx     int64   `json:"status_5xx,omitempty"`
+	LatencyCount  int64   `json:"latency_count,omitempty"`
+	LatencyMsSum  float64 `json:"latency_ms_sum,omitempty"`
+	LatencyP50Ms  float64 `json:"latency_p50_ms,omitempty"`
+	LatencyP95Ms  float64 `json:"latency_p95_ms,omitempty"`
+	LatencyP99Ms  float64 `json:"latency_p99_ms,omitempty"`
+	BytesIn       int64   `json:"bytes_in,omitempty"`
+	BytesOut      int64   `json:"bytes_out,omitempty"`
+	ShieldChallenges int64 `json:"shield_challenges,omitempty"`
+	ShieldPassed     int64 `json:"shield_passed,omitempty"`
+	ShieldRateLimited int64 `json:"shield_rate_limited,omitempty"`
 }

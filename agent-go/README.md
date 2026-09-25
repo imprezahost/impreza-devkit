@@ -107,7 +107,9 @@ Agents 0.6.1 and later honor the full Git commit supplied by a push webhook or m
 
 ## Unsupported commands
 
-Agents 0.6.2 and later reject unsupported command kinds with status failed and an explicit diagnostic, instead of reporting simulated success. No operation is performed and the polling loop continues with subsequent commands. Queued agent_upgrade remains unsupported; use the customer-initiated update command. A failed command report does not itself mean the running application is unhealthy.
+Agents 0.6.2 and later reject unsupported command kinds with status failed and an explicit diagnostic, instead of reporting simulated success. No operation is performed and the polling loop continues with subsequent commands. A failed command report does not itself mean the running application is unhealthy.
+
+Agent 0.6.22 adds `agent-upgrade-v1`. An explicit customer request from the portal, API or MCP stages the updater bundled with the agent; only after the control plane acknowledges the job does a separate systemd unit run it. The unit requires a signed channel manifest and the exact version requested, then the next heartbeat verifies the result. Hosts without the prerequisites do not advertise the capability. Agents before 0.6.22 must be updated once with the manual update command above.
 
 
 ## Required healthy startup

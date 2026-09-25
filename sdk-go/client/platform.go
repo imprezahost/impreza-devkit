@@ -72,7 +72,23 @@ type ManifestRuntime struct {
 	DataDir                          *DataDirConfig                `json:"data_dir,omitempty"`
 	Build                            *BuildContext                 `json:"build,omitempty"`
 	TorEgress                        bool                          `json:"tor_egress,omitempty"`
+	// Sandbox (capability agent-sandbox-v1) opts the deployment
+	// into the ephemeral confined runtime class.
+	Sandbox                          *SandboxSpec                  `json:"sandbox,omitempty"`
 }
+
+// SandboxSpec is the manifest's runtime.sandbox block: the wall-clock
+// budget that defines the class plus app-specific ephemeral mounts.
+type SandboxSpec struct {
+	MaxLifetimeMinutes int `json:"max_lifetime_minutes,omitempty"`
+	// ExtraTmpfs lists additional in-container paths (absolute, no "..")
+	// mounted as tmpfs for apps whose writable state lives outside /tmp and
+	// /run (e.g. /var/cache/nginx). Always ephemeral — never a host volume.
+	ExtraTmpfs []string `json:"extra_tmpfs,omitempty"`
+}
+
+// SandboxProtocol is the poll capability for the sandbox runtime class.
+const SandboxProtocol = "agent-sandbox-v1"
 
 // BuildContext tells the agent to fetch + extract a build context
 // tarball before `docker compose up`. Used by Phase 12 Iteration 3
@@ -216,7 +232,25 @@ type Route struct {
 	// auth; the server sends only the bcrypt hash of the generated
 	// password — the plaintext exists once, in the creation response.
 	BasicAuth *RouteBasicAuth `json:"basic_auth,omitempty"`
+	// Shield carries the deployment's Impreza Shield policy onto
+	// every route of that deployment. Nil = profile off.
+	Shield *RouteShield `json:"shield,omitempty"`
 }
+
+// RouteShield is the per-deployment Impreza Shield policy rendered by the
+// agent's proxy: a WAF profile plus the engine mode. The server only sets
+// Mode=enforce after the tenant's false-positive review (decision 7.4);
+// Mode=audit renders DetectionOnly and never blocks.
+type RouteShield struct {
+	Profile string `json:"profile"`            // standard | hardened | max
+	Mode    string `json:"mode,omitempty"`     // audit (default) | enforce
+}
+
+// ShieldProtocol is the poll capability an agent announces when its proxy
+// build bundles the Shield stack (Coraza WAF + PoW + rate limit). The
+// server never dispatches shield routes to an agent that does not announce
+// it — an agent without the modules would fail every reload.
+const ShieldProtocol = "shield-v1"
 
 // RouteTLS configures the certificate provisioning for the hostname.
 //

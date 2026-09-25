@@ -36,3 +36,29 @@ func TestUninstallMissingAppStillRequiresOnionRecovery(t *testing.T) {
 		t.Fatal("uninstall discarded the pending recovery record", err)
 	}
 }
+
+func TestInternalJobCleanupDoesNotTouchOnionIdentity(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	d := NewDocker(t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d.Proxy = nil
+	if err := os.MkdirAll(d.Tor.StateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	journal := filepath.Join(d.Tor.StateDir, "policy-change.json")
+	if err := os.WriteFile(journal, []byte("pending"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, prefix := range []string{"bkpjob", "rstjob", "tskjob", "rdjob", "clijob", "pitrjob"} {
+		if err := d.removeDeploymentExposure(context.Background(), prefix+"_"+strings.Repeat("a", 16)); err != nil {
+			t.Fatalf("internal %s cleanup contacted Tor: %v", prefix, err)
+		}
+	}
+	for _, id := range []string{"bkpjob_a", "bkpjob_" + strings.Repeat("a", 16) + "/other", "dpl_" + strings.Repeat("a", 16)} {
+		if err := d.removeDeploymentExposure(context.Background(), id); err == nil {
+			t.Fatalf("invalid ID or real app bypassed onion recovery: %s", id)
+		}
+	}
+	if raw, err := os.ReadFile(journal); err != nil || string(raw) != "pending" {
+		t.Fatal("internal cleanup changed onion recovery state", err)
+	}
+}

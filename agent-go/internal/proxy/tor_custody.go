@@ -25,12 +25,8 @@ package proxy
 
 import (
 	"bytes"
-	"crypto/ecdh"
-	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base32"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,7 +34,6 @@ import (
 	"strings"
 
 	"filippo.io/edwards25519"
-	"golang.org/x/crypto/nacl/box"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -224,17 +219,6 @@ func (t *Tor) ExportOnionKey(deploymentID string, recipientPub *[32]byte) ([]byt
 	if !onionDeploymentID.MatchString(deploymentID) || recipientPub == nil {
 		return nil, "", fmt.Errorf("invalid export identity")
 	}
-	recipient, err := ecdh.X25519().NewPublicKey(recipientPub[:])
-	if err != nil {
-		return nil, "", fmt.Errorf("invalid export recipient")
-	}
-	probe, err := ecdh.X25519().GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, "", err
-	}
-	if _, err := probe.ECDH(recipient); err != nil {
-		return nil, "", fmt.Errorf("invalid export recipient")
-	}
 	svcDir, err := t.serviceDir(deploymentID)
 	if err != nil {
 		return nil, "", err
@@ -260,18 +244,9 @@ func (t *Tor) ExportOnionKey(deploymentID string, recipientPub *[32]byte) ([]byt
 	if err != nil {
 		return nil, "", err
 	}
-	bundle, err := json.Marshal(struct {
-		Version int    `json:"version"`
-		Onion   string `json:"onion"`
-		Secret  string `json:"secret_key_b64"`
-		Public  string `json:"public_key_b64"`
-	}{1, addr, base64.StdEncoding.EncodeToString(secret), base64.StdEncoding.EncodeToString(public)})
+	sealed, err := sealOnionKeyBundle(secret, public, addr, recipientPub)
 	if err != nil {
 		return nil, "", err
-	}
-	sealed, err := box.SealAnonymous(nil, bundle, recipientPub, rand.Reader)
-	if err != nil {
-		return nil, "", fmt.Errorf("seal onion key: %w", err)
 	}
 	t.Log.Info("proxy/tor: hidden-service key exported (sealed)", "deployment_id", deploymentID, "onion", addr)
 	return sealed, addr, nil

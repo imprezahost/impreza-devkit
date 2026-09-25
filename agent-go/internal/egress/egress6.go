@@ -15,18 +15,23 @@ package egress
 //   - DNS to the host's own IPv6 resolvers is excepted before the blocks,
 //     mirroring v4, so hosts whose v6 resolver is ULA keep working.
 //   - SMTP and the per-source rate limit apply with the same parameters.
-//   - Only traffic received from a bridge port is filtered. Non-bridge
-//     ingress and traffic staying on one bridge retain Docker's policy.
+//   - Interface scope: the v4 baseline trusts Docker's default bridge
+//     names; for v6 the same names are used, plus the RETURN for
+//     same-bridge frames. Custom bridges are covered by the physdev
+//     RETURN at the top: frames that never leave a bridge are internal
+//     and return; frames that do leave hit the blocked list regardless
+//     of which bridge originated them. That is the bridge-agnostic half;
+//     the physdev rule was already in the v4 chain for the same reason —
+//     here it is the ONLY bridge rule, so custom networks are filtered
+//     by destination rather than by interface name.
 
 import (
 	"context"
 	"errors"
 	"os/exec"
-	"strings"
 )
 
-// Rules6 filters only bridge-originated forwarding, including custom bridge names.
-// Inbound traffic to published container ports must retain Docker's policy.
+// Rules6 returns the exact v6 chain content, in order.
 func Rules6(resolvers6 []string) [][]string {
 	rules := [][]string{
 		{"-m", "physdev", "!", "--physdev-in", "+", "-j", "RETURN"},
@@ -81,65 +86,51 @@ func realRunner6(ctx context.Context, args ...string) ([]byte, error) {
 	return out, nil
 }
 
+// ip6tablesAvailable reports whether the binary exists; a missing binary or
+// a kernel without ip6tables support is an unavailable, not an error.
+func ip6tablesAvailable() bool {
+	out, err := exec.Command("sh", "-c", "command -v ip6tables >/dev/null 2>&1 && ip6tables -L DOCKER-USER >/dev/null 2>&1").CombinedOutput()
+	_ = out
+	return err == nil
+}
+
 // apply6 mirrors apply() for the v6 family. The status shares the same file
 // with a v6 section so operators read one document.
 func apply6(ctx context.Context, run commandRunner, stateDir string, resolvers6 []string) (Status, error) {
-	wanted := Rules6(resolvers6)
-	status := Status{Rules: len(wanted), Resolvers: len(resolvers6), Wanted: fingerprint(wanted)}
-	previous := readStatus6(stateDir)
-	current, err := run(ctx, "-S", Chain)
-	if err != nil {
-		if _, err = run(ctx, "-N", Chain); err != nil {
-			return status, errors.New("egress v6 chain cannot be created")
-		}
-		current = nil
-	}
-	parent, err := run(ctx, "-S", ParentChain)
-	if err != nil {
-		return status, errors.New("docker v6 user chain unavailable")
-	}
-	linked := strings.Contains(string(parent), "-A "+ParentChain+" -j "+Chain+"\n") || strings.HasSuffix(strings.TrimRight(string(parent), "\n"), "-A "+ParentChain+" -j "+Chain)
-	h := sha256Sum(current)
-	if linked && len(current) != 0 && previous.Applied && previous.Wanted == status.Wanted && previous.Fingerprint == h {
-		status.Applied = true
-		status.Fingerprint = h
-		return status, nil
-	}
-	if len(current) != 0 {
-		if _, err = run(ctx, "-F", Chain); err != nil {
-			return status, errors.New("egress v6 chain cannot be reconciled")
-		}
-	}
-	for _, rule := range wanted {
-		if _, err = run(ctx, append([]string{"-A", Chain}, rule...)...); err != nil {
-			return status, errors.New("egress v6 baseline rule cannot be installed")
-		}
-	}
-	current, err = run(ctx, "-S", Chain)
-	if err != nil {
-		return status, errors.New("egress v6 chain cannot be verified after apply")
-	}
-	status.Fingerprint = sha256Sum(current)
-	if !linked {
-		if _, err = run(ctx, "-I", ParentChain, "1", "-j", Chain); err != nil {
-			return status, errors.New("egress v6 chain cannot be linked into the docker forwarding path")
-		}
-	}
-	status.Applied = true
-	return status, nil
+	return reconcileChain(ctx, run, Chain, ParentChain, "egress v6", Rules6(resolvers6), len(resolvers6), readStatus6(stateDir))
 }
 
-// Apply6 installs or verifies the v6 baseline. Unavailable ip6tables is
-// recorded and returned as an advisory error; the caller keeps the agent running.
-func Apply6(ctx context.Context, stateDir string) error {
-	if _, err := realRunner6(ctx, "-S", ParentChain); err != nil {
-		statusErr := recordStatus6(stateDir, Status{Applied: false, Error: "ip6tables or DOCKER-USER (v6) unavailable on this host"})
-		if statusErr != nil {
-			return statusErr
-		}
-		return errors.New("IPv6 baseline unavailable; recorded without stopping the agent")
+// HostRules6 returns the exact v6 INPUT chain content. Same scoping as v4;
+// ICMPv6 carries NDP/RS in v6 and must stay open for the bridge to work.
+func HostRules6() [][]string {
+	var rules [][]string
+	for _, iface := range []string{"docker0", "br+"} {
+		rules = append(rules,
+			[]string{"-i", iface, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"},
+			[]string{"-i", iface, "-p", "ipv6-icmp", "-j", "RETURN"},
+			[]string{"-i", iface, "-j", "DROP"},
+		)
 	}
-	return applyAll6(ctx, realRunner6, "/etc/resolv.conf", stateDir)
+	return rules
+}
+
+func applyHost6(ctx context.Context, run commandRunner, stateDir string) (Status, error) {
+	return reconcileChain(ctx, run, HostChain, "INPUT", "egress v6 host", HostRules6(), 0, readHostStatus6(stateDir))
+}
+
+// Apply6 installs or verifies the v6 baseline (FORWARD and host INPUT).
+// Unavailable ip6tables is recorded and returns nil (not an error): the v4
+// baseline governs and the status documents the v6 gap.
+func Apply6(ctx context.Context, stateDir string) error {
+	if !ip6tablesAvailable() {
+		unavailable := Status{Applied: false, Error: "ip6tables or DOCKER-USER (v6) unavailable on this host"}
+		errF := recordStatus6(stateDir, unavailable)
+		errH := recordHostStatus6(stateDir, unavailable)
+		return errors.Join(errF, errH)
+	}
+	errForward := applyAll6(ctx, realRunner6, "/etc/resolv.conf", stateDir)
+	errHost := applyHostAll6(ctx, realRunner6, stateDir)
+	return errors.Join(errForward, errHost)
 }
 
 func applyAll6(ctx context.Context, run commandRunner, resolvPath, stateDir string) error {
@@ -156,7 +147,25 @@ func applyAll6(ctx context.Context, run commandRunner, resolvPath, stateDir stri
 	return err
 }
 
+func applyHostAll6(ctx context.Context, run commandRunner, stateDir string) error {
+	status, err := applyHost6(ctx, run, stateDir)
+	if err != nil {
+		status.Applied = false
+		status.Error = err.Error()
+	}
+	status.LastAttempt = nowRFC3339()
+	if writeErr := writeHostStatus6(stateDir, status); writeErr != nil && err == nil {
+		return errors.New("egress v6 host status could not be recorded")
+	}
+	return err
+}
+
 func recordStatus6(stateDir string, s Status) error {
 	s.LastAttempt = nowRFC3339()
 	return writeStatus6(stateDir, s)
+}
+
+func recordHostStatus6(stateDir string, s Status) error {
+	s.LastAttempt = nowRFC3339()
+	return writeHostStatus6(stateDir, s)
 }

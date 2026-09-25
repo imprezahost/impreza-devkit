@@ -9,16 +9,57 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 )
+
+var (
+	journalFenceDeployment = regexp.MustCompile(`^dpl_(?:[a-f0-9]{16}|[a-f0-9]{24})$`)
+	journalFenceCutover    = regexp.MustCompile(`^fov_[a-f0-9]{24}$`)
+	journalFenceOnion      = regexp.MustCompile(`^[a-z2-7]{56}\.onion$`)
+	// Standard base64 of a 32-byte X25519 public key: never secret material.
+	journalFenceRecipient = regexp.MustCompile(`^[A-Za-z0-9+/]{43}=$`)
+)
+
+func validFencePayload(raw json.RawMessage) bool {
+	if len(raw) == 0 || len(raw) > 1024 || !json.Valid(raw) {
+		return false
+	}
+	var keys map[string]json.RawMessage
+	var p sdkclient.HostFailoverFencePayload
+	if json.Unmarshal(raw, &keys) != nil || (len(keys) != 4 && len(keys) != 6) ||
+		json.Unmarshal(raw, &p) != nil || !journalFenceDeployment.MatchString(p.DeploymentID) ||
+		!journalFenceCutover.MatchString(p.CutoverID) || p.Epoch < 2 ||
+		len(p.Hostname) < 4 || len(p.Hostname) > 253 {
+		return false
+	}
+	required := []string{"deployment_id", "hostname", "epoch", "cutover_id"}
+	if len(keys) == 6 {
+		// onion-transfer-v1 adds the withdrawn address and the target's public recipient.
+		if !journalFenceOnion.MatchString(p.Onion) || !journalFenceRecipient.MatchString(p.OnionRecipient) {
+			return false
+		}
+		required = append(required, "onion", "onion_recipient")
+	}
+	for _, key := range required {
+		if _, ok := keys[key]; !ok {
+			return false
+		}
+	}
+	return true
+}
 
 // Only one outstanding controlled operation is allowed. The receipt can contain
 // generated credentials; keep it private and delete only after acknowledgement.
 type commandRecord struct {
-	Replacement      *executor.ReplacementWork     `json:"replacement,omitempty"`
-	Version          int                           `json:"version"`
-	AgentID          string                        `json:"agent_id"`
-	ControlPlaneURL  string                        `json:"control_plane_url"`
-	CommandID        string                        `json:"command_id"`
+	DomainHandover  *executor.DomainHandoverIdentity `json:"domain_handover,omitempty"`
+	Replacement     *executor.ReplacementWork        `json:"replacement,omitempty"`
+	Version         int                              `json:"version"`
+	AgentID         string                           `json:"agent_id"`
+	ControlPlaneURL string                           `json:"control_plane_url"`
+	CommandID       string                           `json:"command_id"`
+	Kind            sdkclient.CommandKind            `json:"kind,omitempty"`
+	// Only the secret-free failover fence payload may be retained for replay.
+	Payload          json.RawMessage               `json:"payload,omitempty"`
 	ControlToken     string                        `json:"control_token"`
 	ProgressProtocol string                        `json:"progress_protocol"`
 	Step             string                        `json:"step"`
@@ -87,6 +128,16 @@ func (j *commandJournal) load() (*commandRecord, error) {
 	}
 	if record.Version != 1 || record.AgentID == "" || record.ControlPlaneURL == "" || record.CommandID == "" || record.ControlToken == "" || record.ProgressProtocol != sdkclient.DeploymentProgressProtocol {
 		return nil, errors.New("operation journal identity or protocol is invalid")
+	}
+	if record.Kind == sdkclient.CommandHostFailoverFence {
+		if !validFencePayload(record.Payload) {
+			return nil, errors.New("invalid saved failover fence payload")
+		}
+	} else if len(record.Payload) != 0 {
+		return nil, errors.New("unexpected operation payload in journal")
+	}
+	if record.DomainHandover != nil && (record.Kind != sdkclient.CommandUpdateRoutes || !record.DomainHandover.Valid()) {
+		return nil, errors.New("invalid domain handover recovery identity")
 	}
 	if record.Preparation != nil {
 		if err := record.Preparation.Validate(); err != nil {

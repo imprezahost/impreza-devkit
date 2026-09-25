@@ -25,6 +25,13 @@ func (d *Docker) CollectAppMetrics(ctx context.Context) *sdkclient.AppMetricsRep
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	sizes := d.hostVolumeSizes(ctx)
+	// Proxy counters: deployment-labeled deltas scraped from the
+	// proxy container's loopback admin endpoint. Absent on old containers —
+	// degrade silently.
+	var proxyDeltas map[string]*sdkclient.AppProxyMetrics
+	if d.Proxy != nil {
+		proxyDeltas = d.Proxy.ScrapeMetrics(ctx)
+	}
 	dir, err := os.Open(filepath.Join(d.StateDir, "apps"))
 	if err != nil {
 		return report
@@ -42,7 +49,11 @@ func (d *Docker) CollectAppMetrics(ctx context.Context) *sdkclient.AppMetricsRep
 			break
 		}
 		sampleCtx, stop := context.WithTimeout(ctx, 4*time.Second)
-		report.Apps = append(report.Apps, d.collectAppMetrics(sampleCtx, entry.Name(), sizes))
+		point := d.collectAppMetrics(sampleCtx, entry.Name(), sizes)
+		if delta, ok := proxyDeltas[entry.Name()]; ok {
+			point.Proxy = delta
+		}
+		report.Apps = append(report.Apps, point)
 		stop()
 	}
 	return report

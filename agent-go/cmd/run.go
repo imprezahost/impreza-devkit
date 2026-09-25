@@ -74,10 +74,11 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	exec := executor.NewDocker(stateDir, log)
 
 	// S4 egress baseline: reconcile the agent-owned IMPREZA-EGRESS chain under
-	// DOCKER-USER. Fail-open on purpose — an egress firewall must never take
-	// deploys down; every attempt is recorded in <stateDir>/egress.json and the
-	// unit retries on each start (the boot window between Docker start and
-	// agent start is a documented residual limit of this phase).
+	// DOCKER-USER and IMPREZA-EGRESS-HOST under INPUT (both families). Fail-open
+	// on purpose — an egress firewall must never take deploys down; every
+	// attempt is recorded in <stateDir>/egress.json and the unit retries on each
+	// start (the boot window between Docker start and agent start is a
+	// documented residual limit of this phase).
 	egressCtx, egressCancel := context.WithTimeout(cmd.Context(), 20*time.Second)
 	if err := egress.Apply(egressCtx, stateDir); err != nil {
 		log.Warn("egress baseline not applied; tenant egress remains unrestricted for this run",
@@ -92,6 +93,33 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	}
 
 	egressCancel()
+
+	// Recovery half of the S4 contract: a Docker daemon upgrade or restart can
+	// recreate DOCKER-USER and drop our link while the agent keeps running.
+	// The apply above is idempotent and cheap when nothing changed (chain
+	// dumps compared against the recorded fingerprint), so a periodic
+	// reconcile closes that window without rewriting stable rules.
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-cmd.Context().Done():
+				return
+			case <-ticker.C:
+				ctx, cancel := context.WithTimeout(cmd.Context(), 20*time.Second)
+				if err := egress.Apply(ctx, stateDir); err != nil {
+					log.Warn("egress baseline reconcile failed; previous rules remain in force",
+						"err", err)
+				}
+				if err := egress.Apply6(ctx, stateDir); err != nil {
+					log.Warn("egress v6 baseline reconcile failed; previous rules remain in force",
+						"err", err)
+				}
+				cancel()
+			}
+		}
+	}()
 
 	// Phase 9.11d v2: hand the agent's own credentials to the Caddy
 	// sidecar's env-file. The bundled caddy-dns-impreza plugin uses
@@ -109,42 +137,49 @@ func runRun(cmd *cobra.Command, _ []string) error {
 		credCancel()
 	}
 
-	// Reconcile privacy boundaries before accepting commands on upgraded hosts.
-	if exec.Tor != nil && exec.Proxy != nil {
-		if entries, err := os.ReadDir(filepath.Join(stateDir, "proxy", "tor", "services")); err == nil && len(entries) > 0 {
-			torCtx, cancelTor := context.WithTimeout(cmd.Context(), 3*time.Minute)
-			err = exec.Proxy.EnsureNetwork(torCtx)
-			if err == nil {
-				err = exec.Proxy.EnsureRunning(torCtx)
-			}
-			if err == nil {
-				err = exec.Tor.RecoverOnionRotation(torCtx, exec.Proxy)
-			}
-			if err == nil {
-				err = exec.Proxy.ReconcileOnionListeners(torCtx)
-			}
-			if err == nil {
-				err = exec.Tor.RecoverOnionPolicy(torCtx)
-			}
-			if err == nil {
-				err = exec.Tor.RegenerateTorrc()
-			}
-			if err == nil {
-				err = exec.Tor.EnsureRunning(torCtx)
-			}
-			if err == nil {
-				err = exec.Tor.Reload(torCtx)
-			}
-			cancelTor()
-			if err != nil {
-				return fmt.Errorf("hidden-service security reconciliation failed: %w", err)
-			}
-		}
-	}
-
 	poller, err := poll.New(cfg, exec, version, log)
 	if err != nil {
 		return err
+	}
+
+	poller.BeforeCommands = func(startupCtx context.Context) error {
+		if err := exec.ReconcileFailoverFences(startupCtx); err != nil {
+			return fmt.Errorf("failover fence reconciliation failed: %w", err)
+		}
+		// Reconcile privacy boundaries before accepting commands on upgraded hosts.
+		if exec.Tor != nil && exec.Proxy != nil {
+			if entries, err := os.ReadDir(filepath.Join(stateDir, "proxy", "tor", "services")); err == nil && len(entries) > 0 {
+				torCtx, cancelTor := context.WithTimeout(startupCtx, 3*time.Minute)
+				err = exec.Proxy.EnsureNetwork(torCtx)
+				if err == nil {
+					err = exec.Proxy.EnsureRunning(torCtx)
+				}
+				if err == nil {
+					err = exec.Tor.RecoverOnionRotation(torCtx, exec.Proxy)
+				}
+				if err == nil {
+					err = exec.Proxy.ReconcileOnionListeners(torCtx)
+				}
+				if err == nil {
+					err = exec.Tor.RecoverOnionPolicy(torCtx)
+				}
+				if err == nil {
+					err = exec.Tor.RegenerateTorrc()
+				}
+				if err == nil {
+					err = exec.Tor.EnsureRunning(torCtx)
+				}
+				if err == nil {
+					err = exec.Tor.Reload(torCtx)
+				}
+				cancelTor()
+				if err != nil {
+					return fmt.Errorf("hidden-service security reconciliation failed: %w", err)
+				}
+			}
+		}
+
+		return nil
 	}
 
 	// Trap SIGTERM (systemd stop) + SIGINT (Ctrl-C) so the loop

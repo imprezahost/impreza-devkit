@@ -6,6 +6,7 @@ package poll
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,15 +16,18 @@ import (
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/config"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/executor"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/sysload"
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/upgrade"
 	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 )
 
 // Poller owns the long-poll loop. Build one via New and call Run.
 type Poller struct {
-	cfg    *config.Config
-	client *sdkclient.Client
-	exec   executor.Executor
-	log    *slog.Logger
+	// Runs under the operation lock after domain recovery and before fresh commands.
+	BeforeCommands func(context.Context) error
+	cfg            *config.Config
+	client         *sdkclient.Client
+	exec           executor.Executor
+	log            *slog.Logger
 
 	// Static metadata included in every heartbeat. Set at construction.
 	agentVersion string
@@ -91,6 +95,22 @@ func (p *Poller) Run(ctx context.Context) error {
 		}
 		p.active = record
 	}
+	if p.active != nil && p.active.DomainHandover != nil {
+		if err := p.resumeRecord(ctx); err != nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		if p.active != nil {
+			return errors.New("domain recovery remains unacknowledged")
+		}
+	}
+	if p.BeforeCommands != nil {
+		if err := p.BeforeCommands(ctx); err != nil {
+			return err
+		}
+	}
 	hbDone := make(chan struct{})
 	go func() {
 		defer close(hbDone)
@@ -122,9 +142,15 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 			return err
 		}
 	}
-	capabilities := []string{executor.TorEgressProtocol, executor.TorDataOwnerProtocol, "onion-auth-v1", "onion-profile-v1", "onion-deploy-profile-v1", "onion-custody-v1", "onion-purge-v1", "onion-private-preview-v1", "startup-health-v1", "deploy-cancel-v1", "build-secrets-v1", "compose-source-files-v1", sdkclient.ServiceBindingProtocol, sdkclient.ServiceBindingRetirementProtocol, sdkclient.ServiceBindingGenerationProtocol, sdkclient.ServiceBindingGenerationRetirementProtocol, sdkclient.ServiceBindingRotationProtocol, sdkclient.ServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingGenerationProtocol, sdkclient.MysqlServiceBindingGenerationRetirementProtocol, sdkclient.MysqlServiceBindingRotationProtocol, sdkclient.MysqlServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingRestoreProtocol, sdkclient.TrafficSwitchProtocol, sdkclient.PreviewBasicAuthProtocol, sdkclient.ServiceBindingRestoreProtocol}
+	capabilities := []string{executor.TorEgressProtocol, executor.TorDataOwnerProtocol, "onion-auth-v1", "onion-profile-v1", "onion-deploy-profile-v1", "onion-custody-v1", "onion-purge-v1", "onion-private-preview-v1", "startup-health-v1", "deploy-cancel-v1", "build-secrets-v1", "compose-source-files-v1", sdkclient.ServiceBindingProtocol, sdkclient.ServiceBindingRetirementProtocol, sdkclient.ServiceBindingGenerationProtocol, sdkclient.ServiceBindingGenerationRetirementProtocol, sdkclient.ServiceBindingRotationProtocol, sdkclient.ServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingGenerationProtocol, sdkclient.MysqlServiceBindingGenerationRetirementProtocol, sdkclient.MysqlServiceBindingRotationProtocol, sdkclient.MysqlServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingRestoreProtocol, sdkclient.TrafficSwitchProtocol, sdkclient.PreviewBasicAuthProtocol, sdkclient.ServiceBindingRestoreProtocol, sdkclient.ShieldProtocol, sdkclient.ProxyMetricsProtocol, sdkclient.SandboxProtocol}
 	if p.journal != nil {
 		capabilities = append(capabilities, sdkclient.DeploymentProgressProtocol)
+		if _, ok := p.exec.(*executor.Docker); ok {
+			capabilities = append(capabilities, sdkclient.HostFailoverFenceProtocol, sdkclient.DomainHandoverProtocol, sdkclient.OnionTransferProtocol, sdkclient.HostFailoverReleaseProtocol)
+			if upgrade.Available() {
+				capabilities = append(capabilities, upgrade.Protocol)
+			}
+		}
 	}
 	backoff := time.Duration(p.cfg.BackoffMinSeconds) * time.Second
 	maxBackoff := time.Duration(p.cfg.BackoffMaxSeconds) * time.Second
@@ -161,17 +187,42 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 		// Successful poll — reset the backoff window.
 		backoff = time.Duration(p.cfg.BackoffMinSeconds) * time.Second
 
+		// Enforce sandbox wall-clock budgets between commands.
+		if reconciler, ok := p.exec.(interface {
+			ReconcileSandbox(context.Context)
+		}); ok {
+			reconciler.ReconcileSandbox(ctx)
+		}
+
 		if !ok {
 			// 204 / empty — reconnect immediately.
 			continue
 		}
 
 		p.log.Info("poll: received command", "id", cmd.ID, "kind", cmd.Kind)
+		if cmd.Kind == sdkclient.CommandHostFailoverFence &&
+			(cmd.ProgressProtocol != sdkclient.DeploymentProgressProtocol || cmd.ControlToken == "" ||
+				p.journal == nil || !validFencePayload(cmd.Payload)) {
+			return errors.New("host failover fence requires a valid journaled command")
+		}
 		if cmd.ResumeOnly || cmd.ProgressProtocol != "" {
 			if cmd.ProgressProtocol != sdkclient.DeploymentProgressProtocol || cmd.ControlToken == "" || p.journal == nil {
 				return errors.New("unsupported operation recovery protocol")
 			}
-			p.active = &commandRecord{Version: 1, AgentID: p.cfg.AgentID, ControlPlaneURL: p.cfg.ControlPlaneURL, CommandID: cmd.ID, ControlToken: cmd.ControlToken, ProgressProtocol: cmd.ProgressProtocol, Step: "preparing"}
+			p.active = &commandRecord{Version: 1, AgentID: p.cfg.AgentID, ControlPlaneURL: p.cfg.ControlPlaneURL, CommandID: cmd.ID, Kind: cmd.Kind, ControlToken: cmd.ControlToken, ProgressProtocol: cmd.ProgressProtocol, Step: "preparing"}
+			if cmd.Kind == sdkclient.CommandHostFailoverFence {
+				p.active.Payload = append([]byte(nil), cmd.Payload...)
+			}
+
+			if cmd.Kind == sdkclient.CommandUpdateRoutes {
+				var route sdkclient.UpdateRoutesPayload
+				if json.Unmarshal(cmd.Payload, &route) == nil && route.DomainHandover != nil {
+					p.active.DomainHandover = &executor.DomainHandoverIdentity{DeploymentID: route.DeploymentID, Before: route.DomainHandover.Before, After: route.DomainHandover.After}
+					if !p.active.DomainHandover.Valid() {
+						return errors.New("invalid domain handover identity")
+					}
+				}
+			}
 
 			if !cmd.ResumeOnly && cmd.Kind == sdkclient.CommandDeploy {
 				if _, ok := p.exec.(*executor.Docker); ok {
@@ -192,6 +243,13 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 		result := p.exec.Execute(ctx, cmd)
 		if p.journalErr != nil {
 			return fmt.Errorf("preparation journal failed; execution stopped: %w", p.journalErr)
+		}
+		if p.active != nil && p.active.DomainHandover != nil && result.DomainHandover != nil && result.DomainHandover.Status == "recovery_required" {
+			p.observeProgress(ctx, cmd, "interrupted")
+			if err := p.resumeRecord(ctx); err != nil {
+				return err
+			}
+			continue
 		}
 		if result.Status == executor.PreparationPendingStatus {
 			if p.active == nil {

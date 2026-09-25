@@ -127,3 +127,65 @@ func TestApply6Reconcile(t *testing.T) {
 		}
 	}
 }
+
+// The v6 host INPUT half keeps ICMPv6 (NDP/RS) and established flows from
+// Docker bridges returning to the operator's INPUT policy and drops the
+// rest; every rule is bridge-scoped so remote management never matches.
+func TestHostRules6Shape(t *testing.T) {
+	rules := HostRules6()
+	if len(rules) != 6 {
+		t.Fatalf("unexpected v6 host rule count: %d", len(rules))
+	}
+	var sb strings.Builder
+	for _, r := range rules {
+		sb.WriteString(strings.Join(r, " "))
+		sb.WriteString("\n")
+	}
+	joined := sb.String()
+	for _, want := range []string{
+		"-i docker0 -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN",
+		"-i docker0 -p ipv6-icmp -j RETURN",
+		"-i docker0 -j DROP",
+		"-i br+ -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN",
+		"-i br+ -p ipv6-icmp -j RETURN",
+		"-i br+ -j DROP",
+	} {
+		if !strings.Contains(joined, want+"\n") {
+			t.Fatalf("v6 host rules missing %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "ACCEPT") {
+		t.Fatal("v6 host chain accepts instead of returning to operator policy")
+	}
+}
+
+func TestApplyHost6Reconcile(t *testing.T) {
+	var calls [][]string
+	hostDump := "-A " + HostChain + " -i docker0 -j DROP\n"
+	run := func(ctx context.Context, args ...string) ([]byte, error) {
+		call := strings.Join(args, " ")
+		calls = append(calls, args)
+		switch {
+		case strings.HasPrefix(call, "-S "+HostChain):
+			return []byte(hostDump), nil
+		case strings.HasPrefix(call, "-S INPUT"):
+			return []byte("-A INPUT -j " + HostChain + "\n"), nil
+		case call == "-F "+HostChain, strings.HasPrefix(call, "-A "+HostChain), call == "-N "+HostChain:
+			return nil, nil
+		case strings.HasPrefix(call, "-I INPUT"):
+			return nil, nil
+		}
+		return nil, errors.New("unexpected ip6tables call: " + call)
+	}
+	dir := t.TempDir()
+	if err := applyHostAll6(context.Background(), run, dir); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "egress.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"v6_host"`) {
+		t.Fatalf("v6 host status not recorded: %s", raw)
+	}
+}

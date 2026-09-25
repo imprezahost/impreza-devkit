@@ -193,6 +193,7 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 				TLSEmail:       email,
 				TLSDNSProvider: dnsProvider,
 				BasicAuth:      basicAuthFromPayload(r.BasicAuth),
+				Shield:         shieldFromPayload(r.Shield),
 			})
 		}
 		applyCtx, cancelApply := context.WithTimeout(ctx, composeQueryTimeout)

@@ -50,6 +50,10 @@ const (
 	// on the same agent: the target's fragment takes the hostname and the
 	// source keeps running untouched. Rollback is a fragment restore.
 	CommandTrafficSwitch CommandKind = "traffic_switch"
+	// CommandHostFailoverFence removes a deployment's routes and stops its
+	// containers before a reviewed cross-host ownership transfer. The agent
+	// persists the fence so late/replayed mutating commands cannot re-serve it.
+	CommandHostFailoverFence CommandKind = "host_failover_fence"
 	// CommandOnionAuthUpdate replaces the hidden service's
 	// restricted-discovery client list: the payload's clients become the
 	// exact contents of authorized_clients/ (absent names are revoked).
@@ -72,6 +76,14 @@ const (
 	// confirmed the exact address; the agent deletes only parked
 	// directories whose hostname matches it — never the live identity.
 	CommandOnionPurge CommandKind = "onion_purge"
+	// CommandOnionTransferRecipient asks the reviewed failover target to create
+	// a one-cutover X25519 recipient for the source's onion identity. Only the
+	// public half is reported; the private half never leaves the target host.
+	CommandOnionTransferRecipient CommandKind = "onion_transfer_recipient"
+	// CommandHostFailoverRelease lifts one exact failover fence on the old
+	// primary so a reviewed failback can sync a standby copy into it. Its
+	// containers stay stopped and it has no route; nothing starts serving.
+	CommandHostFailoverRelease CommandKind = "host_failover_release"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -235,6 +247,8 @@ func (c *Client) AgentPoll(ctx context.Context, req *PollRequest) (*PollCommand,
 
 // DeployPayload is the payload of a CommandDeploy.
 type DeployPayload struct {
+	// Server-derived application identities touched by an internal job.
+	FenceDependencies   []string          `json:"fence_dependencies,omitempty"`
 	InitialOnionClients []OnionAuthClient `json:"initial_onion_clients,omitempty"`
 	OnionProfile        string            `json:"onion_profile,omitempty"`
 	// Resolved only by authenticated preparation. Incoming values are discarded.
@@ -291,6 +305,66 @@ type RestartPayload struct {
 // secret-free: routing identity only, never credentials.
 const TrafficSwitchProtocol = "traffic-switch-v1"
 
+// HostFailoverFenceProtocol is advertised only by a journaled Docker agent
+// that persists the cross-host fence outside an application's state tree.
+const HostFailoverFenceProtocol = "host-failover-fence-v1"
+
+// OnionTransferProtocol means the agent can move an onion identity in a
+// reviewed failover: the fence withdraws the source's hidden service and seals
+// its key to a recipient the target created for that cutover, and the target
+// imports only a bundle sealed to that recipient. The control plane relays
+// ciphertext only.
+const OnionTransferProtocol = "onion-transfer-v1"
+
+// HostFailoverReleaseProtocol means the agent can release exactly the fence a
+// verified cutover left on an old primary, without starting its containers.
+const HostFailoverReleaseProtocol = "host-failover-release-v1"
+
+// HostFailoverReleasePayload names the fence to release: the verified
+// cutover, the hostname and the epoch it was fenced at.
+type HostFailoverReleasePayload struct {
+	DeploymentID string `json:"deployment_id"`
+	Hostname     string `json:"hostname"`
+	Epoch        uint64 `json:"epoch"`
+	CutoverID    string `json:"cutover_id"`
+}
+
+// HostFailoverReleaseResult reports the lifted fence. WasFenced is false when
+// no tombstone remained (a repeated release); the end state is the same.
+type HostFailoverReleaseResult struct {
+	DeploymentID      string `json:"deployment_id"`
+	Hostname          string `json:"hostname"`
+	Epoch             uint64 `json:"epoch"`
+	CutoverID         string `json:"cutover_id"`
+	Released          bool   `json:"released"`
+	WasFenced         bool   `json:"was_fenced"`
+	ContainersStopped bool   `json:"containers_stopped"`
+}
+
+// OnionTransferRecipientPayload binds a recipient to one cutover and one
+// expected address on the target deployment.
+type OnionTransferRecipientPayload struct {
+	DeploymentID string `json:"deployment_id"`
+	CutoverID    string `json:"cutover_id"`
+	Onion        string `json:"onion"`
+}
+
+// OnionTransferRecipientResult reports the recipient's public key (standard
+// base64 of 32 bytes). Repeating the command returns the same key.
+type OnionTransferRecipientResult struct {
+	DeploymentID    string `json:"deployment_id"`
+	CutoverID       string `json:"cutover_id"`
+	Onion           string `json:"onion"`
+	RecipientPubkey string `json:"recipient_pubkey"`
+}
+
+// OnionTransferImport carries the sealed identity to the target, which opens it
+// only with the recipient created for the same cutover.
+type OnionTransferImport struct {
+	CutoverID string `json:"cutover_id"`
+	Sealed    string `json:"sealed"`
+}
+
 // TrafficSwitchPayload is the payload of a CommandTrafficSwitch: move Hostname
 // from DeploymentID (source, keeps running) to TargetDeploymentID's upstream.
 type TrafficSwitchPayload struct {
@@ -324,9 +398,9 @@ type LogsTailPayload struct {
 
 // AgentUpgradePayload is the payload of a CommandAgentUpgrade.
 type AgentUpgradePayload struct {
+	Protocol      string `json:"protocol"`
+	Channel       string `json:"channel"`
 	TargetVersion string `json:"target_version"`
-	PackageURL    string `json:"package_url"`
-	Checksum      string `json:"checksum"` // sha256 hex
 }
 
 // UpdateRoutesPayload is the payload of a CommandUpdateRoutes
@@ -356,13 +430,58 @@ type AgentUpgradePayload struct {
 //     populated OnionAddr short-circuits the provisioning (idempotent
 //     — server should only set ProvisionOnion when row.onion is
 //     empty, but defense in depth).
+const DomainHandoverProtocol = "domain-handover-v1"
+
+// DomainHandover binds a route replacement to the reviewed previous hostname.
+type DomainHandover struct {
+	Protocol string `json:"protocol"`
+	Before   string `json:"before"`
+	After    string `json:"after"`
+}
+type DomainHandoverResult struct {
+	Before string `json:"before"`
+	After  string `json:"after"`
+	Status string `json:"status"`
+}
+
 type UpdateRoutesPayload struct {
-	OnionProfile   string         `json:"onion_profile,omitempty"`
-	DeploymentID   string         `json:"deployment_id"`
-	Routes         []Route        `json:"routes,omitempty"`
-	Vars           map[string]any `json:"vars,omitempty"`
-	OnionAddr      string         `json:"onion_addr,omitempty"`
-	ProvisionOnion bool           `json:"provision_onion,omitempty"`
+	DomainHandover *DomainHandover      `json:"domain_handover,omitempty"`
+	OnionTransfer  *OnionTransferImport `json:"onion_transfer,omitempty"`
+	OnionProfile   string               `json:"onion_profile,omitempty"`
+	DeploymentID   string               `json:"deployment_id"`
+	Routes         []Route              `json:"routes,omitempty"`
+	Vars           map[string]any       `json:"vars,omitempty"`
+	OnionAddr      string               `json:"onion_addr,omitempty"`
+	ProvisionOnion bool                 `json:"provision_onion,omitempty"`
+}
+
+// HostFailoverFencePayload is the old owner's fencing instruction. Epoch is
+// the next hostname lease epoch, not the current one, so a later failback can
+// only release it with a strictly newer epoch. Onion and OnionRecipient come
+// together (onion-transfer-v1): the fence also withdraws that hidden service
+// and seals its key to the target's one-cutover recipient.
+type HostFailoverFencePayload struct {
+	DeploymentID   string `json:"deployment_id"`
+	Hostname       string `json:"hostname"`
+	Epoch          uint64 `json:"epoch"`
+	CutoverID      string `json:"cutover_id"`
+	Onion          string `json:"onion,omitempty"`
+	OnionRecipient string `json:"onion_recipient,omitempty"`
+}
+
+// HostFailoverFenceResult binds the old host's stop receipt to the reviewed
+// hostname epoch. The control plane must not infer a fence from status alone.
+// OnionSealed is ciphertext readable only by the target's recipient.
+type HostFailoverFenceResult struct {
+	DeploymentID      string `json:"deployment_id"`
+	Hostname          string `json:"hostname"`
+	Epoch             uint64 `json:"epoch"`
+	CutoverID         string `json:"cutover_id"`
+	RoutesRemoved     bool   `json:"routes_removed"`
+	ContainersStopped bool   `json:"containers_stopped"`
+	Onion             string `json:"onion,omitempty"`
+	OnionWithdrawn    bool   `json:"onion_withdrawn,omitempty"`
+	OnionSealed       string `json:"onion_sealed,omitempty"`
 }
 
 // OnionAuthClient is one authorized client of a restricted-discovery
@@ -519,9 +638,13 @@ type DeploymentStartupCheck struct {
 // any command (deploy, update, rollback, uninstall, restart, etc.).
 // Idempotent on CommandID — re-posting the same result is a no-op.
 type DeployResult struct {
+	DomainHandover            *DomainHandoverResult            `json:"domain_handover,omitempty"`
 	ServiceBindingRetirements []ServiceBindingRetirementResult `json:"service_binding_retirements,omitempty"`
 	ServiceBindingRotation    *ServiceBindingRotationResult    `json:"service_binding_rotation,omitempty"`
 	TrafficSwitch             *TrafficSwitchResult             `json:"traffic_switch,omitempty"`
+	HostFailoverFence         *HostFailoverFenceResult         `json:"host_failover_fence,omitempty"`
+	OnionTransferRecipient    *OnionTransferRecipientResult    `json:"onion_transfer_recipient,omitempty"`
+	HostFailoverRelease       *HostFailoverReleaseResult       `json:"host_failover_release,omitempty"`
 	DatabaseRestore           *DatabaseRestoreResult           `json:"database_restore,omitempty"`
 	ControlToken              string                           `json:"control_token,omitempty"`
 	PreparationRestored       bool                             `json:"preparation_restored,omitempty"`
