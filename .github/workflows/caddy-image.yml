@@ -53,17 +53,33 @@ jobs:
         # tag-triggered: GITHUB_REF_NAME is e.g. `caddy-v2.11.4`, strip
         # the `caddy-v` prefix → `2.11.4`.
         # manual: just use the dispatch input.
+        # A `-sN` suffix (e.g. `2.11.4-s1`) is a Shield build that agents pin
+        # by digest. It publishes only its exact tag and never moves the
+        # `2-cf`/`latest-cf` streams that earlier agents still follow.
         run: |
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             VERSION="$INPUT_VERSION"
           else
             VERSION="${GITHUB_REF_NAME#caddy-v}"
           fi
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "FATAL: expected X.Y.Z version"; exit 1
+          if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-s[0-9]+$ ]]; then
+            CADDY="${BASH_REMATCH[1]}"
+            TAGS="ghcr.io/imprezahost/caddy:${VERSION}"
+          elif [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            CADDY="$VERSION"
+            TAGS="$(printf '%s\n' "ghcr.io/imprezahost/caddy:${VERSION}-cf" \
+              "ghcr.io/imprezahost/caddy:2-cf" "ghcr.io/imprezahost/caddy:latest-cf")"
+          else
+            echo "FATAL: expected X.Y.Z or X.Y.Z-sN version"; exit 1
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Resolved Caddy version: $VERSION"
+          {
+            echo "version=$VERSION"
+            echo "caddy=$CADDY"
+            echo "tags<<TAGS_EOF"
+            echo "$TAGS"
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved Caddy $CADDY; image tags:" $TAGS
 
       - name: Set up QEMU (arm64 emulation for cross-build)
         uses: docker/setup-qemu-action@v3
@@ -94,19 +110,18 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
-            CADDY_VERSION=${{ steps.ver.outputs.version }}
-          # Three tags per build: version, major-version stream, latest.
-          # The major-version stream (`2-cf`) is what the agent uses,
-          # so a new release auto-rolls out to fresh agent installs.
-          # Existing containers retain their image. Updating requires a
-          # reviewed pull and container recreation that preserves proxy
-          # state and credentials; docker restart alone keeps the old image.
-          tags: |
-            ghcr.io/imprezahost/caddy:${{ steps.ver.outputs.version }}-cf
-            ghcr.io/imprezahost/caddy:2-cf
-            ghcr.io/imprezahost/caddy:latest-cf
+            CADDY_VERSION=${{ steps.ver.outputs.caddy }}
+          # A plain X.Y.Z build publishes three tags: version, major-version
+          # stream and latest. The major-version stream (`2-cf`) is what
+          # agents up to 0.6.21 use, so such a release auto-rolls out to
+          # their fresh installs. Existing containers retain their image.
+          # Updating requires a reviewed pull and container recreation that
+          # preserves proxy state and credentials; docker restart alone keeps
+          # the old image. A Shield build (X.Y.Z-sN) publishes its exact tag
+          # only; agents from 0.6.22 pin that image by digest.
+          tags: ${{ steps.ver.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/imprezahost/impreza-devkit
-            org.opencontainers.image.description=Caddy ${{ steps.ver.outputs.version }} with the Impreza DNS provider
+            org.opencontainers.image.description=Caddy ${{ steps.ver.outputs.caddy }} with the Impreza DNS provider and Impreza Shield
             org.opencontainers.image.licenses=Apache-2.0
             org.opencontainers.image.revision=${{ github.sha }}

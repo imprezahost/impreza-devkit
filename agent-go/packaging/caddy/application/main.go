@@ -35,7 +35,9 @@ import (
 
 	// plug in Caddy modules here
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
+	_ "github.com/corazawaf/coraza-caddy/v2"
 	_ "github.com/imprezahost/impreza-devkit/caddy-dns-impreza"
+	_ "github.com/imprezahost/impreza-devkit/caddy-shield"
 )
 
 func main() {
