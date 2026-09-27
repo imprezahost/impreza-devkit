@@ -105,7 +105,17 @@ func (p *Poller) resumeRecord(ctx context.Context) error {
 				if errors.Is(err, executor.ErrPreparationPending) {
 					step = "reconciling_preparation"
 				}
-				_, _ = p.reportProgress(ctx, step)
+				response, reportErr := p.reportProgress(ctx, step)
+				// The server already closed the command and nothing of the work
+				// can still change images — its unit is confirmed stopped, and it
+				// is not a controlled build, whose builder container can outlive
+				// the unit. Waiting would hold every later command on this host —
+				// uninstalls, onion revocations, updates — forever.
+				if reportErr == nil && response.Terminal && docker.PreparationWorkerGone(r) {
+					if released, releaseErr := p.releaseTerminalPreparation(ctx, docker); releaseErr != nil || released {
+						return releaseErr
+					}
+				}
 				p.log.Warn("supervised preparation awaiting verified completion", "command_id", p.active.CommandID, "err", err)
 				if !sleepCtx(ctx, 15*time.Second) {
 					break
@@ -123,12 +133,17 @@ func (p *Poller) resumeRecord(ctx context.Context) error {
 			}
 		}
 		response, err := p.reportProgress(ctx, "interrupted")
-		if err == nil && response.Terminal && (p.active.Preparation == nil || p.active.Preparation.Phase != "aborted") {
-			if err := p.journal.clear(); err != nil {
-				return err
+		if err == nil && response.Terminal {
+			// The server already closed the command, and nothing below reached
+			// a worker that may still run (the busy branch above waits for its
+			// unit to stop). A Blocked deployment clears like the legacy
+			// "blocked" phase did; an aborted checkpoint used to wait here for
+			// a manual reconciliation that nobody runs, holding the queue
+			// forever. The operation is never replayed either way.
+			docker, _ := p.exec.(*executor.Docker)
+			if released, releaseErr := p.releaseTerminalPreparation(ctx, docker); releaseErr != nil || released {
+				return releaseErr
 			}
-			p.active = nil
-			return nil
 		}
 		if !sleepCtx(ctx, 15*time.Second) {
 			break
@@ -200,15 +215,11 @@ func (p *Poller) reconcilePreparation(ctx context.Context, docker *executor.Dock
 		return err
 	}
 	if response.Terminal {
-		if p.active.Preparation != nil && p.active.Preparation.Phase == "aborted" {
-			return errors.New("reboot recovery requires an authenticated preparing phase; terminal server state requires manual reconciliation")
-		}
-		p.forgetPreparationWork()
-		if err := p.journal.clear(); err != nil {
+		released, err := p.releaseTerminalPreparation(ctx, docker)
+		if err != nil || released {
 			return err
 		}
-		p.active = nil
-		return nil
+		return errors.New("the server closed the command, and the previous configuration is not verified and restored yet; the journal stays for review")
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -243,6 +254,46 @@ func (p *Poller) reconcilePreparation(ctx context.Context, docker *executor.Dock
 	}
 	p.active = &next
 	return p.sendSavedResult(ctx)
+}
+
+// releaseTerminalPreparation clears the journal of a command the server
+// already closed, once no preparation worker can still be changing images,
+// and reports whether it did. A recoverable checkpoint is released only after
+// its previous configuration is restored — verified locally against the
+// recorded containers and file bytes, which needs no server confirmation
+// because there is no result left to send. Without that restore the next
+// command would run the failed deployment's files, so the journal stays and
+// the restore is tried again (a changed container set really is a review
+// case). A checkpoint that never reconciles (Blocked, unstarted, replacing)
+// clears as it always did. Waiting for a manual reconciliation nobody runs
+// used to hold every later command on the host forever. Worker files go
+// first: request.json can carry proxy credentials, and nothing else would
+// ever remove them.
+func (p *Poller) releaseTerminalPreparation(ctx context.Context, docker *executor.Docker) (bool, error) {
+	if r := p.active.Preparation; r != nil {
+		checkpoint := *r
+		if checkpoint.Phase == "busy" {
+			checkpoint.Phase = "aborted"
+		}
+		if checkpoint.Recoverable() && checkpoint.Phase != "unstarted" {
+			if docker == nil {
+				return false, nil
+			}
+			if err := docker.ReconcilePreparation(ctx, &checkpoint); err != nil {
+				p.log.Warn("the server closed the command; its previous configuration is not verified and restored yet",
+					"command_id", p.active.CommandID, "err", err)
+				return false, nil
+			}
+			p.log.Warn("the server closed the command; previous configuration restored and journal released",
+				"command_id", p.active.CommandID)
+		}
+	}
+	p.forgetPreparationWork()
+	if err := p.journal.clear(); err != nil {
+		return false, err
+	}
+	p.active = nil
+	return true, nil
 }
 
 func (p *Poller) forgetPreparationWork() {

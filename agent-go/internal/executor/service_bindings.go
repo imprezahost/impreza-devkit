@@ -437,16 +437,40 @@ func (d *Docker) preserveServiceBindingVars(ctx context.Context, consumer string
 }
 
 var bindingGenerationLoginPattern = regexp.MustCompile(`^ibg_[a-f0-9]{24}_[a-f0-9]{24}$`)
-var bindingRuntimeURLPattern = regexp.MustCompile(`(?m)^DATABASE_URL=(postgresql://(?:imp_[a-f0-9]{24}|ibg_[a-f0-9]{24}_[a-f0-9]{24}):([a-f0-9]{64})@pg_dpl_(?:[a-f0-9]{16}|[a-f0-9]{24}):5432/imp_[a-f0-9]{24}\?sslmode=disable)\r?$`)
-var mysqlBindingRuntimeURLPattern = regexp.MustCompile(`(?m)^DATABASE_URL=(mysql://ibg_[a-f0-9]{24}_[a-f0-9]{24}:([a-f0-9]{64})@mariadb_dpl_(?:[a-f0-9]{16}|[a-f0-9]{24}):3306/imp_[a-f0-9]{24})\r?$`)
 
-var mysqlJobRuntimeURLPattern = regexp.MustCompile(`(?m)^(?:DATABASE_URL|IMPREZA_DATABASE_JOB_URL)=(mysql://ij[vr]_[a-f0-9]{16}:([a-f0-9]{64})@mariadb_dpl_(?:[a-f0-9]{16}|[a-f0-9]{24}):3306/imp_(?:verify|restore)_[a-f0-9]{16})\r?$`)
+// Managed connection URL grammars: group 1 is the whole URL, group 2 the
+// password. Every other part is fixed text or hex, so a valid URL never
+// carries a quote, a backslash or a `$`.
+const (
+	postgresBindingURL = `(postgresql://(?:imp_[a-f0-9]{24}|ibg_[a-f0-9]{24}_[a-f0-9]{24}):([a-f0-9]{64})@pg_dpl_(?:[a-f0-9]{16}|[a-f0-9]{24}):5432/imp_[a-f0-9]{24}\?sslmode=disable)`
+	mysqlBindingURL    = `(mysql://ibg_[a-f0-9]{24}_[a-f0-9]{24}:([a-f0-9]{64})@mariadb_dpl_(?:[a-f0-9]{16}|[a-f0-9]{24}):3306/imp_[a-f0-9]{24})`
+	mysqlJobURL        = `(mysql://ij[vr]_[a-f0-9]{16}:([a-f0-9]{64})@mariadb_dpl_(?:[a-f0-9]{16}|[a-f0-9]{24}):3306/imp_(?:verify|restore)_[a-f0-9]{16})`
+	postgresJobURL     = `(postgresql://ij[vr]_[a-f0-9]{16}:([a-f0-9]{64})@pg_dpl_(?:[a-f0-9]{16}|[a-f0-9]{24}):5432/imp_(?:verify|restore)_[a-f0-9]{16}\?sslmode=disable)`
+)
 
-var postgresJobRuntimeURLPattern = regexp.MustCompile(`(?m)^(?:DATABASE_URL|IMPREZA_DATABASE_JOB_URL)=(postgresql://ij[vr]_[a-f0-9]{16}:([a-f0-9]{64})@pg_dpl_(?:[a-f0-9]{16}|[a-f0-9]{24}):5432/imp_(?:verify|restore)_[a-f0-9]{16}\?sslmode=disable)\r?$`)
+// bindingRuntimeURLPattern checks a value Compose already resolved, so it
+// stays bare: the rollback comparison must not accept quote characters.
+var bindingRuntimeURLPattern = regexp.MustCompile(`(?m)^DATABASE_URL=` + postgresBindingURL + `\r?$`)
+
+// envBindingURLPattern finds a managed URL in a .env line. renderEnv quotes
+// every value literally and an earlier agent wrote it bare; that
+// older .env stays the previous release's redaction source, so all three
+// spellings must match. Either quote on either side is accepted on purpose:
+// over-matching a credential-shaped value only ever redacts more.
+func envBindingURLPattern(keys, url string) *regexp.Regexp {
+	return regexp.MustCompile(`(?m)^(?:` + keys + `)=['"]?` + url + `['"]?\r?$`)
+}
+
+var serviceBindingEnvPatterns = []*regexp.Regexp{
+	envBindingURLPattern(`DATABASE_URL`, postgresBindingURL),
+	envBindingURLPattern(`DATABASE_URL`, mysqlBindingURL),
+	envBindingURLPattern(`DATABASE_URL|IMPREZA_DATABASE_JOB_URL`, mysqlJobURL),
+	envBindingURLPattern(`DATABASE_URL|IMPREZA_DATABASE_JOB_URL`, postgresJobURL),
+}
 
 func serviceBindingEnvRedactions(raw []byte) map[string]string {
 	values := map[string]string{}
-	for _, pattern := range []*regexp.Regexp{bindingRuntimeURLPattern, mysqlBindingRuntimeURLPattern, mysqlJobRuntimeURLPattern, postgresJobRuntimeURLPattern} {
+	for _, pattern := range serviceBindingEnvPatterns {
 		for _, match := range pattern.FindAllSubmatch(raw, -1) {
 			values[string(match[1])] = string(match[1])
 			values[string(match[2])] = string(match[2])

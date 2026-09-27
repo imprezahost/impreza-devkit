@@ -12,6 +12,38 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## Agent 0.6.23 — 2026-09-27
+
+- Supervise image pulls on a budget that grows while the pull keeps
+  downloading, up to 45 minutes. A pull that stalls for ten minutes, reaches
+  that limit or whose worker stops without a result is a retryable failure.
+  Deployments with an onion address or a data directory use the same
+  supervised pull and never stay pending after an agent restart.
+- End a build that runs past its ten-minute budget, or whose worker stops
+  without a result, as a retryable failure with the previous configuration
+  restored, instead of holding every later command on the server. The
+  controlled builder keeps its own review.
+- Release the recovery journal of a deployment the server already closed once
+  the previous configuration is restored and verified, so later commands run.
+  A live worker, a controlled build or a restore that cannot be verified still
+  holds it.
+- Write deployment variables to `.env` literally: `$`, `${...}`, quotes,
+  backslashes and ` #` reach the container unchanged, and a value can no longer
+  define or change another variable.
+- Count one-shot services that another service waits on with
+  `service_completed_successfully` as completed instead of degrading the
+  application.
+- Skip the onion removal on a server that never ran Tor, remove the onion
+  service of a first deploy that failed after its address was created, and set
+  an invalid onion directory aside instead of letting it stop Tor for every
+  onion application on the server.
+- Build deployments with an onion address or a data directory under the
+  controlled builder on servers that enable it, and stop the whole process
+  group of a synchronous preparation step at its deadline.
+- Add `keep_images` to the uninstall payload: the agent keeps registry images
+  for a later reinstall and refuses it together with `purge_data`. The control
+  plane does not send it yet.
+
 ## Agent 0.6.22 — 2026-09-25
 
 - Change an application's domain through a verified handover

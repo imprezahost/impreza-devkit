@@ -208,16 +208,24 @@ func TestProfileRenderFailureRestoresMetadata(t *testing.T) {
 func TestOnionRemovalFailureAndRepeatedParking(t *testing.T) {
 	tor := newTestTor(t)
 	dir := filepath.Join(tor.StateDir, "services", "dpl_private")
-	put := func(value string) {
+	put := func() []byte {
 		t.Helper()
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "hs_ed25519_secret_key"), []byte(value), 0600); err != nil {
+		secret, public, _, err := freshOnionKeyFiles()
+		if err != nil {
 			t.Fatal(err)
 		}
+		if err := os.WriteFile(filepath.Join(dir, "hs_ed25519_secret_key"), secret, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "hs_ed25519_public_key"), public, 0600); err != nil {
+			t.Fatal(err)
+		}
+		return secret
 	}
-	put("first")
+	first := put()
 	tor.reloadFn = func(context.Context) error { return fmt.Errorf("injected reload failure") }
 	if err := tor.RemoveHiddenService(context.Background(), "dpl_private"); err == nil {
 		t.Fatal("failed reload reported successful removal")
@@ -226,7 +234,7 @@ func TestOnionRemovalFailureAndRepeatedParking(t *testing.T) {
 	if err := tor.RemoveHiddenService(context.Background(), "dpl_private"); err != nil {
 		t.Fatal(err)
 	}
-	put("second")
+	put()
 	if err := tor.RemoveHiddenService(context.Background(), "dpl_private"); err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +243,7 @@ func TestOnionRemovalFailureAndRepeatedParking(t *testing.T) {
 		t.Fatalf("repeated parking destroyed recovery copy: %v %v", entries, err)
 	}
 	old, err := os.ReadFile(filepath.Join(tor.StateDir, "parked", "dpl_private", "hs_ed25519_secret_key"))
-	if err != nil || string(old) != "first" {
+	if err != nil || string(old) != string(first) {
 		t.Fatal("original parked identity overwritten")
 	}
 }

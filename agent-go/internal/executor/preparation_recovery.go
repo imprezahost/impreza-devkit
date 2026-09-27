@@ -22,6 +22,16 @@ type PreparationRecovery struct {
 	Files        []PreparationFile `json:"files,omitempty"`
 	Containers   []string          `json:"containers,omitempty"`
 	Work         *PreparationWork  `json:"work,omitempty"`
+	// Blocked marks deployments whose container replacement is not covered
+	// by configuration-only recovery (onion provisioning, recursive
+	// data_dir ownership): the replacement keeps explicit reconciliation.
+	// Unlike the legacy phase value "blocked", this does NOT disable the
+	// supervised pull — a pull only fills the image cache, and its
+	// supervision is exactly what keeps a stuck pull from holding the
+	// whole poll queue for 45 minutes. The build stays
+	// synchronous unless the host builds under the controlled builder, and
+	// the pull never ends pending.
+	Blocked bool `json:"blocked,omitempty"`
 }
 type PreparationFile struct {
 	Name   string `json:"name"`
@@ -70,7 +80,10 @@ func (r *PreparationRecovery) Validate() error {
 	return nil
 }
 func (r *PreparationRecovery) Recoverable() bool {
-	return r != nil && r.Validate() == nil && (r.Phase == "unstarted" || r.Phase == "ready" || r.Phase == "aborted")
+	// A blocked deployment (onion provisioning, recursive data ownership)
+	// never reconciles automatically beyond the pull worker's own defined
+	// receipt: its interruption keeps explicit reconciliation.
+	return r != nil && r.Validate() == nil && !r.Blocked && (r.Phase == "unstarted" || r.Phase == "ready" || r.Phase == "aborted")
 }
 
 // Lstat every component below StateDir. Never follow an app-directory or config

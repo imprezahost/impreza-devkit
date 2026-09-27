@@ -294,6 +294,11 @@ type RollbackPayload struct {
 type UninstallPayload struct {
 	DeploymentID string `json:"deployment_id"`
 	PurgeData    bool   `json:"purge_data,omitempty"`
+	// KeepImages skips `compose down --rmi all` so an uninstall
+	// followed by a reinstall of the same app does not re-download the
+	// whole image set. Opt-in per command by the control plane; the
+	// default keeps the reclaim-disk behavior.
+	KeepImages bool `json:"keep_images,omitempty"`
 }
 
 // RestartPayload is the payload of a CommandRestart.
@@ -610,6 +615,11 @@ type RuntimeCounts struct {
 	Failed           int `json:"failed"`
 	ExpectedServices int `json:"expected_services"`
 	MissingServices  int `json:"missing_services"`
+	// Completed counts one-shot services that exited 0 — an
+	// overlapping subset of Stopped, mirroring how Failed overlaps it.
+	// A completed init job must not degrade a stack whose long-running
+	// services are healthy. Absent (zero) on agents before 0.6.23.
+	Completed int `json:"completed,omitempty"`
 }
 
 // AgentReport is the heartbeat body POSTed every ~30s.

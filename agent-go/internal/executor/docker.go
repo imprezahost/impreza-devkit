@@ -46,8 +46,8 @@ import (
 const (
 	// Per-command timeouts. `docker compose pull` is the slow one;
 	// keep the others tight so an agent doesn't sit on a stuck command.
-	composePullTimeout = 5 * time.Minute
-	composeUpTimeout   = 2 * time.Minute
+	// The pull budget lives in the vars below.
+	composeUpTimeout = 2 * time.Minute
 	// Build preparation has its own budget before container replacement.
 	// Cold npm/pip/go layers can easily outrun the plain-up budget.
 	composeBuildTimeout = 10 * time.Minute
@@ -82,6 +82,19 @@ const (
 	// The persistent-`restarting` streak in awaitStackSettled is what
 	// covers that case; do not rely on this alone.
 	crashLoopRestarts = 3
+)
+
+// Pull budget, as vars so the watchdog test can shrink them.
+// composePullTimeout is the BASE budget of a supervised pull: the worker
+// extends it while the pull keeps making progress (bytes on the wire or
+// command output), up to composePullCeiling. A pull that stops making
+// progress for pullStallWindow, or that reaches the ceiling, is a
+// DEFINED, retryable failure — never the ambiguous "review required" a
+// worker-own deadline used to produce.
+var (
+	composePullTimeout = 5 * time.Minute
+	pullStallWindow    = 10 * time.Minute
+	composePullCeiling = 45 * time.Minute
 )
 
 // settleVerdict is the outcome of the post-`up` gate.
@@ -287,13 +300,19 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 			return failResult(cmd.ID, "capture preparation checkpoint: "+err.Error())
 		}
 		// Recursive data ownership changes and onion provisioning are not covered by
-		// configuration-only recovery. Retain explicit reconciliation for these jobs.
+		// configuration-only recovery. The replacement keeps explicit reconciliation
+		// for these jobs — but the pull supervision still applies: a pull only fills
+		// the image cache, and unsupervised it ran a flat 45-minute deadline with no
+		// stall detection, no cancellation, and the whole poll queue held behind it.
+		// The build stays synchronous unless the host builds under the controlled
+		// builder, and the pull never ends pending: its failure path removes a first
+		// deploy's onion service and restores the configuration.
 		if p.Manifest.Runtime.DataDir != nil {
-			recovery.Phase = "blocked"
+			recovery.Blocked = true
 		}
 		for _, route := range p.Routes {
 			if route.Onion != nil && route.Onion.Enabled {
-				recovery.Phase = "blocked"
+				recovery.Blocked = true
 			}
 		}
 		if err = d.SavePreparation(cmd, recovery); err != nil {
@@ -309,9 +328,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		if phase != "ready" {
 			next.Work = nil
 		}
-		if next.Phase != "blocked" {
-			next.Phase = phase
-		}
+		next.Phase = phase
 		if err := d.SavePreparation(cmd, &next); err != nil {
 			return err
 		}
@@ -330,7 +347,26 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	}
 	runtimeStarted := false
 	defer func() {
-		if runtimeStarted || result.Status == "success" || result.Status == PreparationPendingStatus {
+		if result.Status == "success" || result.Status == PreparationPendingStatus {
+			return
+		}
+		// A FIRST deploy that asked for an onion and failed must not
+		// leave a hidden service behind — Tor would mint keys and publish
+		// an .onion for a deployment that does not exist. A redeploy keeps
+		// its identity: the service predates this attempt and belongs to
+		// the app the rollback restores. Removal parks the keys, so an
+		// imported identity stays recoverable.
+		if err := d.cleanupFailedFirstDeployOnion(ctx, p.DeploymentID, isRedeploy); err != nil {
+			result.Error += "\nFailed deploy left an onion service that could not be removed: " + err.Error()
+		}
+		// The imported identity survives only as a parked
+		// recovery copy. onion_import is sealed to THIS deploy command and
+		// never stored, so the customer must know that a retry without it
+		// publishes a different address.
+		if !isRedeploy && p.OnionImport != nil {
+			result.Error += "\nThe imported onion identity was kept only as a parked recovery copy. Because onion_import travels sealed with a single deploy command and is never stored, a new deployment that does not resend it publishes a NEW .onion address."
+		}
+		if runtimeStarted {
 			return
 		}
 		d.deploymentProgress(ctx, cmd, "restoring_configuration")
@@ -685,18 +721,18 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		return failResult(cmd.ID, "persist completed preparation: "+err.Error())
 	}
 	d.Log.Info("docker deploy: preparing images", "deployment_id", p.DeploymentID)
-	if err := prepareDeployImages(ctx, func(ctx context.Context, args ...string) ([]byte, error) {
-		if err := d.deploymentCheckpoint(ctx, cmd, "preparing"); err != nil {
+	if err := prepareDeployImages(ctx, func(stepCtx context.Context, args ...string) ([]byte, error) {
+		if err := d.deploymentCheckpoint(stepCtx, cmd, "preparing"); err != nil {
 			return nil, err
 		}
 
 		if err := savePreparation("busy"); err != nil {
 			return nil, err
 		}
-		d.deploymentProgress(ctx, cmd, map[string]string{"config": "validating", "pull": "pulling", "build": "building"}[args[0]])
+		d.deploymentProgress(stepCtx, cmd, map[string]string{"config": "validating", "pull": "pulling", "build": "building"}[args[0]])
 		var out []byte
 		var err error
-		if d.SupervisePreparation && recovery != nil && recovery.Phase == "busy" && (args[0] == "pull" || args[0] == "build") {
+		if d.SupervisePreparation && recovery != nil && recovery.Phase == "busy" && d.preparationSupervised(args[0], recovery) {
 			work, createErr := d.createPreparationWork(cmd, p.DeploymentID, args[0])
 			if createErr != nil {
 				return nil, createErr
@@ -707,15 +743,23 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 				return nil, err
 			}
 			recovery = &next
-			if err = d.launchPreparationWork(ctx, work); err != nil {
-				return nil, fmt.Errorf("%w: %v", ErrPreparationPending, err)
+			if err = d.launchPreparationWork(stepCtx, work); err != nil {
+				err = fmt.Errorf("%w: %v", ErrPreparationPending, err)
+			} else {
+				// The supervised wait deliberately runs on the DEPLOY's context,
+				// not the per-step deadline: the worker owns the pull budget,
+				// and the waiter bounds itself — past its no-receipt ceiling,
+				// or as soon as the unit is gone without a receipt.
+				out, err = d.waitPreparationWork(ctx, work, p.DeploymentID, cmd)
 			}
-			out, err = d.waitPreparationWork(ctx, work, p.DeploymentID, cmd)
+			if recovery.Blocked && errors.Is(err, ErrPreparationPending) {
+				err = settleBlockedWork(work, err)
+			}
 		} else {
 			if hasBuildSecrets && args[0] == "build" {
-				out, err = d.privateBuild(ctx, appDir, args...)
+				out, err = d.privateBuild(stepCtx, appDir, args...)
 			} else {
-				out, err = d.compose(ctx, appDir, args...)
+				out, err = d.composePreparation(stepCtx, appDir, args...)
 			}
 		}
 		if hasBuildSecrets && args[0] == "build" && !errors.Is(err, ErrPreparationPending) {
@@ -747,8 +791,10 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 
 	// A restore transport job stays synchronous (RestoreDatabase != nil): its
 	// outcome is the verified table count attached after finishReplacement,
-	// and a one-shot stack has no replacement to supervise.
-	if d.SupervisePreparation && d.SaveReplacement != nil && recovery != nil && recovery.Phase == "replacing" && p.Manifest.Runtime.RestoreDatabase == nil {
+	// and a one-shot stack has no replacement to supervise. A blocked
+	// deployment (onion/data_dir) also replaces synchronously: its container
+	// changes are not covered by configuration-only recovery.
+	if d.SupervisePreparation && d.SaveReplacement != nil && recovery != nil && recovery.Phase == "replacing" && !recovery.Blocked && p.Manifest.Runtime.RestoreDatabase == nil {
 		work, err := d.createReplacementWork(cmd, p, previousRelease, isRedeploy, recovery.Containers, sourceScan)
 		if err != nil {
 			return failResult(cmd.ID, "prepare supervised replacement: "+err.Error())
@@ -829,6 +875,13 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 	if err := cmd.As(&p); err != nil {
 		return failResult(cmd.ID, "decode uninstall payload: "+err.Error())
 	}
+	// A purged app must not keep images built LOCALLY from the
+	// customer's source — they carry the code the purge promised to delete.
+	// keep_images exists to cheapen "uninstall and install again", which
+	// never purges data; the combination is refused outright.
+	if p.PurgeData && p.KeepImages {
+		return failResult(cmd.ID, "uninstall: keep_images cannot be combined with purge_data (locally built images carry the application's source and are never kept when data is purged)")
+	}
 	appDir := d.appDir(p.DeploymentID)
 
 	if !exists(appDir) {
@@ -864,10 +917,20 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 	// daemon refuses to delete an image still referenced by any
 	// container, running OR stopped; compose logs a warning and moves
 	// on. Worst case another deployment re-pulls the image later.
-	args := []string{"down", "--remove-orphans", "--rmi", "all"}
-	if p.PurgeData {
-		args = append(args, "--volumes")
-	}
+	//
+	// The control plane may opt out per command (keep_images=true)
+	// so "uninstall and install again" does not re-download a multi-GB
+	// image set over a metered 100 Mbit link. The default keeps the
+	// reclaim-disk behavior; the retention policy stays the
+	// maintainer's call.
+	//
+	// keep_images no longer drops --rmi entirely — that kept
+	// images built LOCALLY from the customer's source forever, even past
+	// a purge. It maps to `--rmi local`, which removes exactly the images
+	// without a registry tag (the locally built set) while sparing the
+	// pulled cache a retry needs. keep_images combined with purge_data is
+	// refused at payload validation, before anything runs.
+	args := uninstallDownArgs(p.PurgeData, p.KeepImages)
 	out, downErr := d.compose(downCtx, appDir, args...)
 	if downErr != nil {
 		// Do NOT bail here. A failing `down` is exactly the case that
@@ -930,6 +993,45 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 	return res
 }
 
+// uninstallDownArgs renders the teardown command. `--remove-orphans`
+// catches containers from a previous revision of this compose file whose
+// service was renamed or dropped. `--rmi all` is what actually reclaims
+// the disk — NOT a bare default of `local`, which only removes images with
+// no custom tag while every catalog manifest pins an explicit `image:` (a
+// silent no-op that once left 650MB postgres layers behind). `all` is safe
+// against collateral damage: the daemon refuses to delete an image still
+// referenced by any container, running OR stopped; compose logs a warning
+// and moves on. Worst case another deployment re-pulls the image later.
+//
+// keep_images maps to `--rmi local`: the pulled registry
+// cache survives for the retry, but images built locally from the
+// customer's source — the set without a custom tag — never do.
+func uninstallDownArgs(purgeData, keepImages bool) []string {
+	args := []string{"down", "--remove-orphans"}
+	if keepImages {
+		args = append(args, "--rmi", "local")
+	} else {
+		args = append(args, "--rmi", "all")
+	}
+	if purgeData {
+		args = append(args, "--volumes")
+	}
+	return args
+}
+
+// cleanupFailedFirstDeployOnion unpublishes the hidden service a failed
+// FIRST deploy left behind. Redeploys never clean: their service
+// identity predates the failed attempt. Removal parks the keys, so an
+// imported identity stays recoverable for the retry decision.
+func (d *Docker) cleanupFailedFirstDeployOnion(ctx context.Context, deploymentID string, isRedeploy bool) error {
+	if isRedeploy || d.Tor == nil || !d.Tor.HasService(deploymentID) {
+		return nil
+	}
+	cleanCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), composeQueryTimeout)
+	defer cancel()
+	return d.Tor.RemoveHiddenService(cleanCtx, deploymentID)
+}
+
 // Routing and Tor state live outside the application directory. A retry after
 // that directory was removed must finish exposure cleanup before reporting success.
 func (d *Docker) removeDeploymentExposure(ctx context.Context, deploymentID string) error {
@@ -950,13 +1052,24 @@ func (d *Docker) removeDeploymentExposure(ctx context.Context, deploymentID stri
 	// Internal job IDs never have a hidden-service identity. The Tor manager
 	// intentionally accepts only application IDs; do not weaken that boundary
 	// merely to tear down a temporary backup/restore/CLI stack.
+	// A host with no Tor state has nothing to remove: skipping is the
+	// correct success, not a suppressed failure. But only a VERIFIED
+	// absence may skip: a stat error or a surviving impreza_tor container
+	// means the daemon may hold services the disk no longer shows, and
+	// that failure must be retried, not swallowed.
 	if d.Tor != nil && !failoverTransportID.MatchString(deploymentID) {
-		torRmCtx, cancelTorRm := context.WithTimeout(ctx, composeQueryTimeout)
-		if err := d.Tor.RemoveHiddenService(torRmCtx, deploymentID); err != nil {
-			cancelTorRm()
-			return fmt.Errorf("application stopped; onion removal must be retried: %w", err)
+		hasTorState, stateErr := d.Tor.HasState(ctx)
+		if stateErr != nil {
+			return fmt.Errorf("application stopped; Tor state could not be verified: %w", stateErr)
 		}
-		cancelTorRm()
+		if hasTorState {
+			torRmCtx, cancelTorRm := context.WithTimeout(ctx, composeQueryTimeout)
+			if err := d.Tor.RemoveHiddenService(torRmCtx, deploymentID); err != nil {
+				cancelTorRm()
+				return fmt.Errorf("application stopped; onion removal must be retried: %w", err)
+			}
+			cancelTorRm()
+		}
 	}
 
 	return nil
@@ -1830,6 +1943,19 @@ func (d *Docker) compose(ctx context.Context, appDir string, args ...string) ([]
 	return cmd.CombinedOutput()
 }
 
+// composePreparation runs a synchronous config/pull/build step with the
+// supervised worker's hardening: its own process group, the whole group
+// killed at the step deadline, and a bounded wait for pipes a surviving
+// compose-plugin child still holds. Without it the deadline killed only the
+// docker CLI, and a plugin blocked on a network RUN step held the call — and
+// the command queue — past it.
+func (d *Docker) composePreparation(ctx context.Context, appDir string, args ...string) ([]byte, error) {
+	cmd := d.dockerCmd(ctx, append([]string{"compose"}, args...)...)
+	cmd.Dir = appDir
+	prepareWorkerCommand(cmd)
+	return cmd.CombinedOutput()
+}
+
 // dockerCmd builds a `docker` invocation carrying the env every docker
 // call from this agent needs. Factored out of compose() so the plain
 // (non-compose) calls in the teardown fallback get it too: the systemd
@@ -1885,15 +2011,6 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(name, path)
 }
 
-// renderEnv emits sorted KEY=VALUE pairs as a docker-compose-compatible
-// .env file. Keys are sorted so re-renders produce identical output (so
-// `docker compose` doesn't see a "changed env" between identical deploys).
-//
-// Values are stringified via fmt.Sprint and newline-escaped. We do NOT
-// quote values — docker-compose `.env` format treats `KEY=value with
-// spaces` correctly as long as there are no `#` mid-line. For values
-// containing `#` or backslashes, the manifest author is expected to
-// keep them out of vars (they'd be in compose_yaml instead).
 // shieldFromPayload maps the server's shield policy onto the proxy route.
 // A nil or empty policy stays nil: profile off renders no directives.
 func shieldFromPayload(s *sdkclient.RouteShield) *proxy.ShieldConfig {
@@ -1917,6 +2034,16 @@ func basicAuthFromPayload(b *sdkclient.RouteBasicAuth) *proxy.BasicAuth {
 	return &proxy.BasicAuth{Username: b.Username, BCryptHash: b.BCryptHash}
 }
 
+// renderEnv emits sorted KEY=VALUE pairs as a docker-compose-compatible
+// .env file. Keys are sorted so re-renders produce identical output (so
+// `docker compose` doesn't see a "changed env" between identical deploys).
+//
+// Values are stringified via fmt.Sprint, CR-stripped and newline-escaped,
+// then quoted LITERALLY: an unquoted value lets Compose's
+// dotenv parser interpolate `$VAR`/`${VAR}` and treat ` #` as a comment —
+// `pa$word #x` silently became `pa`, and a var containing `${DB_PASSWORD}`
+// would have published the database password wherever the var lands.
+// quoteEnvValue picks the quoting.
 func renderEnv(vars map[string]any) string {
 	keys := make([]string, 0, len(vars))
 	for k := range vars {
@@ -1931,10 +2058,29 @@ func renderEnv(vars map[string]any) string {
 		v = strings.ReplaceAll(v, "\n", "\\n")
 		sb.WriteString(k)
 		sb.WriteByte('=')
-		sb.WriteString(v)
+		sb.WriteString(quoteEnvValue(v))
 		sb.WriteByte('\n')
 	}
 	return sb.String()
+}
+
+// quoteEnvValue renders a .env value literally. Dotenv
+// single-quoted strings undergo no interpolation and no escape processing,
+// but Compose's parser still reads a backslash before the closing quote as
+// an escaped quote: `K='abc\'` does not end, the value runs into the next
+// line, and a crafted pair of values injects keys past the reserved ones
+// . So single quotes only fit a value with neither `'` nor `\`.
+// Otherwise the value goes in double quotes with backslash and
+// double-quote escaped and every `$` doubled — the dotenv escape that
+// keeps `$` literal where interpolation would otherwise expand it.
+func quoteEnvValue(v string) string {
+	if !strings.ContainsAny(v, `'\`) {
+		return "'" + v + "'"
+	}
+	v = strings.ReplaceAll(v, "\\", "\\\\")
+	v = strings.ReplaceAll(v, "\"", "\\\"")
+	v = strings.ReplaceAll(v, "$", "$$")
+	return "\"" + v + "\""
 }
 
 // envValue returns vars[key] as a string, or "" when missing.

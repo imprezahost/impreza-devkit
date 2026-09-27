@@ -35,7 +35,14 @@ func TestRemoveHiddenServiceParksKeys(t *testing.T) {
 	if err := os.MkdirAll(svcDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(svcDir, "hs_ed25519_secret_key"), []byte("testkey"), 0o600); err != nil {
+	secret, public, _, err := freshOnionKeyFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svcDir, "hs_ed25519_secret_key"), secret, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svcDir, "hs_ed25519_public_key"), public, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -51,7 +58,7 @@ func TestRemoveHiddenServiceParksKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("keys not parked: %v", err)
 	}
-	if string(data) != "testkey" {
+	if string(data) != string(secret) {
 		t.Fatal("parked key content changed")
 	}
 
@@ -67,6 +74,11 @@ func TestRemoveHiddenServiceParksKeys(t *testing.T) {
 // A redeploy after uninstall must NOT silently resurrect the parked address:
 // the services dir starts empty and Tor would generate fresh keys.
 func TestParkedKeysNeverAutoReuse(t *testing.T) {
+	// Hermetic by rule: with a Docker daemon reachable this test would pull
+	// the real Tor image and leave an impreza_tor container corpse behind —
+	// a smoke run on a real host hit exactly that. The provision below is
+	// expected to fail; what matters is the filesystem shape it leaves.
+	t.Setenv("PATH", t.TempDir())
 	tor := newTestTor(t)
 	ctx := context.Background()
 
@@ -108,6 +120,16 @@ func TestParkedPrune(t *testing.T) {
 
 	svcDir := filepath.Join(tor.StateDir, "services", "dpl_new")
 	if err := os.MkdirAll(svcDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	secret, public, _, err := freshOnionKeyFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svcDir, "hs_ed25519_secret_key"), secret, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svcDir, "hs_ed25519_public_key"), public, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := tor.RemoveHiddenService(ctx, "dpl_new"); err != nil {

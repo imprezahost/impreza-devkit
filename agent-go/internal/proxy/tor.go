@@ -33,6 +33,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -77,6 +78,9 @@ type Tor struct {
 	reloadFn func(context.Context) error // test seam for daemon failure cases
 	pullFn   func(context.Context) error // test-only local candidate image
 	launchFn func(context.Context) error // test-only failed candidate startup
+	// ContainerPresent overrides the impreza_tor presence probe (tests).
+	// Nil probes the real Docker daemon.
+	ContainerPresent func(context.Context) (bool, error)
 }
 
 // NewTor builds a Tor manager rooted at <agentStateDir>/proxy/tor.
@@ -342,6 +346,20 @@ func (t *Tor) ProvisionHiddenService(ctx context.Context, deploymentID string, u
 	if err := os.MkdirAll(svcDir, 0o700); err != nil {
 		return "", fmt.Errorf("mkdir hidden service dir: %w", err)
 	}
+	// MkdirAll does not tighten the mode of a directory that already
+	// exists — exactly the restore case, where a bind-mount made
+	// Docker create an empty 0755 directory. Force the only mode Tor
+	// accepts before the directory can reach a torrc — but never through
+	// a symlink: a compromised Tor container with a writable services/
+	// mount could otherwise point the agent's root chmod at an arbitrary
+	// host directory. Validate the chain, then chmod by
+	// descriptor with O_NOFOLLOW.
+	if _, err := t.serviceDir(deploymentID); err != nil {
+		return "", err
+	}
+	if err := chmodDirNoFollow(svcDir, 0o700); err != nil {
+		return "", fmt.Errorf("chmod hidden service dir: %w", err)
+	}
 
 	// torrc reflects the on-disk service list — including the new
 	// entry just created above — before we touch the container.
@@ -400,10 +418,63 @@ func (t *Tor) ProvisionHiddenService(ctx context.Context, deploymentID string, u
 	}
 }
 
+// HasService reports whether a hidden-service directory exists for the
+// deployment right now. Callers use it to decide whether a failed first
+// deploy left an onion behind.
+func (t *Tor) HasService(deploymentID string) bool {
+	if !onionDeploymentID.MatchString(deploymentID) {
+		return false
+	}
+	_, err := os.Lstat(filepath.Join(t.StateDir, "services", deploymentID))
+	return err == nil
+}
+
 // ParkRetention is how long a parked hidden-service key set is kept for
 // recovery after uninstall. Rotating into a NEW address stays the default —
 // parking only means "not irrecoverable the same second the app is deleted".
 const ParkRetention = 30 * 24 * time.Hour
+
+// HasState reports whether this host holds any Tor state at all: a torrc,
+// service directories, parked keys, daemon data or a pending policy
+// journal. A host that never ran an onion deployment has none of those,
+// so an uninstall there has nothing to unpublish — and must not try to
+// regenerate a torrc inside a state tree that never existed.
+//
+// Only a confirmed absence counts: a stat error is not "no
+// state", and a present impreza_tor container — even stopped — means the
+// daemon may still hold services the disk no longer shows. When neither
+// can be verified absent, HasState fails instead of guessing.
+func (t *Tor) HasState(ctx context.Context) (bool, error) {
+	for _, name := range []string{"torrc", "services", "parked", "data", "policy-change.json"} {
+		_, err := os.Lstat(filepath.Join(t.StateDir, name))
+		if err == nil {
+			return true, nil
+		}
+		if !os.IsNotExist(err) {
+			return false, fmt.Errorf("cannot verify Tor state: %w", err)
+		}
+	}
+	return t.containerPresent(ctx)
+}
+
+// containerPresent reports whether the impreza_tor container exists in any
+// state. Only the daemon's own "no such object" answers count as absent —
+// an unreachable Docker proves nothing.
+func (t *Tor) containerPresent(ctx context.Context) (bool, error) {
+	if t.ContainerPresent != nil {
+		return t.ContainerPresent(ctx)
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(checkCtx, "docker", "inspect", "--format", "{{.State.Status}}", TorContainer).CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	if dockerObjectMissing(out) {
+		return false, nil
+	}
+	return false, fmt.Errorf("cannot verify Tor container presence: %w", err)
+}
 
 // RemoveHiddenService unpublishes the deployment's hidden service and moves
 // its HiddenServiceDir to parked/<deployment_id> instead of deleting it.
@@ -416,6 +487,12 @@ const ParkRetention = 30 * 24 * time.Hour
 // the same deployment_id still gets a NEW .onion — parked keys are never
 // reused automatically; recovery is an explicit operator action. Prune runs
 // on every call. (Resolves the Phase 9.5.1 TODO.)
+//
+// A parked copy is always identifiable — the hostname file is
+// derived from the key pair when Tor never published one. A directory with
+// no key material (initial-profile staging, restore artifact) is not an
+// identity and is deleted directly instead of parked: parking it would
+// block the customer-confirmed purge later with "purge is not verified".
 func (t *Tor) RemoveHiddenService(ctx context.Context, deploymentID string) error {
 	if !onionDeploymentID.MatchString(deploymentID) {
 		return fmt.Errorf("invalid deployment ID")
@@ -429,41 +506,77 @@ func (t *Tor) RemoveHiddenService(ctx context.Context, deploymentID string) erro
 		if _, err := t.serviceDir(deploymentID); err != nil {
 			return err
 		}
-		if err := os.MkdirAll(parkedDir, 0o700); err != nil {
-			return fmt.Errorf("mkdir parked dir: %w", err)
-		}
-		if err := torSafeDirectory(parkedDir); err != nil {
-			return err
-		}
-		target := filepath.Join(parkedDir, deploymentID)
-		if _, err := os.Lstat(target); err == nil {
-			// Keep every recovery copy until its own retention expires.
-			suffix := make([]byte, 16)
-			if _, err := rand.Read(suffix); err != nil {
+		// A directory with no key material (an initial-profile staging, a
+		// restore artifact) is not an identity: parking it would keep an
+		// unidentifiable directory that later blocks the customer-confirmed
+		// purge with "purge is not verified". Delete it
+		// directly instead of parking.
+		if st, keyErr := os.Lstat(filepath.Join(svcDir, "hs_ed25519_secret_key")); keyErr != nil || !st.Mode().IsRegular() {
+			if keyErr != nil && !os.IsNotExist(keyErr) {
+				return keyErr
+			}
+			if err := os.RemoveAll(svcDir); err != nil {
+				return fmt.Errorf("remove keyless hidden service dir: %w", err)
+			}
+			if err := syncRoutingDir(filepath.Dir(svcDir)); err != nil {
 				return err
 			}
-			target = filepath.Join(parkedDir, fmt.Sprintf("%s-%x", deploymentID, suffix))
-		} else if !os.IsNotExist(err) {
-			return err
+			t.Log.Info("proxy/tor: keyless hidden-service directory removed (nothing to park)",
+				"deployment_id", deploymentID)
+		} else {
+			// The purge identifies a parked copy by its hostname file; a
+			// service Tor never published (a failed first deploy, an import
+			// staged before provisioning) does not have one yet. Derive the
+			// address from the key pair and write it BEFORE parking — the
+			// same shape WithdrawHiddenService leaves.
+			if _, err := readOnionStateFile(filepath.Join(svcDir, "hostname"), 128); os.IsNotExist(err) {
+				_, _, addr, keyErr := keyDirAddress(svcDir)
+				if keyErr != nil {
+					return fmt.Errorf("hidden service without a published hostname has an unreadable key pair: %w", keyErr)
+				}
+				if err := torPrivateWrite(filepath.Join(svcDir, "hostname"), []byte(addr+"\n")); err != nil {
+					return err
+				}
+			} else if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(parkedDir, 0o700); err != nil {
+				return fmt.Errorf("mkdir parked dir: %w", err)
+			}
+			if err := torSafeDirectory(parkedDir); err != nil {
+				return err
+			}
+			target := filepath.Join(parkedDir, deploymentID)
+			if _, err := os.Lstat(target); err == nil {
+				// Keep every recovery copy until its own retention expires.
+				suffix := make([]byte, 16)
+				if _, err := rand.Read(suffix); err != nil {
+					return err
+				}
+				target = filepath.Join(parkedDir, fmt.Sprintf("%s-%x", deploymentID, suffix))
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+			if err := os.Rename(svcDir, target); err != nil {
+				return fmt.Errorf("park hidden service dir: %w", err)
+			}
+			if err := os.Chtimes(target, time.Now(), time.Now()); err != nil {
+				return err
+			}
+			if err := syncRoutingDir(parkedDir); err != nil {
+				return err
+			}
+			if err := syncRoutingDir(filepath.Dir(svcDir)); err != nil {
+				return err
+			}
+			t.Log.Info("proxy/tor: hidden service parked (keys retained for recovery)",
+				"deployment_id", deploymentID, "retention", ParkRetention)
 		}
-		if err := os.Rename(svcDir, target); err != nil {
-			return fmt.Errorf("park hidden service dir: %w", err)
-		}
-		if err := os.Chtimes(target, time.Now(), time.Now()); err != nil {
-			return err
-		}
-		if err := syncRoutingDir(parkedDir); err != nil {
-			return err
-		}
-		if err := syncRoutingDir(filepath.Dir(svcDir)); err != nil {
-			return err
-		}
-		t.Log.Info("proxy/tor: hidden service parked (keys retained for recovery)",
-			"deployment_id", deploymentID, "retention", ParkRetention)
 	} else if !os.IsNotExist(err) {
 		return err
 	}
 	t.pruneParked()
+	t.pruneQuarantine()
 	if err := t.regenerateTorrc(); err != nil {
 		return err
 	}
@@ -507,6 +620,31 @@ func (t *Tor) pruneParked() {
 				t.Log.Warn("proxy/tor: parked prune failed", "name", e.Name(), "err", err)
 			} else {
 				t.Log.Info("proxy/tor: parked hidden service pruned past retention", "name", e.Name())
+			}
+		}
+	}
+}
+
+// pruneQuarantine deletes quarantined directories older than the parked
+// retention. Best-effort like pruneParked: quarantine exists for operator
+// recovery, not forever (it was never pruned before).
+func (t *Tor) pruneQuarantine() {
+	dir := filepath.Join(t.StateDir, "quarantine")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-ParkRetention)
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+				t.Log.Warn("proxy/tor: quarantine prune failed", "name", e.Name(), "err", err)
+			} else {
+				t.Log.Info("proxy/tor: quarantined hidden-service directory pruned past retention", "name", e.Name())
 			}
 		}
 	}
@@ -673,22 +811,17 @@ func (t *Tor) RegenerateTorrc() error {
 	return t.regenerateTorrc()
 }
 
-// regenerateTorrc emits a torrc file enumerating every
-// HiddenServiceDir currently present on disk. Each subdirectory of
-// services/ becomes one HiddenServiceDir block; sort lexically so
-// the output is deterministic.
+// regenerateTorrc emits a torrc file enumerating every HiddenServiceDir
+// that passed validation. Each usable subdirectory of services/ becomes
+// one HiddenServiceDir block; sort lexically so the output is
+// deterministic.
 func (t *Tor) regenerateTorrc() error {
 	servicesDir := filepath.Join(t.StateDir, "services")
 	entries, err := os.ReadDir(servicesDir)
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read services dir: %w", err)
 	}
-	var names []string
-	for _, e := range entries {
-		if e.IsDir() {
-			names = append(names, e.Name())
-		}
-	}
+	names := t.usableServiceDirs(entries)
 	sort.Strings(names)
 
 	var sb strings.Builder
@@ -721,6 +854,133 @@ func (t *Tor) regenerateTorrc() error {
 	}
 
 	return os.WriteFile(filepath.Join(t.StateDir, "torrc"), []byte(sb.String()), 0o644)
+}
+
+// usableServiceDirs filters services/ entries down to the ones that may be
+// rendered into the torrc. Tor 0.4.9 refuses the WHOLE configuration when a
+// single HiddenServiceDir is invalid ("Permissions on directory ... are too
+// permissive"), which takes every onion on the host down — a
+// restore-created empty root:root 0755 directory did exactly that. A
+// permissive directory that carries agent-managed state has its permissions
+// repaired (by descriptor, never through a symlink). An EMPTY permissive
+// directory is the restore artifact: it carries nothing to preserve, so it
+// stays in place — a restore racing an agent restart may still fill it —
+// but is never rendered into the torrc. Anything else
+// unusable is quarantined out of services/, and a quarantine failure
+// excludes the entry from rendering instead of failing the rest.
+func (t *Tor) usableServiceDirs(entries []os.DirEntry) []string {
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !onionDeploymentID.MatchString(name) {
+			t.quarantineServiceDir(name, "directory name is not a deployment identity")
+			continue
+		}
+		if torModeEnforced() {
+			info, err := e.Info()
+			if err != nil {
+				t.Log.Warn("proxy/tor: hidden-service directory could not be read; excluded from torrc",
+					"name", name, "err", err)
+				continue
+			}
+			if info.Mode().Perm()&0o077 != 0 {
+				if t.serviceDirHasState(name) {
+					if _, err := t.serviceDir(name); err != nil {
+						t.Log.Warn("proxy/tor: hidden-service directory failed validation; excluded from torrc",
+							"name", name, "err", err)
+						continue
+					}
+					if err := chmodDirNoFollow(filepath.Join(t.StateDir, "services", name), 0o700); err != nil {
+						t.quarantineServiceDir(name, fmt.Sprintf("mode %04o could not be repaired: %v", info.Mode().Perm(), err))
+						continue
+					}
+					t.Log.Warn("proxy/tor: hidden-service directory permissions repaired",
+						"name", name, "previous_mode", fmt.Sprintf("%04o", info.Mode().Perm()))
+				} else if empty, emptyErr := t.serviceDirEmpty(name); emptyErr == nil && empty {
+					// The restore artifact: empty, permissive, no
+					// agent-managed state. Leave it in place — quarantining
+					// it would fight a restore still writing into it — but
+					// never render it.
+					t.Log.Warn("proxy/tor: empty permissive hidden-service directory left out of torrc",
+						"name", name, "mode", fmt.Sprintf("%04o", info.Mode().Perm()))
+					continue
+				} else {
+					t.quarantineServiceDir(name, fmt.Sprintf("mode %04o without any agent-managed state", info.Mode().Perm()))
+					continue
+				}
+			}
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// serviceDirHasState reports whether the directory carries state only the
+// agent writes: a published identity, hardened-profile metadata or
+// restricted-discovery clients. An empty directory has none — which is
+// what an external bind-mount leaves behind.
+func (t *Tor) serviceDirHasState(name string) bool {
+	for _, f := range []string{"hs_ed25519_secret_key", "hostname", "profile.json", "authorized_clients"} {
+		if _, err := os.Lstat(filepath.Join(t.StateDir, "services", name, f)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// serviceDirEmpty reports whether a services/ entry holds no entries at all.
+func (t *Tor) serviceDirEmpty(name string) (bool, error) {
+	entries, err := os.ReadDir(filepath.Join(t.StateDir, "services", name))
+	if err != nil {
+		return false, err
+	}
+	return len(entries) == 0, nil
+}
+
+// torModeEnforced: permission validation applies only where Tor runs.
+// Windows reports every directory as 0777, so checking the mode there
+// would quarantine the whole services tree in development and tests.
+func torModeEnforced() bool { return runtime.GOOS == "linux" }
+
+// quarantineServiceDir moves an unusable services/ entry out of the tree
+// Tor reads, preserving its content under quarantine/ for operator
+// recovery. Best-effort on purpose: when the move itself fails, the caller
+// excludes the entry from the torrc instead of failing the whole render.
+func (t *Tor) quarantineServiceDir(name, reason string) {
+	src := filepath.Join(t.StateDir, "services", name)
+	dir := filepath.Join(t.StateDir, "quarantine")
+	excluded := "invalid hidden-service directory excluded from torrc"
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Log.Error("proxy/tor: "+excluded, "name", name, "reason", reason, "err", err)
+		return
+	}
+	if err := torSafeDirectory(dir); err != nil {
+		t.Log.Error("proxy/tor: "+excluded, "name", name, "reason", reason, "err", err)
+		return
+	}
+	suffix := make([]byte, 8)
+	if _, err := rand.Read(suffix); err != nil {
+		t.Log.Error("proxy/tor: "+excluded, "name", name, "reason", reason, "err", err)
+		return
+	}
+	dst := filepath.Join(dir, fmt.Sprintf("%s-%x", name, suffix))
+	if err := os.Rename(src, dst); err != nil {
+		t.Log.Error("proxy/tor: "+excluded, "name", name, "reason", reason, "err", err)
+		return
+	}
+	// Retention counts from the quarantine time, like a parked copy.
+	if err := os.Chtimes(dst, time.Now(), time.Now()); err != nil {
+		t.Log.Warn("proxy/tor: quarantined directory could not be time-stamped", "err", err)
+	}
+	if err := syncRoutingDir(dir); err != nil {
+		t.Log.Warn("proxy/tor: quarantine directory could not be synced", "err", err)
+	}
+	t.Log.Warn("proxy/tor: invalid hidden-service directory quarantined",
+		"name", name, "reason", reason)
+	t.pruneQuarantine()
 }
 
 // OnionProfile is the hardening tier rendered into a service's torrc block.

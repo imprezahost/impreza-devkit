@@ -155,6 +155,9 @@ func (d *Docker) privateBuild(ctx context.Context, app string, args ...string) (
 	cmd.Dir = app
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
+	// Same hardening as every preparation step: the deadline kills the
+	// whole process group, and the pipe wait is bounded.
+	prepareWorkerCommand(cmd)
 	if err := cmd.Run(); err != nil {
 		return nil, errors.New("build with private credentials failed; build output was withheld")
 	}

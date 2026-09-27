@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 )
 
 func TestRuntimeVerdict(t *testing.T) {
@@ -16,24 +18,50 @@ func TestRuntimeVerdict(t *testing.T) {
 		services   []string
 		containers []runtimeContainer
 		want       string
+		wantCounts sdkclient.RuntimeCounts
 	}{
-		{"empty", []string{"web"}, nil, "stopped"},
-		{"healthy", []string{"web"}, []runtimeContainer{{Service: "web", Status: "running", Health: "healthy"}}, "healthy"},
-		{"no check", []string{"web"}, []runtimeContainer{{Service: "web", Status: "running"}}, "running"},
-		{"unhealthy", []string{"web"}, []runtimeContainer{{Service: "web", Status: "running", Health: "unhealthy"}}, "degraded"},
-		{"starting", []string{"web"}, []runtimeContainer{{Service: "web", Status: "running", Health: "starting"}}, "starting"},
-		{"missing service", []string{"web", "db"}, []runtimeContainer{{Service: "db", Status: "running", Health: "healthy"}}, "degraded"},
-		{"stopped web", []string{"web", "db"}, []runtimeContainer{{Service: "db", Status: "running", Health: "healthy"}, {Service: "web", Status: "exited"}}, "degraded"},
-		{"stopped", []string{"web"}, []runtimeContainer{{Service: "web", Status: "exited"}}, "stopped"},
-		{"crash", []string{"web"}, []runtimeContainer{{Service: "web", Status: "exited", ExitCode: 1}}, "degraded"},
-		{"paused", []string{"web"}, []runtimeContainer{{Service: "web", Status: "paused"}}, "degraded"},
-		{"restart loop", []string{"web"}, []runtimeContainer{{Service: "web", Status: "restarting"}}, "degraded"},
+		{"empty", []string{"web"}, nil, "stopped", sdkclient.RuntimeCounts{ExpectedServices: 1, MissingServices: 1}},
+		{"healthy", []string{"web"}, []runtimeContainer{{Service: "web", Status: "running", Health: "healthy"}}, "healthy", sdkclient.RuntimeCounts{Total: 1, Running: 1, Healthy: 1, ExpectedServices: 1}},
+		{"no check", []string{"web"}, []runtimeContainer{{Service: "web", Status: "running"}}, "running", sdkclient.RuntimeCounts{Total: 1, Running: 1, ExpectedServices: 1}},
+		{"unhealthy", []string{"web"}, []runtimeContainer{{Service: "web", Status: "running", Health: "unhealthy"}}, "degraded", sdkclient.RuntimeCounts{Total: 1, Running: 1, Unhealthy: 1, ExpectedServices: 1}},
+		{"starting", []string{"web"}, []runtimeContainer{{Service: "web", Status: "running", Health: "starting"}}, "starting", sdkclient.RuntimeCounts{Total: 1, Running: 1, Starting: 1, ExpectedServices: 1}},
+		{"missing service", []string{"web", "db"}, []runtimeContainer{{Service: "db", Status: "running", Health: "healthy"}}, "degraded", sdkclient.RuntimeCounts{Total: 1, Running: 1, Healthy: 1, ExpectedServices: 2, MissingServices: 1}},
+		// An UNMARKED service that exited 0 — a long-running
+		// service parked with `docker stop` exits 0 too — is an unexpected
+		// stop, never a completion. The stack must degrade, not heal.
+		{"web stopped via docker stop beside healthy db", []string{"web", "db"}, []runtimeContainer{{Service: "db", Status: "running", Health: "healthy"}, {Service: "web", Status: "exited"}}, "degraded", sdkclient.RuntimeCounts{Total: 2, Running: 1, Healthy: 1, Stopped: 1, ExpectedServices: 2}},
+		{"web crashed beside healthy db", []string{"web", "db"}, []runtimeContainer{{Service: "db", Status: "running", Health: "healthy"}, {Service: "web", Status: "exited", ExitCode: 1}}, "degraded", sdkclient.RuntimeCounts{Total: 2, Running: 1, Healthy: 1, Stopped: 1, Failed: 1, ExpectedServices: 2}},
+		{"stopped", []string{"web"}, []runtimeContainer{{Service: "web", Status: "exited"}}, "stopped", sdkclient.RuntimeCounts{Total: 1, Stopped: 1, ExpectedServices: 1}},
+		{"crash", []string{"web"}, []runtimeContainer{{Service: "web", Status: "exited", ExitCode: 1}}, "degraded", sdkclient.RuntimeCounts{Total: 1, Stopped: 1, Failed: 1, ExpectedServices: 1}},
+		{"paused", []string{"web"}, []runtimeContainer{{Service: "web", Status: "paused"}}, "degraded", sdkclient.RuntimeCounts{Total: 1, Failed: 1, ExpectedServices: 1}},
+		{"restart loop", []string{"web"}, []runtimeContainer{{Service: "web", Status: "restarting"}}, "degraded", sdkclient.RuntimeCounts{Total: 1, Failed: 1, ExpectedServices: 1}},
+		// A DECLARED one-shot init job (another service depends on it
+		// with condition service_completed_successfully — the tls-init and
+		// synapse-init shape) that exited 0 must not degrade a stack whose
+		// long-running services are up — the settle gate accepts it, and
+		// the runtime collector has to agree.
+		// The label is what Compose writes: service:condition:restart
+		// entries joined by ',' (measured on compose 2.40.3).
+		{"one-shot init healthy", []string{"app", "init"}, []runtimeContainer{{Service: "app", Status: "running", Health: "healthy", DependsOn: "init:service_completed_successfully:false"}, {Service: "init", Status: "exited"}}, "healthy", sdkclient.RuntimeCounts{Total: 2, Running: 1, Healthy: 1, Stopped: 1, Completed: 1, ExpectedServices: 2}},
+		{"one-shot init running", []string{"app", "init"}, []runtimeContainer{{Service: "app", Status: "running", DependsOn: "init:service_completed_successfully:false"}, {Service: "init", Status: "exited"}}, "running", sdkclient.RuntimeCounts{Total: 2, Running: 1, Stopped: 1, Completed: 1, ExpectedServices: 2}},
+		{"one-shot among several dependencies", []string{"app", "db", "init"}, []runtimeContainer{{Service: "app", Status: "running", DependsOn: "db:service_healthy:true,init:service_completed_successfully:false"}, {Service: "db", Status: "running", Health: "healthy"}, {Service: "init", Status: "exited"}}, "running", sdkclient.RuntimeCounts{Total: 3, Running: 2, Healthy: 1, Stopped: 1, Completed: 1, ExpectedServices: 3}},
+		{"one-shot failed init", []string{"app", "init"}, []runtimeContainer{{Service: "app", Status: "running", DependsOn: "init:service_completed_successfully:false"}, {Service: "init", Status: "exited", ExitCode: 1}}, "degraded", sdkclient.RuntimeCounts{Total: 2, Running: 1, Stopped: 1, Failed: 1, ExpectedServices: 2}},
+		{"one-shot mark other condition", []string{"app", "init"}, []runtimeContainer{{Service: "app", Status: "running", DependsOn: "init:service_started:false"}, {Service: "init", Status: "exited"}}, "degraded", sdkclient.RuntimeCounts{Total: 2, Running: 1, Stopped: 1, ExpectedServices: 2}},
+		{"one-shot mark without condition", []string{"app", "init"}, []runtimeContainer{{Service: "app", Status: "running", DependsOn: "init"}, {Service: "init", Status: "exited"}}, "degraded", sdkclient.RuntimeCounts{Total: 2, Running: 1, Stopped: 1, ExpectedServices: 2}},
+		{"one-shot unparsable mark", []string{"app", "init"}, []runtimeContainer{{Service: "app", Status: "running", DependsOn: `{not json`}, {Service: "init", Status: "exited"}}, "degraded", sdkclient.RuntimeCounts{Total: 2, Running: 1, Stopped: 1, ExpectedServices: 2}},
+		// A JSON object is accepted defensively.
+		{"one-shot json label shape", []string{"app", "init"}, []runtimeContainer{{Service: "app", Status: "running", Health: "healthy", DependsOn: `{"init":{"condition":"service_completed_successfully","required":true}}`}, {Service: "init", Status: "exited"}}, "healthy", sdkclient.RuntimeCounts{Total: 2, Running: 1, Healthy: 1, Stopped: 1, Completed: 1, ExpectedServices: 2}},
+		{"one-shot json other condition", []string{"app", "init"}, []runtimeContainer{{Service: "app", Status: "running", DependsOn: `{"init":{"condition":"service_started","required":true}}`}, {Service: "init", Status: "exited"}}, "degraded", sdkclient.RuntimeCounts{Total: 2, Running: 1, Stopped: 1, ExpectedServices: 2}},
+		{"created not started", []string{"app", "init"}, []runtimeContainer{{Service: "app", Status: "running"}, {Service: "init", Status: "created"}}, "degraded", sdkclient.RuntimeCounts{Total: 2, Running: 1, Stopped: 1, ExpectedServices: 2}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c, state := runtimeVerdict(tt.services, tt.containers)
 			if state != tt.want {
 				t.Fatalf("got %s (%+v), want %s", state, c, tt.want)
+			}
+			if c != tt.wantCounts {
+				t.Fatalf("counts got %+v, want %+v", c, tt.wantCounts)
 			}
 		})
 	}

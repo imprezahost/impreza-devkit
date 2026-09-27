@@ -103,8 +103,10 @@ func TestPreparationWorkerRejectsChangedInputsAndMissingProof(t *testing.T) {
 		t.Fatal("work ran despite input drift")
 	}
 	os.WriteFile(filepath.Join(bin, "systemctl"), []byte("#!/bin/sh\necho inactive\n"), 0700)
-	if _, err := d.CompletedPreparationWork(r, "cmd_test"); err == nil || errors.Is(err, ErrPreparationPending) {
-		t.Fatal("missing worker did not require review", err)
+	// A stopped plain build worker without a receipt never counts as done:
+	// it reconciles into the defined failure, never "ready".
+	if next, err := d.CompletedPreparationWork(r, "cmd_test"); err != nil || next.Phase != "aborted" {
+		t.Fatal("missing worker was not a defined failure", next, err)
 	}
 	// A result for another deployment cannot be accepted even if its digest is valid.
 	dir, _, _ := d.loadPreparationWork(r.Work, r.DeploymentID)
@@ -118,15 +120,17 @@ func TestPreparationWorkerRejectsChangedInputsAndMissingProof(t *testing.T) {
 		t.Fatal("different deployment accepted")
 	}
 }
-func TestPreparationWorkerFailureAndSignalDoNotAuthorizeRecovery(t *testing.T) {
+func TestPreparationWorkerFailureAndSignalReconcileAsDefinedFailure(t *testing.T) {
 	for _, script := range []string{"echo failure; exit 1", "kill -KILL $$"} {
 		t.Run(script, func(t *testing.T) {
 			d, r, _ := workFixture(t, "build", script)
 			if err := RunPreparationWorker(d.StateDir, r.Work.ID); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := d.CompletedPreparationWork(r, "cmd_test"); err == nil || errors.Is(err, ErrPreparationPending) {
-				t.Fatal("unsuccessful work authorized restoration", err)
+			// Unsuccessful work is never promoted to "ready": a plain build
+			// reconciles into the defined, retryable failure.
+			if next, err := d.CompletedPreparationWork(r, "cmd_test"); err != nil || next.Phase != "aborted" {
+				t.Fatal("unsuccessful work was not a defined failure", next, err)
 			}
 			result, err := d.preparationWorkResult(r.Work, r.DeploymentID)
 			if err != nil {
@@ -165,7 +169,16 @@ func TestPreparationWorkerProtectsPrivateFilesAndCleanup(t *testing.T) {
 	if err := d.ForgetPreparationWork(r.Work); err == nil {
 		t.Fatal("unexpected file removed")
 	}
-	os.Remove(filepath.Join(dir, "unexpected"))
+	// The refused cleanup keeps the directory for review, but never the
+	// request and its proxy environment.
+	if _, err := os.Stat(filepath.Join(dir, "unexpected")); err != nil {
+		t.Fatal("unexpected file not kept for review")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "request.json")); !os.IsNotExist(err) {
+		t.Fatal("refused cleanup kept the request")
+	}
+	d, r, _ = workFixture(t, "pull", "exit 0")
+	dir, _, _ = d.loadPreparationWork(r.Work, r.DeploymentID)
 	if err := RunPreparationWorker(d.StateDir, r.Work.ID); err != nil {
 		t.Fatal(err)
 	}

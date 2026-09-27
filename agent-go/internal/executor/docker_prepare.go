@@ -16,7 +16,11 @@ func prepareDeployImages(ctx context.Context, compose func(context.Context, ...s
 	for _, args := range steps {
 		budget := composeQueryTimeout
 		if args[0] == "pull" {
-			budget = composePullTimeout
+			// The unsupervised (development) path cannot observe pull
+			// progress, so it runs on the absolute ceiling: the deadline
+			// itself is a defined failure here, same as the supervised
+			// worker's ceiling.
+			budget = composePullCeiling
 		}
 		if args[0] == "build" {
 			budget = composeBuildTimeout

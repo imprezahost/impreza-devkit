@@ -13,9 +13,12 @@ var onionAddressRe = regexp.MustCompile(`^([a-z2-7]{56})\.onion$`)
 
 // PurgeOnionIdentity deletes the managed parked recovery copies of ONE
 // address of one deployment. The customer confirmed the exact address on the
-// control plane; here the agent deletes only parked directories whose
-// hostname file matches it — never the live identity, never another
-// deployment's material, never a directory it cannot identify.
+// control plane; here the agent deletes only retained directories it
+// identifies as that address (see retainedAddress) — never the live
+// identity, never another deployment's material, never a directory it
+// cannot identify. Every copy is identified before any is deleted, so a
+// directory that cannot be identified fails the purge without a partial
+// delete.
 //
 // Rotation receipts are kept: they carry no key material and protect
 // rotation idempotency after crashes. Uninstall-parked copies of the same
@@ -50,52 +53,55 @@ func (t *Tor) PurgeOnionIdentity(ctx context.Context, deploymentID, address stri
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	parkedDir := filepath.Join(t.StateDir, "parked")
-	if err := torSafeDirectory(parkedDir); err != nil {
-		if os.IsNotExist(err) {
-			return []string{}, nil
+	// Quarantined material joins the purge too: a quarantined directory can
+	// still hold key material of this address, and a customer-confirmed
+	// purge must not leave it behind.
+	type retainedCopy struct{ parent, name string }
+	var matches []retainedCopy
+	quarantineDir := filepath.Join(t.StateDir, "quarantine")
+	for _, parent := range []string{filepath.Join(t.StateDir, "parked"), quarantineDir} {
+		if err := torSafeDirectory(parent); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
 		}
-		return nil, err
-	}
-	entries, err := os.ReadDir(parkedDir)
-	if os.IsNotExist(err) {
-		return []string{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := torSafeDirectory(parkedDir); err != nil {
-		return nil, err
-	}
-	purged := []string{}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if name != deploymentID && !strings.HasPrefix(name, deploymentID+"-") {
-			continue
-		}
-		dir := filepath.Join(parkedDir, name)
-		raw, err := readOnionStateFile(filepath.Join(dir, "hostname"), 128)
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("cannot identify a retained directory; purge is not verified")
-		}
+		entries, err := os.ReadDir(parent)
 		if err != nil {
 			return nil, err
 		}
-		if !strings.EqualFold(strings.TrimSpace(string(raw)), address) {
-			continue
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if name != deploymentID && !strings.HasPrefix(name, deploymentID+"-") {
+				continue
+			}
+			addr, err := retainedAddress(filepath.Join(parent, name), parent == quarantineDir)
+			if err != nil {
+				return nil, err
+			}
+			if addr != "" && strings.EqualFold(addr, address) {
+				matches = append(matches, retainedCopy{parent, name})
+			}
 		}
-		if err := os.RemoveAll(dir); err != nil {
-			return nil, fmt.Errorf("purge parked identity: %w", err)
-		}
-		purged = append(purged, name)
 	}
-	if len(purged) > 0 {
-		if err := syncRoutingDir(parkedDir); err != nil {
+	purged := []string{}
+	touched := map[string]bool{}
+	for _, m := range matches {
+		if err := os.RemoveAll(filepath.Join(m.parent, m.name)); err != nil {
+			return purged, fmt.Errorf("purge parked identity: %w", err)
+		}
+		purged = append(purged, m.name)
+		touched[m.parent] = true
+	}
+	for parent := range touched {
+		if err := syncRoutingDir(parent); err != nil {
 			return purged, err
 		}
+	}
+	if len(purged) > 0 {
 		t.Log.Info("proxy/tor: parked identity purged after customer confirmation",
 			"deployment_id", deploymentID, "copies", len(purged))
 	} else {
@@ -103,4 +109,55 @@ func (t *Tor) PurgeOnionIdentity(ctx context.Context, deploymentID, address stri
 			"deployment_id", deploymentID)
 	}
 	return purged, nil
+}
+
+// retainedAddress reports the onion address a parked or quarantined
+// directory holds material of, or "" when it holds no identity at all.
+//
+// The key pair is authoritative: the hostname file is written inside
+// services/, which the Tor container can write, and a key set quarantined
+// before Tor ever published it has no hostname — the same case as a parked
+// staging. Without a verifiable pair the hostname identifies the copy.
+// Key material that cannot be attributed to an address fails the purge.
+//
+// With neither key material nor hostname there is no identity to destroy:
+// a quarantined entry (the agent already judged its content unusable) and
+// a parked staging an older agent left with only its profile are
+// left to retention. Anything else in parked/, which only the agent
+// writes, is unexpected and fails the purge.
+func retainedAddress(dir string, quarantined bool) (string, error) {
+	_, keyErr := os.Lstat(filepath.Join(dir, "hs_ed25519_secret_key"))
+	if keyErr != nil && !os.IsNotExist(keyErr) {
+		return "", keyErr
+	}
+	hasKey := keyErr == nil
+	if hasKey {
+		if _, _, addr, err := keyDirAddress(dir); err == nil {
+			return addr, nil
+		}
+	}
+	raw, err := readOnionStateFile(filepath.Join(dir, "hostname"), 128)
+	if err == nil {
+		return strings.TrimSpace(string(raw)), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	unverified := fmt.Errorf("cannot identify a retained directory; purge is not verified")
+	if hasKey {
+		return "", unverified
+	}
+	if quarantined {
+		return "", nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if e.Name() != "profile.json" && e.Name() != "authorized_clients" {
+			return "", unverified
+		}
+	}
+	return "", nil
 }
