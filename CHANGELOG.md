@@ -12,6 +12,45 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## Agent 0.6.24 — 2026-09-29
+
+- Keep the shared reverse proxy running across deploys. It is recreated only
+  when its image, its container settings or the agent's credentials change,
+  instead of on every deploy with a route, which left every application on the
+  server without HTTPS for a few seconds. The first deploy with a route after
+  the update replaces it once. A value that leaves the proxy's environment,
+  such as the agent's previous credentials after a re-registration, also
+  recreates it once, so the proxy never keeps a removed value.
+- Report an application as down in its metrics as soon as any service its
+  Compose file declares stops, not only when every container has stopped: a
+  stopped web server next to a running database now opens the `down` alert. A
+  one-shot service that another service waits on with
+  `service_completed_successfully` and that exited 0 still counts as done, and
+  an application with no container reports `exited` instead of a state the
+  control plane discards. The metrics follow the application's Compose project,
+  including one named literally in the Compose file.
+- Run Docker Compose on each application's own project and file (`-p` and
+  `-f`), so no deployment variable can point it at another application on the
+  server. A literal top-level `name:` keeps working as before; a name built from
+  a variable, or shaped like another application's project, is refused.
+- Refuse deployment variables named `COMPOSE_*` or `DOCKER_*` (any case), or not
+  made only of letters, digits and underscores, before anything changes.
+- Roll back applications bound to a managed MariaDB database. The check that a
+  retained release keeps the application's managed database connection only
+  recognized PostgreSQL connection URLs, so every such rollback was refused with
+  "release database connection cannot be verified". A release with another
+  database login is still refused, and so is an unmanaged connection on a
+  binding network.
+- Report an application's memory limit and volume usage with real numbers.
+  When one of its running containers has no memory limit, the limit is the
+  server's memory counted once, instead of once per container (two such
+  containers on an 8 GB server reported 15.5 GiB). Volume usage counts every
+  named volume of the application's Compose project, including those whose
+  name does not start with the deployment ID, and the directories inside the
+  application's own directory that it bind-mounts, such as `./data`. Those are
+  measured in the background, at most every ten minutes, and read 0 until the
+  first measurement after the agent starts completes.
+
 ## Agent 0.6.23 — 2026-09-27
 
 - Supervise image pulls on a budget that grows while the pull keeps

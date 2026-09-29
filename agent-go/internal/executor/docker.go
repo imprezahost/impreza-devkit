@@ -258,6 +258,9 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	if err := validateServiceBindingManifest(p); err != nil {
 		return failResult(cmd.ID, err.Error())
 	}
+	if err := validateEnvNames(p.Vars); err != nil {
+		return failResult(cmd.ID, err.Error())
+	}
 	if err := validateBackupDatabaseSpec(p); err != nil {
 		return failResult(cmd.ID, err.Error())
 	}
@@ -578,7 +581,11 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	if err := writeAtomic(filepath.Join(appDir, "compose.yaml"), []byte(composeYAML+"\n"), 0o644); err != nil {
 		return failResult(cmd.ID, "write compose.yaml: "+err.Error())
 	}
-	if err := writeAtomic(filepath.Join(appDir, ".env"), []byte(renderEnv(p.Vars)), 0o600); err != nil {
+	env, err := renderEnv(p.Vars)
+	if err != nil {
+		return failResult(cmd.ID, err.Error())
+	}
+	if err := writeAtomic(filepath.Join(appDir, ".env"), []byte(env), 0o600); err != nil {
 		return failResult(cmd.ID, "write .env: "+err.Error())
 	}
 
@@ -707,7 +714,11 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		}
 		p.Vars["DOMAIN"] = addr
 		p.Vars["DOMAIN_URL"] = "http://" + addr
-		if err := writeAtomic(filepath.Join(appDir, ".env"), []byte(renderEnv(p.Vars)), 0o600); err != nil {
+		env, err := renderEnv(p.Vars)
+		if err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+		if err := writeAtomic(filepath.Join(appDir, ".env"), []byte(env), 0o600); err != nil {
 			return failResult(cmd.ID, "rewrite .env with onion vars (onion-only): "+err.Error())
 		}
 		d.Log.Info("docker deploy: onion-only — Tor provisioned + .env back-filled",
@@ -1614,6 +1625,9 @@ func (d *Docker) updateRoutes(ctx context.Context, cmd *sdkclient.PollCommand) s
 	if p.DeploymentID == "" {
 		return failResult(cmd.ID, "update_routes payload missing deployment_id")
 	}
+	if err := validateEnvNames(p.Vars); err != nil {
+		return failResult(cmd.ID, err.Error())
+	}
 	if p.DomainHandover != nil {
 		return d.domainHandover(ctx, cmd, p)
 	}
@@ -1700,7 +1714,11 @@ func (d *Docker) updateRoutes(ctx context.Context, cmd *sdkclient.PollCommand) s
 	//    (a future caller may want to mutate routes without
 	//    touching env, e.g. flipping TLS mode).
 	if len(p.Vars) > 0 {
-		if err := writeAtomic(filepath.Join(appDir, ".env"), []byte(renderEnv(p.Vars)), 0o600); err != nil {
+		env, err := renderEnv(p.Vars)
+		if err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+		if err := writeAtomic(filepath.Join(appDir, ".env"), []byte(env), 0o600); err != nil {
 			return failResult(cmd.ID, "write .env: "+err.Error())
 		}
 	}
@@ -1932,13 +1950,18 @@ func (d *Docker) appDir(deploymentID string) string {
 }
 
 // compose runs `docker compose <args>` with appDir as the working
-// directory. Combined stdout + stderr is returned so the caller can
-// attach a tail to the result on failure.
+// directory, on the app's pinned project and file (composeCommand).
+// Combined stdout + stderr is returned so the caller can attach a tail to
+// the result on failure.
 //
-// `docker compose` reads .env automatically when present in the working
-// directory — no extra flag needed.
+// `docker compose` still reads the app directory's .env for interpolation;
+// it no longer decides the project or the file.
 func (d *Docker) compose(ctx context.Context, appDir string, args ...string) ([]byte, error) {
-	cmd := d.dockerCmd(ctx, append([]string{"compose"}, args...)...)
+	pinned, err := composeCommand(appDir, args...)
+	if err != nil {
+		return []byte(err.Error()), err
+	}
+	cmd := d.dockerCmd(ctx, pinned...)
 	cmd.Dir = appDir
 	return cmd.CombinedOutput()
 }
@@ -1950,7 +1973,11 @@ func (d *Docker) compose(ctx context.Context, appDir string, args ...string) ([]
 // docker CLI, and a plugin blocked on a network RUN step held the call — and
 // the command queue — past it.
 func (d *Docker) composePreparation(ctx context.Context, appDir string, args ...string) ([]byte, error) {
-	cmd := d.dockerCmd(ctx, append([]string{"compose"}, args...)...)
+	pinned, err := composeCommand(appDir, args...)
+	if err != nil {
+		return []byte(err.Error()), err
+	}
+	cmd := d.dockerCmd(ctx, pinned...)
 	cmd.Dir = appDir
 	prepareWorkerCommand(cmd)
 	return cmd.CombinedOutput()
@@ -2043,8 +2070,12 @@ func basicAuthFromPayload(b *sdkclient.RouteBasicAuth) *proxy.BasicAuth {
 // dotenv parser interpolate `$VAR`/`${VAR}` and treat ` #` as a comment —
 // `pa$word #x` silently became `pa`, and a var containing `${DB_PASSWORD}`
 // would have published the database password wherever the var lands.
-// quoteEnvValue picks the quoting.
-func renderEnv(vars map[string]any) string {
+// quoteEnvValue picks the quoting. Names go in verbatim, so a name no app
+// .env may carry is refused first (validateEnvNames).
+func renderEnv(vars map[string]any) (string, error) {
+	if err := validateEnvNames(vars); err != nil {
+		return "", err
+	}
 	keys := make([]string, 0, len(vars))
 	for k := range vars {
 		keys = append(keys, k)
@@ -2061,7 +2092,7 @@ func renderEnv(vars map[string]any) string {
 		sb.WriteString(quoteEnvValue(v))
 		sb.WriteByte('\n')
 	}
-	return sb.String()
+	return sb.String(), nil
 }
 
 // quoteEnvValue renders a .env value literally. Dotenv

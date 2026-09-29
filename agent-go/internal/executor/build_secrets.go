@@ -150,8 +150,11 @@ func (d *Docker) fetchBuildSecrets(ctx context.Context, cmd *sdkclient.PollComma
 }
 
 func (d *Docker) privateBuild(ctx context.Context, app string, args ...string) ([]byte, error) {
-	args = append(append([]string(nil), args...), "--no-cache")
-	cmd := d.dockerCmd(ctx, append([]string{"compose"}, args...)...)
+	pinned, err := composeCommand(app, append(append([]string(nil), args...), "--no-cache")...)
+	if err != nil {
+		return nil, err
+	}
+	cmd := d.dockerCmd(ctx, pinned...)
 	cmd.Dir = app
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard

@@ -110,7 +110,11 @@ func (d *Docker) collectRuntimeApp(ctx context.Context, id string) sdkclient.Run
 	observation := sdkclient.RuntimeObservation{DeploymentID: id, State: "unknown", Reason: "collection_failed"}
 	// Timestamp includes collection time, not just successful report delivery.
 	observation.ObservedAt = time.Now().UTC()
-	config := d.dockerCmd(ctx, "compose", "config", "--services")
+	pinned, err := composeCommand(d.appDir(id), "config", "--services")
+	if err != nil {
+		return observation
+	}
+	config := d.dockerCmd(ctx, pinned...)
 	config.Dir = d.appDir(id)
 	serviceOutput, err := limitedRuntimeOutput(config, 16384)
 	if err != nil {

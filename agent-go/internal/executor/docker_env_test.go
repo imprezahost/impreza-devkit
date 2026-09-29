@@ -308,7 +308,7 @@ func TestRenderEnvWritesValuesLiterally(t *testing.T) {
 	for k, v := range values {
 		vars[k] = v
 	}
-	rendered := renderEnv(vars)
+	rendered := mustRenderEnv(t, vars)
 	got, err := dotenvReferenceParse(rendered, canary)
 	if err != nil {
 		t.Fatalf("rendered .env does not parse: %v\n%s", err, rendered)
@@ -334,7 +334,7 @@ func TestRenderEnvCannotInjectKeys(t *testing.T) {
 	for k, v := range values {
 		vars[k] = v
 	}
-	rendered := renderEnv(vars)
+	rendered := mustRenderEnv(t, vars)
 	got, err := dotenvReferenceParse(rendered, nil)
 	if err != nil {
 		t.Fatalf("rendered .env does not parse: %v\n%s", err, rendered)
@@ -351,7 +351,7 @@ func TestRenderEnvNeverLeaksAnotherVar(t *testing.T) {
 		"DB_PASSWORD": "s3cret-canary",
 		"SITE_TITLE":  "${DB_PASSWORD}",
 	}
-	rendered := renderEnv(vars)
+	rendered := mustRenderEnv(t, vars)
 	got, err := dotenvReferenceParse(rendered, map[string]string{"DB_PASSWORD": "s3cret-canary"})
 	if err != nil {
 		t.Fatal(err)
@@ -367,7 +367,7 @@ func TestRenderEnvNeverLeaksAnotherVar(t *testing.T) {
 // Sanity: the exact render bytes for a representative set, so a future
 // change in quoting style is a deliberate diff.
 func TestRenderEnvQuotingShape(t *testing.T) {
-	rendered := renderEnv(map[string]any{
+	rendered := mustRenderEnv(t, map[string]any{
 		"A": "x",
 		"B": "pa$word #x",
 		"C": "it's",
@@ -403,7 +403,7 @@ func TestRenderEnvThroughRealCompose(t *testing.T) {
 		vars[k] = v
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(renderEnv(vars)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(mustRenderEnv(t, vars)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	compose := "services:\n  probe:\n    image: busybox:1.37\n    env_file: [.env]\n"
@@ -444,4 +444,15 @@ func TestRenderEnvThroughRealCompose(t *testing.T) {
 			t.Errorf("%s: real compose read %q, want %q", k, got[k], v)
 		}
 	}
+}
+
+// mustRenderEnv renders a .env the test expects to be accepted (renderEnv
+// refuses names no app .env may carry).
+func mustRenderEnv(t testing.TB, vars map[string]any) string {
+	t.Helper()
+	rendered, err := renderEnv(vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rendered
 }

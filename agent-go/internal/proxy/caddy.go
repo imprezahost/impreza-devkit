@@ -20,7 +20,12 @@
 package proxy
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -28,10 +33,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -55,7 +63,8 @@ const (
 	Image = "ghcr.io/imprezahost/caddy@sha256:2635ee3746c1cf3c8e2a9c91400bf5c016068a836025b4ade04d5a7dd707d83f"
 	// Env-var names the Caddy container reads to authenticate against
 	// the Impreza public API on every DNS-01 present/cleanup. These
-	// are set by SetImprezaCredentials via a bind-mounted env-file and
+	// are set by SetImprezaCredentials in the env-file EnsureRunning passes
+	// with `--env-file`, and
 	// referenced from per-deployment fragments as
 	// `dns impreza {env.IMPREZA_AGENT_ID} {env.IMPREZA_AGENT_SECRET}`.
 	// Phase 9.11d v2 — replaces the CADDY_CF_API_TOKEN of v1 (which
@@ -146,6 +155,10 @@ type Caddy struct {
 	// per-cycle deltas. Memory only, deployment-labeled series only.
 	scrapeMu   sync.Mutex
 	lastScrape map[scrapeKey]float64
+
+	// imageEnv caches the pinned image's default environment names, for the
+	// env-file comparison. Memory only.
+	imageEnv []string
 }
 
 // New constructs a Caddy under <agentStateDir>/proxy.
@@ -171,6 +184,11 @@ func (c *Caddy) EnsureNetwork(ctx context.Context) error {
 	return nil
 }
 
+// proxySpecLabel carries, on the proxy container, the digest of the exact
+// `docker run` arguments that created it. It holds no secret: the
+// environment is compared on its own, against the container's copy.
+const proxySpecLabel = "impreza.proxy.spec"
+
 // EnsureRunning starts the Caddy container if not already running.
 // Idempotent. Mounts the Caddyfile + data dirs from StateDir.
 //
@@ -179,11 +197,17 @@ func (c *Caddy) EnsureNetwork(ctx context.Context) error {
 //     CloudflareTokenEnvVar set by SetCloudflareToken reaches Caddy
 //     (the env-var is referenced from per-deployment fragments via
 //     `{env.CADDY_CF_API_TOKEN}` for DNS-01 challenges).
-//   - When an existing container is running but with the wrong Image
-//     OR was created without the env-file mount (i.e. before the
-//     9.11d agent upgrade), it is recreated so the new agent gets a
-//     Caddy that can serve DNS-01 fragments. Data dir is bind-mounted
-//     so existing certs survive the recreation.
+//
+// The proxy is shared by every app on the host, and a recreation cuts
+// HTTPS for all of them, so an existing container is recreated only when
+// it no longer matches what this agent would run: another image, a
+// spec label that differs or is missing (created by an older agent), or an
+// environment other than the env-file's current content. Docker copies the
+// env-file into the container at creation and `docker restart` keeps that
+// copy, which is why the environment is read from the container itself.
+// The previous check looked for the env-file among the bind mounts, where
+// `--env-file` never appears, so every deploy with a route recreated the
+// proxy. Data dir is bind-mounted so existing certs survive a recreation.
 func (c *Caddy) EnsureRunning(ctx context.Context) error {
 	if err := c.guardRoutingSwitch(); err != nil {
 		return err
@@ -211,35 +235,50 @@ func (c *Caddy) EnsureRunning(ctx context.Context) error {
 		}
 	}
 
-	// Inspect the existing container if any. We want three pieces of
-	// state in one round-trip: status (running / exited / etc.), image,
-	// and whether the env-file is mounted. A mismatch on image OR a
-	// missing env-file mount means the container was created by an
-	// older agent and needs recreation to pick up 9.11d features.
+	// The environment the container must carry, parsed the way the Docker
+	// CLI reads an env-file. A file the CLI would refuse stops here, before
+	// the serving proxy is touched.
+	wantEnv, err := readProxyEnvFile(envFile)
+	if err != nil {
+		return fmt.Errorf("proxy environment file unusable; the running proxy was kept: %w", err)
+	}
+	args := c.runArgs(envFile, caddyfile)
+	spec := proxySpecDigest(args)
+
+	// Inspect the existing container, if any, in one round-trip. The
+	// output carries the container's environment, credentials included:
+	// it is only compared, never logged or returned.
 	type containerInfo struct {
-		Status   string
-		Image    string
-		HasEnvFM bool
+		Status string
+		Image  string
+		Spec   string
+		Env    []string
 	}
 	var existing *containerInfo
-	if out, err := exec.CommandContext(ctx, "docker", "inspect",
-		"--format", "{{.State.Status}}|{{.Config.Image}}|{{range .HostConfig.Binds}}{{.}};{{end}}",
-		ContainerName).CombinedOutput(); err == nil {
-		parts := strings.SplitN(strings.TrimSpace(string(out)), "|", 3)
-		if len(parts) == 3 {
-			existing = &containerInfo{
-				Status:   parts[0],
-				Image:    parts[1],
-				HasEnvFM: strings.Contains(parts[2], envFile+":"),
-			}
+	if out, err := exec.CommandContext(ctx, "docker", "inspect", "--format",
+		`{"Status":{{json .State.Status}},"Image":{{json .Config.Image}},"Spec":{{json (index .Config.Labels "`+proxySpecLabel+`")}},"Env":{{json .Config.Env}}}`,
+		ContainerName).Output(); err == nil {
+		var info containerInfo
+		if json.Unmarshal(out, &info) == nil {
+			existing = &info
 		}
 	}
 
 	if existing != nil {
-		needRecreate := existing.Image != Image || !existing.HasEnvFM
-		if needRecreate {
-			c.Log.Info("proxy: recreating caddy container with new image / env-file",
-				"old_image", existing.Image, "new_image", Image, "had_env_file_mount", existing.HasEnvFM)
+		reason := ""
+		switch {
+		case existing.Image != Image:
+			reason = "image"
+		case existing.Spec == "":
+			reason = "created by an older agent"
+		case existing.Spec != spec:
+			reason = "container settings"
+		case !proxyEnvMatches(wantEnv, existing.Env, c.proxyImageDefaultEnv(ctx)):
+			reason = "environment"
+		}
+		if reason != "" {
+			c.Log.Info("proxy: recreating caddy container",
+				"reason", reason, "old_image", existing.Image, "new_image", Image)
 			if err := c.removeContainer(ctx); err != nil {
 				return err
 			}
@@ -255,9 +294,21 @@ func (c *Caddy) EnsureRunning(ctx context.Context) error {
 		}
 	}
 
-	// Doesn't exist (or was just removed for recreation) — run it.
+	// Doesn't exist (or was just removed for recreation) — run it, stamped
+	// with the digest of these exact arguments.
 	c.Log.Info("proxy: launching caddy container", "image", Image)
-	args := []string{
+	run := append([]string{}, args[:len(args)-1]...)
+	run = append(run, "--label", proxySpecLabel+"="+spec, Image)
+	if out, err := exec.CommandContext(ctx, "docker", run...).CombinedOutput(); err != nil {
+		return fmt.Errorf("docker run caddy: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return c.reconcileTorEgressNetworks(ctx)
+}
+
+// runArgs is the proxy container's `docker run`, image last, without the
+// spec label EnsureRunning adds.
+func (c *Caddy) runArgs(envFile, caddyfile string) []string {
+	return []string{
 		"run", "-d",
 		"--name", ContainerName,
 		"--restart", "unless-stopped",
@@ -271,15 +322,128 @@ func (c *Caddy) EnsureRunning(ctx context.Context) error {
 		"-v", filepath.Join(c.StateDir, "config") + ":/config",
 		Image,
 	}
-	if out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("docker run caddy: %v: %s", err, strings.TrimSpace(string(out)))
-	}
-	return c.reconcileTorEgressNetworks(ctx)
 }
 
-// envFilePath is the bind-mounted env-file that exposes
-// CloudflareTokenEnvVar (and any future operator-level secrets) to
-// Caddy via `--env-file`.
+// proxySpecDigest names one exact argument list. The env-file enters by
+// path only; its content is compared against the container separately.
+func proxySpecDigest(args []string) string {
+	h := sha256.New()
+	for _, arg := range args {
+		h.Write([]byte(arg))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// readProxyEnvFile returns the KEY=VALUE entries `docker run --env-file`
+// would set, following the Docker CLI's reader: a leading UTF-8 BOM and
+// leading whitespace dropped, `#` comments and blank lines skipped, the
+// value taken verbatim after the first `=`, and a bare KEY passed through
+// from this process's environment only when set there.
+func readProxyEnvFile(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var entries []string
+	scanner := bufio.NewScanner(f)
+	for n := 1; scanner.Scan(); n++ {
+		raw := scanner.Bytes()
+		if !utf8.Valid(raw) {
+			return nil, fmt.Errorf("line %d is not valid UTF-8", n)
+		}
+		if n == 1 {
+			raw = bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF})
+		}
+		line := strings.TrimLeftFunc(string(raw), unicode.IsSpace)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, hasValue := strings.Cut(line, "=")
+		key = strings.TrimLeft(key, " \t")
+		if key == "" || strings.ContainsAny(key, " \t") {
+			return nil, fmt.Errorf("line %d has no valid variable name", n)
+		}
+		if hasValue {
+			entries = append(entries, key+"="+value)
+		} else if value, ok := os.LookupEnv(key); ok {
+			entries = append(entries, key+"="+value)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// proxyImageDefaultEnv resolves, from the image the agent pins, the
+// environment entries the image itself provides. Everything else in the
+// container must come from the env-file: a variable that left the file is
+// a leftover the recreation must pick up. Fetched lazily and only
+// cached on success, so an image change is picked up on the next deploy.
+func (c *Caddy) proxyImageDefaultEnv(ctx context.Context) []string {
+	if c.imageEnv != nil {
+		return c.imageEnv
+	}
+	out, err := exec.CommandContext(ctx, "docker", "image", "inspect", "--format", "{{json .Config.Env}}", Image).Output()
+	if err != nil {
+		return nil
+	}
+	var entries []string
+	if json.Unmarshal(out, &entries) != nil {
+		return nil
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if key, _, found := strings.Cut(entry, "="); found {
+			names = append(names, key)
+		}
+	}
+	names = append(names, "HOSTNAME") // injected by the daemon, not the image
+	c.imageEnv = names
+	return names
+}
+
+// proxyEnvMatches reports whether a container environment carries exactly
+// the env-file's entries (the last one wins for a repeated name): each with
+// the same value, and none of the agent's credential names left over from
+// an earlier file.
+func proxyEnvMatches(want, have, allowed []string) bool {
+	values := func(entries []string) map[string]string {
+		m := make(map[string]string, len(entries))
+		for _, entry := range entries {
+			key, value, _ := strings.Cut(entry, "=")
+			m[key] = value
+		}
+		return m
+	}
+	wanted, current := values(want), values(have)
+	for key, value := range wanted {
+		if got, ok := current[key]; !ok || got != value {
+			return false
+		}
+	}
+	// A variable that left the env-file must leave the container too.
+	// An entry still in the container has to be one the env-file asks for,
+	// or one the image itself provides: the agent's credential names count
+	// as file entries, so a stale credential from an earlier file forces
+	// the recreation like any other removal. The container environment is
+	// exposed to the internet; a removed value must not linger there.
+	for key := range current {
+		if _, ok := wanted[key]; ok {
+			continue
+		}
+		if !slices.Contains(allowed, key) {
+			return false
+		}
+	}
+	return true
+}
+
+// envFilePath is the env-file that exposes the agent's credentials (and
+// any future operator-level secrets) to Caddy via `--env-file`. It is not
+// a mount: Docker copies its content into the container at creation.
 func (c *Caddy) envFilePath() string {
 	return filepath.Join(c.StateDir, "caddy.env")
 }
@@ -305,9 +469,10 @@ func (c *Caddy) removeContainer(ctx context.Context) error {
 // reaches the agent — see caddy-dns-impreza/README.md for the
 // threat-model rationale.
 //
-// Caddy reads env-vars only at process start, so changing values
-// after the container is up means a restart. To minimize unnecessary
-// downtime this method:
+// Docker copies the env-file into the container when it is created, so
+// neither a new file nor the restart below reaches a running container:
+// the next EnsureRunning sees the environment differ and recreates it
+// . To minimize unnecessary downtime this method:
 //
 //   - Writes the file at 0o600 only when content actually changes
 //     (idempotent — the agent calls this on every startup with the
@@ -789,8 +954,8 @@ func renderFragment(deploymentID string, routes []Route) string {
 					// DNS-01 via the impreza-bundled libdns proxy. The
 					// Caddy container reads its own credentials from
 					// IMPREZA_AGENT_ID / IMPREZA_AGENT_SECRET / IMPREZA_API_URL
-					// (set by SetImprezaCredentials + the env-file mount
-					// in EnsureRunning). The plugin then POSTs to
+					// (set by SetImprezaCredentials in the env-file that
+					// EnsureRunning passes). The plugin then POSTs to
 					// /v1/agent/dns-challenge/{present,cleanup} on the
 					// public API, which performs the CF TXT record
 					// write/delete using server-side credentials.

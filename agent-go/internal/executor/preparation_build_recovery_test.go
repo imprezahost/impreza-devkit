@@ -164,7 +164,7 @@ func TestBlockedDeployControlledBuildUsesTheWorker(t *testing.T) {
 	defer cancel()
 	result := f.d.Execute(ctx, f.cmd)
 	docker, _ := os.ReadFile(filepath.Join(f.bin, "docker.log"))
-	if strings.Contains(string(docker), "compose build") {
+	if composeStepLogged(string(docker), "build") {
 		t.Fatalf("the root daemon built a Blocked deployment on a controlled-build host, outside the controlled builder; docker log:\n%s", docker)
 	}
 	// The fixture's command has no control token, which the controlled

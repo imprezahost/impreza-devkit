@@ -765,6 +765,11 @@ func RunPreparationWorker(stateDir, id string) error {
 	if configHash != request.ConfigSHA256 {
 		return errors.New("preparation inputs changed before worker start")
 	}
+	// The step runs on the app's pinned Compose project and file; a
+	// compose.yaml that cannot name its project stops before the start marker.
+	if _, err = composeProject(app); err != nil {
+		return err
+	}
 	// O_EXCL plus directory sync prevents duplicate launches, including after a
 	// worker crash. An existing started marker is never treated as a retry request.
 	started, err := os.OpenFile(filepath.Join(dir, "started"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
@@ -801,7 +806,10 @@ func RunPreparationWorker(stateDir, id string) error {
 	if request.OwnedBuilder {
 		return d.runOwnedPreparation(ctx, w, &request, dir, app)
 	}
-	args := []string{"compose", w.Step}
+	args, err := composeCommand(app, w.Step)
+	if err != nil {
+		return err
+	}
 	if w.Step == "pull" {
 		args = append(args, "--ignore-buildable")
 	}

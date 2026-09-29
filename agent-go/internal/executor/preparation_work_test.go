@@ -61,9 +61,10 @@ func TestPreparationWorkerCompletesOnceAndBindsReceipt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := "compose " + step + "\n"
+			// On the app's pinned project and file.
+			want := "compose -p " + r.DeploymentID + " -f " + filepath.Join(d.appDir(r.DeploymentID), "compose.yaml") + " " + step + "\n"
 			if step == "pull" {
-				want = "compose pull --ignore-buildable\n"
+				want = strings.TrimSuffix(want, "\n") + " --ignore-buildable\n"
 			}
 			if string(got) != want {
 				t.Fatalf("unexpected command: %q", got)

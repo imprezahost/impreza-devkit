@@ -73,8 +73,9 @@ func newOnionPendingFixture(t *testing.T, id, systemdRun, systemctl string) *oni
 		"      echo " + pendingFixtureOnion + " > \"$svc/hostname\"\n" +
 		"    fi\n" +
 		"    exit 0;;\n" +
-		"  \"compose build\"*) echo 'build failed on purpose'; exit 1;;\n" +
-		"  \"compose up\"*) echo 'up failed on purpose'; exit 1;;\n" +
+		// Compose runs on the pinned project and file.
+		"  \"compose -p \"*\" build\"*) echo 'build failed on purpose'; exit 1;;\n" +
+		"  \"compose -p \"*\" up\"*) echo 'up failed on purpose'; exit 1;;\n" +
 		"esac\nexit 0\n"
 	for name, body := range map[string]string{"docker": docker, "systemd-run": systemdRun, "systemctl": systemctl} {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o700); err != nil {
@@ -223,8 +224,31 @@ func TestBlockedDeployBuildStaysSynchronous(t *testing.T) {
 		t.Fatalf("a Blocked deploy launched %d supervised workers; only the pull may be delegated:\n%s", len(lines), launches)
 	}
 	docker, _ := os.ReadFile(filepath.Join(f.bin, "docker.log"))
-	if !strings.Contains(string(docker), "compose build") {
+	if !composeStepLogged(string(docker), "build") {
 		t.Fatalf("the build did not run synchronously; docker log:\n%s", docker)
 	}
 	f.assertCleanedUp(t, result)
+}
+
+// composeStepLogged reports whether a fixture's docker log has a Compose
+// invocation of this subcommand, whatever global flags precede it.
+func composeStepLogged(log, step string) bool {
+	for _, line := range strings.Split(log, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] != "compose" {
+			continue
+		}
+		for i := 1; i < len(fields); i++ {
+			switch fields[i] {
+			case "-p", "-f", "--project-name", "--file":
+				i++
+			default:
+				if fields[i] == step {
+					return true
+				}
+				i = len(fields)
+			}
+		}
+	}
+	return false
 }

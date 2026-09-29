@@ -1,3 +1,6 @@
 # Linux image entrypoints must retain LF on Windows checkouts too.
 agent-go/packaging/tor/entrypoint.sh text eol=lf
 agent-go/packaging/update.sh text eol=lf
+# Reproducible agent builds: Go sources build from LF bytes everywhere,
+# so a Windows checkout and a git archive produce the same binary.
+*.go text eol=lf

@@ -66,7 +66,10 @@ func (d *Docker) runOwnedPreparation(ctx context.Context, w *PreparationWork, re
 			return err
 		}
 		// A removed CID cannot be recreated by the remote driver.
-		args := []string{"compose", "build", "--builder", name}
+		args, err := composeCommand(app, "build", "--builder", name)
+		if err != nil {
+			return err
+		}
 		if request.PrivateBuild {
 			args = append(args, "--no-cache")
 		}

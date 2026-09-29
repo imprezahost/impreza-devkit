@@ -15,7 +15,11 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 	if err := validateResolvedRetirements(p); err != nil {
 		return failResult(cmd.ID, err.Error())
 	}
-	values := serviceBindingEnvRedactions([]byte(renderEnv(p.Vars)))
+	env, err := renderEnv(p.Vars)
+	if err != nil {
+		return failResult(cmd.ID, err.Error())
+	}
+	values := serviceBindingEnvRedactions([]byte(env))
 	if previousRelease != nil {
 		for key, value := range serviceBindingEnvRedactions(previousRelease.Env) {
 			values[key] = value

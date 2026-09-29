@@ -68,7 +68,7 @@ func boundAppFixture(t *testing.T, key, url string) (*Docker, string) {
 	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte(compose), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env := renderEnv(map[string]any{key: url, "APP_NAME": "it's mine", "DEPLOYMENT_ID": id})
+	env := mustRenderEnv(t, map[string]any{key: url, "APP_NAME": "it's mine", "DEPLOYMENT_ID": id})
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(env), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestRenderedEnvKeepsReplacementRedaction(t *testing.T) {
 	for _, c := range managedURLCases() {
 		t.Run(c.name, func(t *testing.T) {
 			// The exact expression finishReplacement builds its redaction from.
-			values := serviceBindingEnvRedactions([]byte(renderEnv(map[string]any{c.key: c.url, "OTHER": `a\b`})))
+			values := serviceBindingEnvRedactions([]byte(mustRenderEnv(t, map[string]any{c.key: c.url, "OTHER": `a\b`})))
 			if values[c.url] == "" || values[c.password] == "" {
 				t.Fatalf("finishReplacement would redact nothing for a rendered %s", c.name)
 			}

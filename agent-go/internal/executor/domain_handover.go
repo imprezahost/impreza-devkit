@@ -104,7 +104,11 @@ func (d *Docker) domainHandover(ctx context.Context, cmd *sdkclient.PollCommand,
 	if err := d.probeHandoverTLS(ctx, h.After); err != nil {
 		return rollback("The new HTTPS endpoint could not be verified.")
 	}
-	if err := writeAtomic(envPath, []byte(renderEnv(p.Vars)), 0600); err != nil {
+	env, err := renderEnv(p.Vars)
+	if err != nil {
+		return rollback("The application environment could not be rendered.")
+	}
+	if err := writeAtomic(envPath, []byte(env), 0600); err != nil {
 		return rollback("The application environment could not be saved.")
 	}
 	if err := syncRecoveryDirectory(filepath.Dir(envPath)); err != nil {

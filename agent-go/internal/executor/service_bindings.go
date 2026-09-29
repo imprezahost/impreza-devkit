@@ -427,7 +427,11 @@ func (d *Docker) preserveServiceBindingVars(ctx context.Context, consumer string
 	}
 	queryCtx, cancel := context.WithTimeout(ctx, composeQueryTimeout)
 	defer cancel()
-	command := d.dockerCmd(queryCtx, "compose", "config", "--format", "json")
+	pinned, err := composeCommand(d.appDir(consumer), "config", "--format", "json")
+	if err != nil {
+		return nil, errors.New("existing service binding could not be resolved")
+	}
+	command := d.dockerCmd(queryCtx, pinned...)
 	command.Dir = d.appDir(consumer)
 	resolved, err := limitedRuntimeOutput(command, 1024*1024)
 	if err != nil {
@@ -449,8 +453,10 @@ const (
 )
 
 // bindingRuntimeURLPattern checks a value Compose already resolved, so it
-// stays bare: the rollback comparison must not accept quote characters.
-var bindingRuntimeURLPattern = regexp.MustCompile(`(?m)^DATABASE_URL=` + postgresBindingURL + `\r?$`)
+// stays bare: the rollback comparison must not accept quote characters. It
+// knows every managed binding grammar: with only the Postgres one, every
+// app bound to MariaDB failed the rollback check.
+var bindingRuntimeURLPattern = regexp.MustCompile(`(?m)^DATABASE_URL=(?:` + postgresBindingURL + `|` + mysqlBindingURL + `)\r?$`)
 
 // envBindingURLPattern finds a managed URL in a .env line. renderEnv quotes
 // every value literally and an earlier agent wrote it bare; that
