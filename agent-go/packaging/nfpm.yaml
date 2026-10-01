@@ -40,6 +40,11 @@ contents:
     file_info:
       mode: 0644
 
+  - src: ./systemd/impreza-agent-ingress.service
+    dst: /etc/systemd/system/impreza-agent-ingress.service
+    file_info:
+      mode: 0644
+
   - dst: /etc/impreza-agent
     type: dir
     file_info:

@@ -158,34 +158,3 @@ func TestHostRules6Shape(t *testing.T) {
 		t.Fatal("v6 host chain accepts instead of returning to operator policy")
 	}
 }
-
-func TestApplyHost6Reconcile(t *testing.T) {
-	var calls [][]string
-	hostDump := "-A " + HostChain + " -i docker0 -j DROP\n"
-	run := func(ctx context.Context, args ...string) ([]byte, error) {
-		call := strings.Join(args, " ")
-		calls = append(calls, args)
-		switch {
-		case strings.HasPrefix(call, "-S "+HostChain):
-			return []byte(hostDump), nil
-		case strings.HasPrefix(call, "-S INPUT"):
-			return []byte("-A INPUT -j " + HostChain + "\n"), nil
-		case call == "-F "+HostChain, strings.HasPrefix(call, "-A "+HostChain), call == "-N "+HostChain:
-			return nil, nil
-		case strings.HasPrefix(call, "-I INPUT"):
-			return nil, nil
-		}
-		return nil, errors.New("unexpected ip6tables call: " + call)
-	}
-	dir := t.TempDir()
-	if err := applyHostAll6(context.Background(), run, dir); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(filepath.Join(dir, "egress.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(raw), `"v6_host"`) {
-		t.Fatalf("v6 host status not recorded: %s", raw)
-	}
-}

@@ -12,6 +12,41 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+### Agent
+
+- Run a file restore with the target application stopped, behind the new
+  `restore-quiesce-v1` capability. The restore job stages and verifies the
+  archive with the application running; the agent then disables restart
+  durably, stops every container of the target, and only after confirming
+  none is left running releases the data exchange. The command waits for the
+  job container's real exit code, starts the application again on its
+  existing containers (no recreate, no image pull), and checks it settles. A
+  job that fails after the exchange started is rolled back to the
+  application's previous data while it is still stopped, and an agent
+  restart during the window resumes the operation from an on-disk journal
+  instead of leaving the application down. The control plane opts a job in
+  with the `quiesce` payload block; jobs without it behave exactly as
+  before.
+- The Go SDK's deploy payload accepts the optional `quiesce` block
+  (`target`, `stop_timeout_seconds`) and reports the outcome through the new
+  `restore_quiesce` receipt on the deploy result.
+
+## Agent 0.6.25 — 2026-09-30
+
+- Respect the host firewall when application containers connect to the host.
+  Ports allowed by the customer's firewall remain reachable, including
+  published application ports; other host services and the cloud metadata
+  endpoint remain blocked.
+- Restore application files with the target application stopped. The restore
+  stages and verifies the archive before stopping the application, exchanges
+  the data only after every target container has stopped, then restarts the
+  existing containers. Failed exchanges restore the previous data, and an
+  agent restart resumes the operation from its on-disk journal.
+- Keep the application stopped while a restore job is still alive, including
+  during recovery of an interrupted restore. A job that cannot be confirmed
+  stopped holds recovery for review instead of restarting the application
+  while its files may still be changing.
+
 ## Agent 0.6.24 — 2026-09-29
 
 - Keep the shared reverse proxy running across deploys. It is recreated only

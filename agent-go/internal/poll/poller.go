@@ -146,9 +146,12 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 	if p.journal != nil {
 		capabilities = append(capabilities, sdkclient.DeploymentProgressProtocol)
 		if _, ok := p.exec.(*executor.Docker); ok {
-			capabilities = append(capabilities, sdkclient.HostFailoverFenceProtocol, sdkclient.DomainHandoverProtocol, sdkclient.OnionTransferProtocol, sdkclient.HostFailoverReleaseProtocol)
+			capabilities = append(capabilities, sdkclient.HostFailoverFenceProtocol, sdkclient.DomainHandoverProtocol, sdkclient.OnionTransferProtocol, sdkclient.HostFailoverReleaseProtocol, sdkclient.RestoreQuiesceProtocol)
 			if upgrade.Available() {
 				capabilities = append(capabilities, upgrade.Protocol)
+			}
+			if executor.IngressAvailable() {
+				capabilities = append(capabilities, sdkclient.IngressProtocol)
 			}
 		}
 	}
@@ -387,6 +390,12 @@ func (p *Poller) sendHeartbeat(ctx context.Context) {
 		CollectRuntime(context.Context) *sdkclient.RuntimeSnapshot
 	}); ok {
 		report.Runtime = collector.CollectRuntime(ctx)
+	}
+
+	if collector, ok := p.exec.(interface {
+		CollectIngress() *sdkclient.IngressReport
+	}); ok {
+		report.Ingress = collector.CollectIngress()
 	}
 
 	if err := p.client.AgentReport(ctx, report); err != nil {

@@ -37,6 +37,11 @@ func Rules6(resolvers6 []string) [][]string {
 		{"-m", "physdev", "!", "--physdev-in", "+", "-j", "RETURN"},
 		{"-m", "physdev", "--physdev-is-bridged", "-j", "RETURN"},
 		{"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"},
+		// A flow Docker DNATed (a container reaching a port the host
+		// publishes, through the host's own address) gets what the internet
+		// gets. Without this the RFC1918/ULA drops below cut the hairpin
+		// (the WordPress loopback and WP-Cron behind the proxy).
+		{"-m", "conntrack", "--ctstate", "DNAT", "-j", "RETURN"},
 	}
 	for _, r := range resolvers6 {
 		rules = append(rules,
@@ -100,23 +105,9 @@ func apply6(ctx context.Context, run commandRunner, stateDir string, resolvers6 
 	return reconcileChain(ctx, run, Chain, ParentChain, "egress v6", Rules6(resolvers6), len(resolvers6), readStatus6(stateDir))
 }
 
-// HostRules6 returns the exact v6 INPUT chain content. Same scoping as v4;
-// ICMPv6 carries NDP/RS in v6 and must stay open for the bridge to work.
-func HostRules6() [][]string {
-	var rules [][]string
-	for _, iface := range []string{"docker0", "br+"} {
-		rules = append(rules,
-			[]string{"-i", iface, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"},
-			[]string{"-i", iface, "-p", "ipv6-icmp", "-j", "RETURN"},
-			[]string{"-i", iface, "-j", "DROP"},
-		)
-	}
-	return rules
-}
-
-func applyHost6(ctx context.Context, run commandRunner, stateDir string) (Status, error) {
-	return reconcileChain(ctx, run, HostChain, "INPUT", "egress v6 host", HostRules6(), 0, readHostStatus6(stateDir))
-}
+// HostRules6 is the v6 host chain with no exception; ICMPv6 carries NDP/RS
+// and must stay open for the bridge to work.
+func HostRules6() [][]string { return HostRulesFor("ipv6-icmp", nil) }
 
 // Apply6 installs or verifies the v6 baseline (FORWARD and host INPUT).
 // Unavailable ip6tables is recorded and returns nil (not an error): the v4
@@ -129,7 +120,7 @@ func Apply6(ctx context.Context, stateDir string) error {
 		return errors.Join(errF, errH)
 	}
 	errForward := applyAll6(ctx, realRunner6, "/etc/resolv.conf", stateDir)
-	errHost := applyHostAll6(ctx, realRunner6, stateDir)
+	errHost := applyHostWith(ctx, hostFamily6(realRunner6, realRestoreFor("ip6tables-restore")), stateDir, realDocker)
 	return errors.Join(errForward, errHost)
 }
 
@@ -143,19 +134,6 @@ func applyAll6(ctx context.Context, run commandRunner, resolvPath, stateDir stri
 	status.LastAttempt = nowRFC3339()
 	if writeErr := writeStatus6(stateDir, status); writeErr != nil && err == nil {
 		return errors.New("egress v6 status could not be recorded")
-	}
-	return err
-}
-
-func applyHostAll6(ctx context.Context, run commandRunner, stateDir string) error {
-	status, err := applyHost6(ctx, run, stateDir)
-	if err != nil {
-		status.Applied = false
-		status.Error = err.Error()
-	}
-	status.LastAttempt = nowRFC3339()
-	if writeErr := writeHostStatus6(stateDir, status); writeErr != nil && err == nil {
-		return errors.New("egress v6 host status could not be recorded")
 	}
 	return err
 }

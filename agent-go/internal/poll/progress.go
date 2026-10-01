@@ -78,6 +78,35 @@ func (p *Poller) resumeRecord(ctx context.Context) error {
 	if p.active.Replacement != nil {
 		return p.resumeReplacement(ctx)
 	}
+	if p.active.Kind == sdkclient.CommandDeploy {
+		// A restore-quiesce job owns its own durable journal; the phases
+		// resume from it, and the recorded outcome answers a resend.
+		if docker, ok := p.exec.(*executor.Docker); ok {
+			command := &sdkclient.PollCommand{ID: p.active.CommandID, ControlToken: p.active.ControlToken, ProgressProtocol: p.active.ProgressProtocol}
+			for ctx.Err() == nil {
+				result, found := docker.RecoverRestoreQuiesce(ctx, command)
+				if !found {
+					break
+				}
+				if result.Status == executor.PreparationPendingStatus {
+					// The drive ran out of context (agent shutdown); the
+					// journal keeps the operation and the next boot retries.
+					if !sleepCtx(ctx, 15*time.Second) {
+						return nil
+					}
+					continue
+				}
+				result.ControlToken = p.active.ControlToken
+				next := *p.active
+				next.Result = &result
+				if err := p.journal.save(&next); err != nil {
+					return fmt.Errorf("persist recovered restore result: %w", err)
+				}
+				p.active = &next
+				return p.sendSavedResult(ctx)
+			}
+		}
+	}
 	p.log.Error("interrupted operation has no saved result; execution will not be repeated", "command_id", p.active.CommandID)
 	for ctx.Err() == nil {
 		if r := p.active.Preparation; r != nil && r.Phase == "busy" && r.Work != nil {
@@ -172,6 +201,7 @@ func (p *Poller) sendSavedResult(ctx context.Context) error {
 			}
 			p.forgetPreparationWork()
 			p.forgetReplacementWork()
+			p.forgetRestoreQuiesce()
 			if err := p.journal.clear(); err != nil {
 				return fmt.Errorf("remove acknowledged receipt: %w", err)
 			}
@@ -304,4 +334,24 @@ func (p *Poller) forgetPreparationWork() {
 			}
 		}
 	}
+}
+
+// forgetRestoreQuiesce drops the restore journal of an acknowledged
+// command, undo area included: the outcome is recorded where the customer
+// reads it by then.
+func (p *Poller) forgetRestoreQuiesce() {
+	if docker, ok := p.exec.(*executor.Docker); ok {
+		if err := docker.ForgetRestoreQuiesce(p.active.CommandID); err != nil {
+			p.log.Warn("acknowledged restore quiesce journal retained", "command_id", p.active.CommandID, "err", err)
+		}
+	}
+}
+
+// ActiveCommandID names the operation the saved journal owns, if any, so
+// startup reconciliation can leave it to resumeRecord.
+func (p *Poller) ActiveCommandID() string {
+	if p.active == nil {
+		return ""
+	}
+	return p.active.CommandID
 }

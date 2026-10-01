@@ -86,6 +86,13 @@ type Status struct {
 	Wanted      string `json:"wanted,omitempty"`
 	Rules       int    `json:"rules"`
 	Resolvers   int    `json:"resolvers"`
+	// Host INPUT half only: where the jump sits, the published ports
+	// returned (ports, never addresses), how many operator exceptions, and
+	// whether the operator turned the half off.
+	Position string   `json:"position,omitempty"`
+	Ports    []string `json:"ports,omitempty"`
+	Operator int      `json:"operator_exceptions,omitempty"`
+	Disabled bool     `json:"disabled,omitempty"`
 }
 
 // commandRunner allows tests to drive the reconcile logic without iptables.
@@ -101,6 +108,11 @@ func Rules(resolvers []string) [][]string {
 		// not reach 169.254.0.0/16 while the RFC1918 blocks stay scoped.
 		{"-d", "169.254.0.0/16", "-j", "DROP"},
 		{"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"},
+		// A flow Docker DNATed (a container reaching a port the host
+		// publishes, through the host's own address) gets what the internet
+		// gets. Without this the RFC1918/ULA drops below cut the hairpin
+		// (the WordPress loopback and WP-Cron behind the proxy).
+		{"-m", "conntrack", "--ctstate", "DNAT", "-j", "RETURN"},
 	}
 	for _, r := range resolvers {
 		rules = append(rules,
@@ -123,20 +135,9 @@ func Rules(resolvers []string) [][]string {
 	return append(rules, []string{"-j", "RETURN"})
 }
 
-// HostRules returns the exact INPUT chain content, in order. Every rule is
-// scoped to Docker bridge ingress; flows from any other interface never match
-// and keep flowing through the operator's INPUT policy.
-func HostRules() [][]string {
-	var rules [][]string
-	for _, iface := range []string{"docker0", "br+"} {
-		rules = append(rules,
-			[]string{"-i", iface, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"},
-			[]string{"-i", iface, "-p", "icmp", "-j", "RETURN"},
-			[]string{"-i", iface, "-j", "DROP"},
-		)
-	}
-	return rules
-}
+// HostRules returns the host chain content with no exception (see host.go
+// for the exceptions and the placement of the jump).
+func HostRules() [][]string { return HostRulesFor("icmp", nil) }
 
 func realRunner(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "iptables", args...)
@@ -210,18 +211,12 @@ func apply(ctx context.Context, run commandRunner, stateDir string, resolvers []
 	return reconcileChain(ctx, run, Chain, ParentChain, "egress", Rules(resolvers), len(resolvers), readStatus(stateDir))
 }
 
-// applyHost reconciles the INPUT chain that keeps tenant containers away
-// from host-local services.
-func applyHost(ctx context.Context, run commandRunner, stateDir string) (Status, error) {
-	return reconcileChain(ctx, run, HostChain, "INPUT", "egress host", HostRules(), 0, readHostStatus4(stateDir))
-}
-
 // Apply installs or verifies the v4 baseline (FORWARD and host INPUT) and
 // always records the outcome in <StateDir>/egress.json. A nil error means
 // both halves are verified in place.
 func Apply(ctx context.Context, stateDir string) error {
 	errForward := applyAll(ctx, realRunner, "/etc/resolv.conf", stateDir)
-	errHost := applyHostAll(ctx, realRunner, stateDir)
+	errHost := applyHostWith(ctx, hostFamily4(realRunner, realRestoreFor("iptables-restore")), stateDir, realDocker)
 	return errors.Join(errForward, errHost)
 }
 
@@ -242,19 +237,6 @@ func applyAll(ctx context.Context, run commandRunner, resolvPath, stateDir strin
 	return err
 }
 
-func applyHostAll(ctx context.Context, run commandRunner, stateDir string) error {
-	status, err := applyHost(ctx, run, stateDir)
-	if err != nil {
-		status.Applied = false
-		status.Error = err.Error()
-	}
-	status.LastAttempt = time.Now().UTC().Format(time.RFC3339)
-	if writeErr := writeHostStatus4(stateDir, status); writeErr != nil && err == nil {
-		return errors.New("egress host status could not be recorded")
-	}
-	return err
-}
-
 func statusPath(stateDir string) (string, error) {
 	if stateDir == "" || !filepath.IsAbs(stateDir) {
 		return "", errors.New("invalid egress state directory")
@@ -269,7 +251,7 @@ func readStatus(stateDir string) Status {
 		return Status{}
 	}
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 8192 {
+	if err != nil || !info.Mode().IsRegular() || info.Size() > statusLimit {
 		return Status{}
 	}
 	raw, err := os.ReadFile(path)

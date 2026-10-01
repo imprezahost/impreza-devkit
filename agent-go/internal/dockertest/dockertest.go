@@ -24,10 +24,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
 	"text/template"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -50,6 +52,18 @@ type State struct {
 	MissingImages []string
 	// Volumes answers `docker volume ls` and `docker system df -v`.
 	Volumes []Volume
+	// Unstoppable names containers whose `docker stop` fails, the daemon
+	// error a quiesce must treat as "the application did not stop".
+	Unstoppable []string
+	// LyingStops names containers whose `docker stop` SUCCEEDS while the
+	// container keeps Running — the daemon answered before the stop took
+	// hold, or a restart policy brought it straight back. The quiesce must
+	// re-inspect and refuse to release the exchange.
+	LyingStops []string
+	// DownSurvivors names containers `compose down` cannot remove — the
+	// quiesce rollback must verify the job project is actually gone before
+	// undoing a stalled exchange.
+	DownSurvivors []string
 	// ImageEnv answers `docker image inspect --format {{json .Config.Env}}`
 	// for these image references: the pinned caddy image's defaults.
 	ImageEnv map[string][]string
@@ -62,6 +76,9 @@ type Volume struct {
 	Name   string
 	Labels map[string]string
 	Size   string
+	// Mountpoint answers `docker volume inspect --format {{.Mountpoint}}`,
+	// which the quiesce rollback resolves to reach a named volume's data.
+	Mountpoint string
 }
 
 // Call is one recorded invocation.
@@ -86,6 +103,11 @@ type ContainerState struct {
 	Status   string
 	ExitCode int
 	Health   *Health
+	// Running/Restarting mirror Status the way the daemon reports both;
+	// consumers that decode the full inspect JSON (the fence and quiesce
+	// stops) read the booleans, not the string.
+	Running    bool
+	Restarting bool
 }
 
 type Health struct{ Status string }
@@ -99,7 +121,12 @@ type ContainerConfig struct {
 type HostConfig struct {
 	Binds  []string
 	Memory int64 // the container's own limit, 0 when it has none
+	// RestartPolicy answers `docker update --restart=` and the inspectors
+	// that verify a container is no longer restartable.
+	RestartPolicy RestartPolicy
 }
+
+type RestartPolicy struct{ Name string }
 
 // Mount is one entry of the container's Mounts, as inspect lists them.
 type Mount struct {
@@ -120,7 +147,7 @@ func ComposeContainer(project, service, status string, exitCode int) Container {
 		ID:    newID(),
 		Name:  "/" + project + "-" + service + "-1",
 		Image: imageID(service),
-		State: ContainerState{Status: status, ExitCode: exitCode},
+		State: ContainerState{Status: status, ExitCode: exitCode, Running: status == "running", Restarting: status == "restarting"},
 		Config: ContainerConfig{Image: service, Labels: map[string]string{
 			"com.docker.compose.project": project,
 			"com.docker.compose.service": service,
@@ -184,6 +211,13 @@ func (d *Double) State() State {
 		d.t.Fatal(err)
 	}
 	return s
+}
+
+// StatePath is where the double's state lives. On Windows the state path
+// also rides the process environment; on Unix only the shim carries it,
+// so a test-side watcher that rewrites the state must use this instead.
+func (d *Double) StatePath() string {
+	return d.path
 }
 
 // Save replaces the double's state.
@@ -265,7 +299,9 @@ func (s *State) dispatch(dir string, args []string) int {
 	case "start", "restart":
 		return s.setStatus(args[1:], "running")
 	case "stop", "kill":
-		return s.setStatus(args[1:], "exited")
+		return s.setStatus(stopRefs(args[1:]), "exited")
+	case "update":
+		return s.update(args[1:])
 	case "network":
 		return s.network(args[1:])
 	case "stats":
@@ -282,6 +318,9 @@ func (s *State) dispatch(dir string, args []string) int {
 	case "volume":
 		if len(args) > 1 && (args[1] == "ls" || args[1] == "list") {
 			return s.volumes(args[2:])
+		}
+		if len(args) > 1 && args[1] == "inspect" {
+			return s.volumeInspect(args[2:])
 		}
 	case "image":
 		if len(args) > 1 && args[1] == "inspect" {
@@ -658,8 +697,110 @@ func (s *State) setStatus(args []string, status string) int {
 			code = 1
 			continue
 		}
+		if status == "exited" && slices.Contains(s.Unstoppable, c.ID) {
+			fmt.Fprintf(os.Stderr, "Error response from daemon: cannot stop container: %s\n", a)
+			code = 1
+			continue
+		}
+		if status == "exited" && slices.Contains(s.LyingStops, c.ID) {
+			// The daemon answered success; nothing actually stopped.
+			fmt.Println(a)
+			continue
+		}
 		c.State.Status, c.State.ExitCode = status, 0
+		c.State.Running, c.State.Restarting = status == "running", status == "restarting"
 		fmt.Println(a)
+	}
+	return code
+}
+
+// stopRefs drops the flags `docker stop` takes with a value, so only the
+// container references reach setStatus.
+func stopRefs(args []string) []string {
+	var refs []string
+	for i := 0; i < len(args); i++ {
+		if _, ok := flagValue(args, &i, "-t", "--time", "--timeout", "-s", "--signal"); ok {
+			continue
+		}
+		if strings.HasPrefix(args[i], "-") {
+			continue
+		}
+		refs = append(refs, args[i])
+	}
+	return refs
+}
+
+// update answers `docker update --restart=<policy> <container>…`, the one
+// flag the agent's quiesce and fence stops use.
+func (s *State) update(args []string) int {
+	restart := ""
+	var refs []string
+	for i := 0; i < len(args); i++ {
+		if v, ok := flagValue(args, &i, "--restart"); ok {
+			restart = v
+			continue
+		}
+		if strings.HasPrefix(args[i], "-") {
+			continue
+		}
+		refs = append(refs, args[i])
+	}
+	if restart == "" {
+		fmt.Fprintln(os.Stderr, "Error: update needs --restart in this double")
+		return 1
+	}
+	code := 0
+	for _, ref := range refs {
+		c := s.find(ref)
+		if c == nil {
+			fmt.Fprintf(os.Stderr, "Error response from daemon: No such container: %s\n", ref)
+			code = 1
+			continue
+		}
+		c.HostConfig.RestartPolicy.Name = restart
+		fmt.Println(ref)
+	}
+	return code
+}
+
+// volumeInspect answers `docker volume inspect [--format …] <name>…`.
+func (s *State) volumeInspect(args []string) int {
+	format := ""
+	var refs []string
+	for i := 0; i < len(args); i++ {
+		if v, ok := flagValue(args, &i, "--format", "-f"); ok {
+			format = v
+		} else {
+			refs = append(refs, args[i])
+		}
+	}
+	code := 0
+	var found []Volume
+	for _, ref := range refs {
+		match := false
+		for _, v := range s.Volumes {
+			if v.Name == ref {
+				found, match = append(found, v), true
+				break
+			}
+		}
+		if !match {
+			fmt.Fprintf(os.Stderr, "Error: No such volume: %s\n", ref)
+			code = 1
+		}
+	}
+	if format == "" {
+		raw, _ := json.MarshalIndent(found, "", "    ")
+		fmt.Println(string(raw))
+		return code
+	}
+	for _, v := range found {
+		out, err := render(format, v)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "template parsing error:", err)
+			return 1
+		}
+		fmt.Println(out)
 	}
 	return code
 }
@@ -916,6 +1057,13 @@ func (s *State) compose(cwd string, args []string) int {
 		for _, c := range s.Containers {
 			if c.Config.Labels["com.docker.compose.project"] != p.Name {
 				kept = append(kept, c)
+				continue
+			}
+			// DownSurvivors models a container compose down cannot remove
+			// (a device hold, a daemon bug): the quiesce rollback must
+			// verify the project is actually gone before undoing.
+			if slices.Contains(s.DownSurvivors, c.ID) {
+				kept = append(kept, c)
 			}
 		}
 		s.Containers = kept
@@ -927,6 +1075,16 @@ func (s *State) compose(cwd string, args []string) int {
 		for i := range s.Containers {
 			if s.Containers[i].Config.Labels["com.docker.compose.project"] == p.Name {
 				s.Containers[i].State.Status, s.Containers[i].State.ExitCode = status, 0
+				s.Containers[i].State.Running, s.Containers[i].State.Restarting = status == "running", status == "restarting"
+			}
+		}
+	case "up":
+		// `up -d` on an existing project starts its stopped containers;
+		// the double creates nothing, tests seed what a project owns.
+		for i := range s.Containers {
+			if s.Containers[i].Config.Labels["com.docker.compose.project"] == p.Name {
+				s.Containers[i].State.Status, s.Containers[i].State.ExitCode = "running", 0
+				s.Containers[i].State.Running = true
 			}
 		}
 	}
@@ -1005,7 +1163,17 @@ func save(path string, s State) error {
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	// Windows denies the rename while another shim (or a scripted watcher)
+	// holds the state open; a short retry keeps concurrent writers from
+	// turning into flaky failures.
+	for attempt := 0; ; attempt++ {
+		if err := os.Rename(tmp, path); err == nil {
+			return nil
+		} else if attempt >= 20 || runtime.GOOS != "windows" {
+			return err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 func newID() string {

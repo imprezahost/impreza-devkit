@@ -94,6 +94,9 @@ func sha256Sum(b []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
+// statusLimit bounds egress.json (the host sections carry port lists).
+const statusLimit = 65536
+
 func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
 
 // status6Path is the v6 section of the same egress.json document.
@@ -118,7 +121,7 @@ func readStatus6(stateDir string) Status {
 	if err != nil {
 		return s
 	}
-	raw, err := readBoundedRegularFile(path, 8192)
+	raw, err := readBoundedRegularFile(path, statusLimit)
 	if err != nil {
 		return s
 	}
@@ -154,7 +157,7 @@ func readSection(stateDir string, get func(*statusFile) *Status) Status {
 	if err != nil {
 		return Status{}
 	}
-	raw, err := readBoundedRegularFile(path, 8192)
+	raw, err := readBoundedRegularFile(path, statusLimit)
 	if err != nil {
 		return Status{}
 	}
@@ -179,7 +182,7 @@ func mutateStatus(stateDir string, mutate func(*statusFile)) error {
 		return errors.New("egress status path is not a regular file")
 	}
 	var f statusFile
-	if raw, err := readBoundedRegularFile(path, 8192); err == nil {
+	if raw, err := readBoundedRegularFile(path, statusLimit); err == nil {
 		_ = json.Unmarshal(raw, &f)
 	}
 	mutate(&f)

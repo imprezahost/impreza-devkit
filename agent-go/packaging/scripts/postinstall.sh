@@ -5,6 +5,8 @@
 set -eu
 
 systemctl daemon-reload || true
+# The boot restore of the ingress allowlists; inert without one.
+systemctl enable impreza-agent-ingress.service >/dev/null 2>&1 || true
 
 cat <<MSG
 

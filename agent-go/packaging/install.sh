@@ -200,7 +200,39 @@ StandardError=journal
 WantedBy=multi-user.target
 UNIT
 
+# The boot restore of the ingress allowlists (see the unit's comments);
+# enabled now, inert until the platform stores a restricted allowlist.
+cat >/etc/systemd/system/impreza-agent-ingress.service <<'UNIT'
+[Unit]
+Description=Impreza ingress allowlists (restored before Docker publishes ports)
+Documentation=https://docs.imprezahost.com/agent
+# Render the stored per-deployment allowlists before Docker starts the
+# containers, so no restricted port is reachable in the boot window, and
+# again before every Docker (re)start. After the host firewall managers so
+# their startup does not reorder or flush the rules afterwards. Ordering
+# only: a failure here never blocks Docker; the agent retries and reports.
+DefaultDependencies=no
+After=local-fs.target firewalld.service ufw.service
+Before=docker.service
+ConditionPathExists=/var/lib/impreza-agent/ingress.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/impreza-agent ingress restore
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/impreza-agent
+
+[Install]
+WantedBy=multi-user.target docker.service
+UNIT
+
 systemctl daemon-reload
+systemctl enable impreza-agent-ingress.service >/dev/null 2>&1 || true
 
 # ─── Bootstrap ──────────────────────────────────────────────────────────
 # Idempotent: when /etc/impreza-agent/config.toml already exists, we're

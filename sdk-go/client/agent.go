@@ -273,6 +273,23 @@ type DeployPayload struct {
 	// RestorePlanID binds a restore transport job to its reviewed plan; the
 	// completion cross-checks it against the reported outcome.
 	RestorePlanID string `json:"restore_plan_id,omitempty"`
+	// Quiesce (restore-quiesce-v1) rides only on a file-restore transport
+	// job. It tells the agent to stop the target application before the
+	// data exchange, verify the stop, and start the application again —
+	// the journal and handshake keep a database from losing its most
+	// recent writes to a restore that raced a live server.
+	Quiesce *DeployQuiesce `json:"quiesce,omitempty"`
+}
+
+// DeployQuiesce names the application a restore job must quiet down.
+// The target must already be deployed on this agent and must be the same
+// deployment the job itself addresses (IMPREZA_TARGET).
+type DeployQuiesce struct {
+	Target string `json:"target"`
+	// StopTimeoutSeconds bounds `docker stop` per container. Zero means
+	// the agent default; the agent refuses values outside its accepted
+	// range so a payload cannot ask for an unbounded wait.
+	StopTimeoutSeconds int `json:"stop_timeout_seconds,omitempty"`
 }
 
 // UpdatePayload is the payload of a CommandUpdate.
@@ -322,8 +339,32 @@ const HostFailoverFenceProtocol = "host-failover-fence-v1"
 const OnionTransferProtocol = "onion-transfer-v1"
 
 // HostFailoverReleaseProtocol means the agent can release exactly the fence a
-// verified cutover left on an old primary, without starting its containers.
+// verified cutover left on an old primary, without starting its old containers.
 const HostFailoverReleaseProtocol = "host-failover-release-v1"
+
+// RestoreQuiesceProtocol means the agent can run a file-restore transport
+// job with the target application stopped: it stages the archive with the
+// app running, stops and verifies the application around the data
+// exchange, starts it again, and undoes the exchange when the job fails
+// after data has moved.
+const RestoreQuiesceProtocol = "restore-quiesce-v1"
+
+// RestoreQuiesceResult is the receipt of a restore run under
+// RestoreQuiesceProtocol. The control plane gates the job's completion on
+// the agent having reported the target_stopped progress step of this
+// command; this receipt records what the agent actually observed.
+type RestoreQuiesceResult struct {
+	Target string `json:"target"`
+	// Stopped is true when every container of the target was verified
+	// stopped before the data exchange was released.
+	Stopped bool `json:"stopped"`
+	// JobExitCode is the restore job container's exit code (-1 when it
+	// vanished before an exit code could be read).
+	JobExitCode int `json:"job_exit_code"`
+	// Undone is true when a failed post-exchange swap was rolled back to
+	// the application's previous data.
+	Undone bool `json:"undone,omitempty"`
+}
 
 // HostFailoverReleasePayload names the fence to release: the verified
 // cutover, the hostname and the epoch it was fenced at.
@@ -629,6 +670,7 @@ type AgentReport struct {
 	Version            string              `json:"version,omitempty"`
 	Load               *AgentLoad          `json:"load,omitempty"`
 	RunningDeployments []RunningDeployment `json:"running_deployments,omitempty"`
+	Ingress            *IngressReport      `json:"ingress,omitempty"`
 }
 
 // AgentReport sends a heartbeat + status report to the control plane.
@@ -656,6 +698,8 @@ type DeployResult struct {
 	OnionTransferRecipient    *OnionTransferRecipientResult    `json:"onion_transfer_recipient,omitempty"`
 	HostFailoverRelease       *HostFailoverReleaseResult       `json:"host_failover_release,omitempty"`
 	DatabaseRestore           *DatabaseRestoreResult           `json:"database_restore,omitempty"`
+	Ingress                   *IngressResult                   `json:"ingress,omitempty"`
+	RestoreQuiesce            *RestoreQuiesceResult            `json:"restore_quiesce,omitempty"`
 	ControlToken              string                           `json:"control_token,omitempty"`
 	PreparationRestored       bool                             `json:"preparation_restored,omitempty"`
 	StartupCheck              *DeploymentStartupCheck          `json:"startup_check,omitempty"`

@@ -133,6 +133,12 @@ type Docker struct {
 	// logs_tail handler returns the buffered output via DeployResult.LogsTail
 	// instead — useful for tests and when the agent runs in dry-run mode.
 	Client *sdkclient.Client
+
+	// quiescePoisoned maps an application ("" for an unknown target) to
+	// the reason its data-touching operations are refused: a restore
+	// journal that cannot be verified. Rebuilt from disk at startup; the
+	// agent keeps serving everything else.
+	quiescePoisoned map[string]string
 }
 
 // NewDocker returns a Docker executor rooted at stateDir, with a Caddy
@@ -171,6 +177,13 @@ func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) (resul
 		}
 	}
 
+	// A corrupt restore journal fails closed for the application it puts
+	// at risk — never for the agent: every other command still runs, and
+	// each refused result carries the reason for the control plane.
+	if reason := d.quiesceExecuteRefusal(cmd, identity.DeploymentID); reason != "" {
+		return failResult(cmd.ID, reason)
+	}
+
 	switch cmd.Kind {
 	case sdkclient.CommandDeploy:
 		return d.deploy(ctx, cmd)
@@ -206,6 +219,8 @@ func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) (resul
 		return d.hostFailoverRelease(ctx, cmd)
 	case sdkclient.CommandAgentUpgrade:
 		return d.prepareAgentUpgrade(cmd)
+	case sdkclient.CommandIngressUpdate:
+		return d.ingressUpdate(ctx, cmd)
 	default:
 		message := fmt.Sprintf("Unsupported command %q. No operation was performed. Check agent and platform compatibility.", cmd.Kind)
 		return failResult(cmd.ID, message)
@@ -267,6 +282,18 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	if err := validateRestoreDatabaseSpec(p); err != nil {
 		return failResult(cmd.ID, err.Error())
 	}
+	// A quiesce block on a restore transport job is validated whole
+	// and refuses the command before anything runs — a wrong target would
+	// stop the wrong customer's application.
+	quiesce, err := d.quiescePlanFor(p)
+	if err != nil {
+		return failResult(cmd.ID, "quiesce refused: "+err.Error())
+	}
+	if p.Quiesce != nil {
+		if err := d.beginQuiesceRecord(p.DeploymentID, cmd.ID, quiesce); err != nil {
+			return failResult(cmd.ID, "quiesce refused: "+err.Error())
+		}
+	}
 
 	if p.GitCommitSHA != "" {
 		if p.Manifest.Runtime.Build == nil || p.Manifest.Runtime.Build.Git == nil {
@@ -279,7 +306,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 			return failResult(cmd.ID, err.Error())
 		}
 	}
-	_, err := resolveStartupPolicy(p.Manifest.Runtime.Startup)
+	_, err = resolveStartupPolicy(p.Manifest.Runtime.Startup)
 	if err != nil {
 		return failResult(cmd.ID, err.Error())
 	}
@@ -297,7 +324,10 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	}
 
 	var recovery *PreparationRecovery
-	if cmd.ProgressProtocol == sdkclient.DeploymentProgressProtocol && d.SavePreparation != nil {
+	// A quiesce restore job keeps its own journal (operations/restore-<job>)
+	// and its own resume path: the preparation snapshot is restricted to
+	// dpl_ applications, and a bkpjob_ identity would fail validation here.
+	if p.Quiesce == nil && cmd.ProgressProtocol == sdkclient.DeploymentProgressProtocol && d.SavePreparation != nil {
 		recovery, err = d.capturePreparation(ctx, p.DeploymentID, previous)
 		if err != nil {
 			return failResult(cmd.ID, "capture preparation checkpoint: "+err.Error())
@@ -800,6 +830,13 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		return preparationResult(cmd.ID, err)
 	}
 
+	// A quiesce restore job replaces synchronously through its own phase
+	// machine: the journal owns the stop and the resume, and there is no
+	// dpl_ application release to supervise for a one-shot job.
+	if p.Quiesce != nil {
+		runtimeStarted = true
+		return d.runQuiesceRestore(ctx, cmd, p)
+	}
 	// A restore transport job stays synchronous (RestoreDatabase != nil): its
 	// outcome is the verified table count attached after finishReplacement,
 	// and a one-shot stack has no replacement to supervise. A blocked
@@ -1046,6 +1083,11 @@ func (d *Docker) cleanupFailedFirstDeployOnion(ctx context.Context, deploymentID
 // Routing and Tor state live outside the application directory. A retry after
 // that directory was removed must finish exposure cleanup before reporting success.
 func (d *Docker) removeDeploymentExposure(ctx context.Context, deploymentID string) error {
+	// The deployment's ingress allowlist goes with it (the last one
+	// removes the chains), so no rule or chain outlives the app.
+	if err := d.removeDeploymentIngress(ctx, deploymentID); err != nil {
+		return fmt.Errorf("application stopped; %w; retry the uninstall", err)
+	}
 	// Remove any Caddy routes that pointed at this deployment so we
 	// don't keep serving stale hostnames after an uninstall.
 	if d.Proxy != nil {

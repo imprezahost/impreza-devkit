@@ -16,6 +16,7 @@ import (
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/config"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/egress"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/executor"
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/ingress"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/poll"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/scanner"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/state"
@@ -79,6 +80,9 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	// attempt is recorded in <stateDir>/egress.json and the unit retries on each
 	// start (the boot window between Docker start and agent start is a
 	// documented residual limit of this phase).
+	// One journal line when the host INPUT half changes and once per
+	// process, also on success (counts and a fingerprint, no address).
+	egress.Notify = func(msg string, args ...any) { log.Info(msg, args...) }
 	egressCtx, egressCancel := context.WithTimeout(cmd.Context(), 20*time.Second)
 	if err := egress.Apply(egressCtx, stateDir); err != nil {
 		log.Warn("egress baseline not applied; tenant egress remains unrestricted for this run",
@@ -98,9 +102,13 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	// recreate DOCKER-USER and drop our link while the agent keeps running.
 	// The apply above is idempotent and cheap when nothing changed (chain
 	// dumps compared against the recorded fingerprint), so a periodic
-	// reconcile closes that window without rewriting stable rules.
+	// reconcile closes that window without rewriting stable rules. Every
+	// minute: a port a new deployment publishes gets its hairpin
+	// exception, and the host jump returns to the end of INPUT after a
+	// firewall manager appended to it (ufw enable), within a minute.
 	go func() {
-		ticker := time.NewTicker(15 * time.Minute)
+		var last4, last6 string
+		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
 		for {
 			select {
@@ -108,15 +116,43 @@ func runRun(cmd *cobra.Command, _ []string) error {
 				return
 			case <-ticker.C:
 				ctx, cancel := context.WithTimeout(cmd.Context(), 20*time.Second)
-				if err := egress.Apply(ctx, stateDir); err != nil {
-					log.Warn("egress baseline reconcile failed; previous rules remain in force",
-						"err", err)
+				// Warn when the failure changes, not once a minute.
+				err4, err6 := egress.Apply(ctx, stateDir), egress.Apply6(ctx, stateDir)
+				if msg := errText(err4); msg != "" && msg != last4 {
+					log.Warn("egress baseline reconcile failed; previous rules remain in force", "err", err4)
 				}
-				if err := egress.Apply6(ctx, stateDir); err != nil {
-					log.Warn("egress v6 baseline reconcile failed; previous rules remain in force",
-						"err", err)
+				if msg := errText(err6); msg != "" && msg != last6 {
+					log.Warn("egress v6 baseline reconcile failed; previous rules remain in force", "err", err6)
 				}
+				last4, last6 = errText(err4), errText(err6)
 				cancel()
+			}
+		}
+	}()
+
+	// Ingress allowlists: re-render the stored desired state now (the
+	// boot unit normally did it before docker.service), then every 30 s. A
+	// Docker restart, ufw enable/reload or firewalld reload can flush the
+	// owned chains or put rules above the jumps; the reconcile is cheap when
+	// nothing drifted and never touches anyone else's rules.
+	ingressManager := ingress.NewManager(stateDir)
+	reconcileIngress := func() {
+		ctx, cancel := context.WithTimeout(cmd.Context(), 20*time.Second)
+		defer cancel()
+		if err := ingressManager.Reconcile(ctx); err != nil {
+			log.Warn("ingress allowlist reconcile failed; reported as not enforced", "err", err)
+		}
+	}
+	reconcileIngress()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-cmd.Context().Done():
+				return
+			case <-ticker.C:
+				reconcileIngress()
 			}
 		}
 	}()
@@ -145,6 +181,13 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	poller.BeforeCommands = func(startupCtx context.Context) error {
 		if err := exec.ReconcileFailoverFences(startupCtx); err != nil {
 			return fmt.Errorf("failover fence reconciliation failed: %w", err)
+		}
+		// An interrupted restore that already stopped the application
+		// is finished — or undone — before any other command runs. The
+		// journal the saved operation still owns is left to the poller's
+		// own recovery, which carries the control token.
+		if err := exec.ReconcileRestoreQuiesce(startupCtx, poller.ActiveCommandID()); err != nil {
+			return fmt.Errorf("restore quiesce reconciliation failed: %w", err)
 		}
 		// Reconcile privacy boundaries before accepting commands on upgraded hosts.
 		if exec.Tor != nil && exec.Proxy != nil {
@@ -228,4 +271,11 @@ func newLogger(level string) *slog.Logger {
 	}
 	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl})
 	return slog.New(h)
+}
+
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
