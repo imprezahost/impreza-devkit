@@ -6,8 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -69,6 +73,13 @@ func runRun(cmd *cobra.Command, _ []string) error {
 		"version", version,
 		"state_dir", stateDir,
 	)
+	// One journal line per condition, no further action: an installation
+	// whose update.sh never installed the ingress boot unit has no restore
+	// of the allowlists in the boot window before Docker publishes ports;
+	// a unit that exists but sits disabled has none either. The next
+	// update.sh --apply repairs the unit; a disabled one gets a single
+	// enable attempt here, with the same warning.
+	checkIngressBootUnit(log)
 
 	// Docker is the production executor. Unsupported commands return a
 	// terminal failure so the queue can advance without claiming success.
@@ -106,6 +117,9 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	// minute: a port a new deployment publishes gets its hairpin
 	// exception, and the host jump returns to the end of INPUT after a
 	// firewall manager appended to it (ufw enable), within a minute.
+	// egressMu serializes the egress applies (the ticker and the firewalld
+	// reload series); the ingress manager has its own state lock.
+	var egressMu sync.Mutex
 	go func() {
 		var last4, last6 string
 		ticker := time.NewTicker(time.Minute)
@@ -117,7 +131,9 @@ func runRun(cmd *cobra.Command, _ []string) error {
 			case <-ticker.C:
 				ctx, cancel := context.WithTimeout(cmd.Context(), 20*time.Second)
 				// Warn when the failure changes, not once a minute.
+				egressMu.Lock()
 				err4, err6 := egress.Apply(ctx, stateDir), egress.Apply6(ctx, stateDir)
+				egressMu.Unlock()
 				if msg := errText(err4); msg != "" && msg != last4 {
 					log.Warn("egress baseline reconcile failed; previous rules remain in force", "err", err4)
 				}
@@ -144,6 +160,22 @@ func runRun(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	reconcileIngress()
+	// A firewalld reload drops the agent's rules until the next reconcile;
+	// react to its D-Bus signal instead (gdbus monitor, no library), with
+	// the egress baseline too (its DOCKER-USER link goes with the reload).
+	afterReload := ingress.AfterReload(cmd.Context(), func() {
+		reconcileIngress()
+		ctx, cancel := context.WithTimeout(cmd.Context(), 20*time.Second)
+		defer cancel()
+		egressMu.Lock()
+		defer egressMu.Unlock()
+		_ = egress.Apply(ctx, stateDir)
+		_ = egress.Apply6(ctx, stateDir)
+	})
+	go ingress.WatchFirewalldReload(cmd.Context(), func() {
+		log.Info("firewalld reloaded; re-applying the ingress allowlists and the egress baseline")
+		afterReload()
+	})
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -278,4 +310,35 @@ func errText(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// The ingress boot unit and the systemctl binary it is checked through are
+// vars so the test can point both at its own fixtures.
+var (
+	ingressUnitFile  = "/etc/systemd/system/impreza-agent-ingress.service"
+	ingressSystemctl = "systemctl"
+	ingressUnitName  = "impreza-agent-ingress.service"
+)
+
+// checkIngressBootUnit reports, in one journal line per condition, whether
+// the ingress allowlists have their boot-window restore: the unit file must
+// exist and be enabled. A unit that exists but is disabled gets a single
+// enable attempt, announced by the same warning; nothing else acts here.
+func checkIngressBootUnit(log *slog.Logger) {
+	if runtime.GOOS != "linux" {
+		return
+	}
+	if _, err := os.Stat(ingressUnitFile); err != nil {
+		log.Warn("ingress boot unit is not installed; the boot-window restore of allowlists is inactive until an update repairs it")
+		return
+	}
+	state, err := exec.Command(ingressSystemctl, "is-enabled", ingressUnitName).Output()
+	if err == nil && strings.TrimSpace(string(state)) == "enabled" {
+		return
+	}
+	log.Warn("ingress boot unit is not enabled; enabling it now so the boot-window restore of allowlists runs before Docker")
+	if out, enableErr := exec.Command(ingressSystemctl, "enable", ingressUnitName).CombinedOutput(); enableErr != nil {
+		log.Warn("enabling the ingress boot unit failed; repair it with systemctl enable "+ingressUnitName,
+			"err", enableErr, "output", strings.TrimSpace(string(out)))
+	}
 }

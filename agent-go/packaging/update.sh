@@ -10,6 +10,11 @@
 # Once a channel's manifest has been accepted on a server it is mandatory:
 # a missing or unverifiable manifest refuses the update instead of
 # falling back to same-origin checksums.
+# Exit status: 0 on success; 1 when the update itself failed (the previous
+# agent is restored); 2 for usage errors; 3 when the agent is updated but
+# the ingress boot unit could not be enabled — the allowlists stay
+# unprotected in the boot window until it is; repair with
+# 'systemctl enable impreza-agent-ingress.service'.
 set -eu
 main() {
     MODE=${1:---check}
@@ -105,12 +110,118 @@ main() {
 import base64, hashlib, json, os, re, sys, time
 from datetime import datetime
 
-mode, envelope_path, state_path, out_dir = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+mode = sys.argv[1]
+
+def fail(message):
+    sys.stderr.write("manifest: %s\n" % message)
+    sys.exit(1)
+
+# RFC 8032 Ed25519 verification, used only when the installed openssl has
+# no -rawin (1.1.1: Ubuntu 20.04, Debian 11 — there is no raw-EdDSA CLI
+# path there at all). The bytes checked are exactly the ones the openssl
+# path checks. Public data only: no secret ever reaches this code, so the
+# reference implementation's non-constant-time arithmetic leaks nothing.
+DOMAIN = b"impreza-agent-release-v1\x00"
+p = 2**255 - 19
+q = 2**252 + 27742317777372353535851937790883648493
+SPKI_ED25519 = bytes.fromhex("302a300506032b6570032100")
+
+def _sha512_modq(data):
+    return int.from_bytes(hashlib.sha512(data).digest(), "little") % q
+
+def _modp_inv(x):
+    return pow(x, p - 2, p)
+
+_d = -121665 * _modp_inv(121666) % p
+
+def _point_add(P, Q):
+    A = (P[1] - P[0]) * (Q[1] - Q[0]) % p
+    B = (P[1] + P[0]) * (Q[1] + Q[0]) % p
+    C = 2 * P[3] * Q[3] * _d % p
+    D = 2 * P[2] * Q[2] % p
+    E, F, G, H = B - A, D - C, D + C, B + A
+    return (E * F % p, G * H % p, F * G % p, E * H % p)
+
+def _point_mul(s, P):
+    Q = (0, 1, 1, 0)
+    while s > 0:
+        if s & 1:
+            Q = _point_add(Q, P)
+        P = _point_add(P, P)
+        s >>= 1
+    return Q
+
+def _point_equal(P, Q):
+    if (P[0] * Q[2] - Q[0] * P[2]) % p != 0:
+        return False
+    if (P[1] * Q[2] - Q[1] * P[2]) % p != 0:
+        return False
+    return True
+
+def _point_decompress(s):
+    if len(s) != 32:
+        return None
+    y = int.from_bytes(s, "little")
+    sign = y >> 255
+    y &= (1 << 255) - 1
+    if y >= p:
+        return None
+    u = (y * y - 1) % p
+    v = (_d * y * y + 1) % p
+    x = pow(u * _modp_inv(v), (p + 3) // 8, p)
+    if (x * x - u * _modp_inv(v)) % p != 0:
+        x = x * pow(2, (p - 1) // 4, p) % p
+    if (x * x - u * _modp_inv(v)) % p != 0:
+        return None
+    if x == 0 and sign:
+        return None
+    if x & 1 != sign:
+        x = p - x
+    return (x, y, 1, x * y % p)
+
+_BASE = _point_decompress(bytes.fromhex("5866666666666666666666666666666666666666666666666666666666666666"))
+
+def _read_file(path, limit, label):
+    try:
+        data = open(path, "rb").read(limit + 1)
+    except OSError:
+        fail("%s unreadable" % label)
+    if len(data) > limit:
+        fail("%s size" % label)
+    return data
+
+def ed25519_verify_files(pub_der, msg_bin, sig_bin):
+    spki = _read_file(pub_der, 44, "trust key")
+    if len(spki) != 44 or not spki.startswith(SPKI_ED25519):
+        fail("trust key unusable")
+    public = spki[-32:]
+    message = _read_file(msg_bin, 4096 + len(DOMAIN), "signed payload")
+    signature = _read_file(sig_bin, 64, "signature")
+    if len(signature) != 64:
+        fail("signature size")
+    r_bytes, s_bytes = signature[:32], signature[32:]
+    R = _point_decompress(r_bytes)
+    A = _point_decompress(public)
+    if R is None or A is None:
+        fail("signature verification failed")
+    S = int.from_bytes(s_bytes, "little")
+    if S >= q:
+        fail("signature verification failed")
+    k = _sha512_modq(r_bytes + public + message)
+    if not _point_equal(_point_mul(S, _BASE), _point_add(R, _point_mul(k, A))):
+        fail("signature verification failed")
+
+if mode == "ed25519":
+    if len(sys.argv) != 5:
+        fail("verifier arguments")
+    ed25519_verify_files(sys.argv[2], sys.argv[3], sys.argv[4])
+    sys.exit(0)
+
+envelope_path, state_path, out_dir = sys.argv[2], sys.argv[3], sys.argv[4]
 if mode not in ("frame", "validate"):
     fail("verifier mode")
 channel = os.environ["IMPREZA_RELEASE_CHANNEL"]
 arch = os.environ["IMPREZA_RELEASE_ARCH"]
-DOMAIN = b"impreza-agent-release-v1\x00"
 MAX_ENVELOPE = 8192
 MAX_PAYLOAD = 4096
 MAX_VALIDITY = 7 * 24 * 3600
@@ -118,10 +229,6 @@ MAX_ARTIFACT = 64 * 1024 * 1024
 DEFAULT_KEY = "HismnHv7rcB/AWSrzalz/+c3t921VQ1gmHVJlNx0gfQ="
 SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 HEX64 = re.compile(r"^[a-f0-9]{64}$")
-
-def fail(message):
-    sys.stderr.write("manifest: %s\n" % message)
-    sys.exit(1)
 
 try:
     raw = open(envelope_path, "rb").read(MAX_ENVELOPE + 1)
@@ -275,8 +382,31 @@ with open(os.path.join(out_dir, "verified.env"), "w") as handle:
 PYMANIFEST
         IMPREZA_RELEASE_CHANNEL=$CHANNEL IMPREZA_RELEASE_ARCH=$ARCH \
         python3 "$3/verify.py" frame "$1" "$2" "$3" || return 1
-        openssl pkey -pubin -inform DER -in "$3/pub.der" -out "$3/pub.pem" >/dev/null 2>&1 || { echo 'manifest: trust key unusable' >&2; return 1; }
-        openssl pkeyutl -verify -pubin -inkey "$3/pub.pem" -rawin -in "$3/msg.bin" -sigfile "$3/sig.bin" >/dev/null 2>&1 || { echo 'manifest: signature verification failed' >&2; return 1; }
+        # The Ed25519 check runs in openssl when it knows -rawin (OpenSSL 3)
+        # and in verify.py's RFC 8032 verifier when it does not (1.1.1:
+        # Ubuntu 20.04, Debian 11 have no raw-EdDSA CLI path). Either way
+        # a refusal names what failed instead of hiding the cause.
+        if openssl pkeyutl -help 2>&1 | grep -q -e '-rawin'; then
+            openssl pkey -pubin -inform DER -in "$3/pub.der" -out "$3/pub.pem" 2>"$3/key.err" || {
+                echo 'manifest: trust key unusable' >&2
+                sed 's/^/  /' "$3/key.err" >&2
+                return 1
+            }
+            if ! openssl pkeyutl -verify -pubin -inkey "$3/pub.pem" -rawin -in "$3/msg.bin" -sigfile "$3/sig.bin" >"$3/sig.out" 2>"$3/sig.err"; then
+                echo 'manifest: signature verification failed' >&2
+                sed 's/^/  openssl: /' "$3/sig.err" >&2
+                return 1
+            fi
+        else
+            # Said out loud, not hidden: on these systems the signature is
+            # checked by the built-in RFC 8032 verifier because the openssl
+            # binary cannot. Stdout on purpose — verify_manifest's stderr is
+            # captured and only shown on refusal, and the customer must see
+            # why the built-in checker is in play when the update succeeds.
+            echo 'manifest: this OpenSSL has no raw Ed25519 support; verifying with the built-in RFC 8032 checker'
+            IMPREZA_RELEASE_CHANNEL=$CHANNEL IMPREZA_RELEASE_ARCH=$ARCH \
+            python3 "$3/verify.py" ed25519 "$3/pub.der" "$3/msg.bin" "$3/sig.bin" || return 1
+        fi
         IMPREZA_RELEASE_CHANNEL=$CHANNEL IMPREZA_RELEASE_ARCH=$ARCH \
         python3 "$3/verify.py" validate "$1" "$2" "$3" || return 1
         return 0
@@ -343,6 +473,52 @@ PYMANIFEST
     CURRENT=$(timeout 10 "$BIN" --version | sed -n 's/^impreza-agent version v\{0,1\}\([0-9][0-9.]*\)$/\1/p')
     echo "Installed: ${CURRENT:-unknown}; available: $VERSION (channel $CHANNEL)"
     [ "$MODE" = --apply ] || exit 0
+    # ─── Ingress boot unit ────────────────────────────────────────────
+    # install.sh and the packages ship it; an update repairs it too. The
+    # unit is inert until the platform stores a restricted allowlist, but
+    # without it there is no restore of the allowlists in the boot window
+    # before Docker publishes ports. Idempotent: same bytes, re-enabled.
+    if [ ! -e /etc/systemd/system/impreza-agent-ingress.service ]; then
+        echo 'Repairing the ingress boot unit: it was missing on this installation.'
+    fi
+    cat >/etc/systemd/system/impreza-agent-ingress.service <<'UNIT'
+[Unit]
+Description=Impreza ingress allowlists (restored before Docker publishes ports)
+Documentation=https://docs.imprezahost.com/agent
+# Render the stored per-deployment allowlists before Docker starts the
+# containers, so no restricted port is reachable in the boot window, and
+# again before every Docker (re)start. After the host firewall managers so
+# their startup does not reorder or flush the rules afterwards. Ordering
+# only: a failure here never blocks Docker; the agent retries and reports.
+DefaultDependencies=no
+After=local-fs.target firewalld.service ufw.service
+Before=docker.service
+ConditionPathExists=/var/lib/impreza-agent/ingress.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/impreza-agent ingress restore
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/impreza-agent
+
+[Install]
+WantedBy=multi-user.target docker.service
+UNIT
+    systemctl daemon-reload
+    # A failed enable must not read as success: the customer would see
+    # "updated" while the boot window the unit closes comes back on the
+    # next reboot. The update itself still completes — only the exit
+    # status and the warning say the unit needs a manual repair.
+    UNIT_ENABLE_STATUS=0
+    if ! systemctl enable impreza-agent-ingress.service >/dev/null 2>&1; then
+        echo "WARNING: the agent is updated, but the ingress boot unit could not be enabled; the allowlists stay unprotected in the boot window until it is. Repair: systemctl enable impreza-agent-ingress.service" >&2
+        UNIT_ENABLE_STATUS=3
+    fi
     if [ -n "$CURRENT" ] && [ "$CURRENT" != "$VERSION" ] && [ "$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | head -1)" = "$VERSION" ]; then echo 'Downgrade refused.' >&2; exit 1; fi
     NAME=impreza-agent-linux-$ARCH
     if [ "$MANIFEST_MODE" = 1 ]; then
@@ -361,7 +537,7 @@ PYMANIFEST
     if [ "$(sha256sum "$TMP/candidate" | cut -d ' ' -f 1)" = "$(sha256sum "$BIN" | cut -d ' ' -f 1)" ]; then
         if [ "$MANIFEST_MODE" = 1 ]; then record_state; fi
         echo 'Agent is already current.'
-        exit 0
+        exit "$UNIT_ENABLE_STATUS"
     fi
     echo 'Restarting only the agent. Run this update only when deployment operations are idle.'
     cp -p "$BIN" "$TMP/previous"
@@ -383,5 +559,6 @@ PYMANIFEST
     if [ "$MANIFEST_MODE" = 1 ]; then record_state; fi
     CHANGED=0
     echo "Agent $VERSION is running. Confirm its new heartbeat in the portal. Credentials, configuration and app containers were preserved."
+    exit "$UNIT_ENABLE_STATUS"
 }
 main "$@"

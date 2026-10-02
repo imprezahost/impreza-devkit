@@ -108,6 +108,12 @@ func (p *Poller) resumeRecord(ctx context.Context) error {
 		}
 	}
 	p.log.Error("interrupted operation has no saved result; execution will not be repeated", "command_id", p.active.CommandID)
+	// Consecutive failures of the recoverable reconciliation with no live
+	// worker: nothing on this host can still change the outcome, and a
+	// refusal that keeps retrying a verification that cannot pass leaves
+	// the claim open forever. Transport blips get their
+	// retries; three in a row with the worker gone answer terminally.
+	reconcileFails := 0
 	for ctx.Err() == nil {
 		if r := p.active.Preparation; r != nil && r.Phase == "busy" && r.Work != nil {
 			docker, ok := p.exec.(*executor.Docker)
@@ -145,6 +151,29 @@ func (p *Poller) resumeRecord(ctx context.Context) error {
 						return releaseErr
 					}
 				}
+				// The worker is confirmed stopped and the server still holds
+				// the claim: nothing of the work can change images anymore,
+				// and a refusal that never answers leaves the command open
+				// forever. Restore what the checkpoint can
+				// prove and answer terminally; what cannot be verified gets
+				// the fixed refusal reason, which claims nothing unverified.
+				if !errors.Is(err, executor.ErrPreparationPending) && docker.PreparationWorkerGone(r) {
+					checkpoint := *r
+					checkpoint.Phase = "aborted"
+					if checkpoint.Recoverable() && docker.ReconcilePreparation(ctx, &checkpoint) == nil {
+						next := *p.active
+						next.Preparation = &checkpoint
+						if err := p.journal.save(&next); err != nil {
+							return err
+						}
+						p.active = &next
+						// The loop restarts on the aborted checkpoint: the
+						// recoverable path answers with the verified-restored
+						// result.
+						continue
+					}
+					return p.answerRefusedClaim(ctx)
+				}
 				p.log.Warn("supervised preparation awaiting verified completion", "command_id", p.active.CommandID, "err", err)
 				if !sleepCtx(ctx, 15*time.Second) {
 					break
@@ -152,15 +181,21 @@ func (p *Poller) resumeRecord(ctx context.Context) error {
 				continue
 			}
 		}
-		if p.active.Preparation.Recoverable() {
+		if p.active.Preparation != nil && p.active.Preparation.Recoverable() {
 			if docker, ok := p.exec.(*executor.Docker); ok {
 				if err := p.reconcilePreparation(ctx, docker); err == nil {
 					return nil
 				} else {
 					p.log.Warn("automatic preparation reconciliation not confirmed", "command_id", p.active.CommandID, "err", err)
+					reconcileFails++
+					if reconcileFails >= 3 && docker.PreparationWorkerGone(p.active.Preparation) {
+						return p.answerRefusedClaim(ctx)
+					}
 				}
 			}
 		}
+		// Check whether the server already closed the command before
+		// deciding what to report.
 		response, err := p.reportProgress(ctx, "interrupted")
 		if err == nil && response.Terminal {
 			// The server already closed the command, and nothing below reached
@@ -174,12 +209,56 @@ func (p *Poller) resumeRecord(ctx context.Context) error {
 				return releaseErr
 			}
 		}
-		if !sleepCtx(ctx, 15*time.Second) {
-			break
+		if p.active.Preparation != nil && p.active.Preparation.Recoverable() {
+			// A preparation that can still reconcile keeps the old path:
+			// retry on the next pass, the worker's outcome matters.
+			if !sleepCtx(ctx, 15*time.Second) {
+				break
+			}
+			continue
 		}
+		// An interrupted operation with no recoverable preparation
+		// and no terminal acknowledgement must not hold the queue forever.
+		// The server gets an explicit failed result — the command is not
+		// replayed — and the journal clears so the agent serves the next
+		// command.
+		result := sdkclient.DeployResult{
+			CommandID: p.active.CommandID,
+			Status:    "failed",
+			Error:     "Agent was interrupted during this operation and no result was recorded. The previous configuration was preserved; the operation was not repeated. Retry explicitly when ready.",
+		}
+		result.ControlToken = p.active.ControlToken
+		next := *p.active
+		next.Result = &result
+		if err := p.journal.save(&next); err != nil {
+			return fmt.Errorf("persist interrupted-operation result: %w", err)
+		}
+		p.active = &next
+		return p.sendSavedResult(ctx)
 	}
 	return nil
 }
+
+// answerRefusedClaim closes a claim the agent refuses to repeat with a
+// terminal failed result: the command must not stay without an answer
+// at all. The reason is fixed and honest — it claims nothing the
+// agent did not verify, and its resend follows the resending_result rule.
+func (p *Poller) answerRefusedClaim(ctx context.Context) error {
+	result := sdkclient.DeployResult{
+		CommandID: p.active.CommandID,
+		Status:    "failed",
+		Error:     "Agent was interrupted during this operation and its supervised preparation could not be verified after the worker stopped; the operation was not repeated. Retry explicitly when ready.",
+	}
+	result.ControlToken = p.active.ControlToken
+	next := *p.active
+	next.Result = &result
+	if err := p.journal.save(&next); err != nil {
+		return fmt.Errorf("persist refused-claim result: %w", err)
+	}
+	p.active = &next
+	return p.sendSavedResult(ctx)
+}
+
 func (p *Poller) sendSavedResult(ctx context.Context) error {
 	for ctx.Err() == nil {
 		if err := p.client.AgentDeployResult(ctx, *p.active.Result); err == nil {
@@ -209,6 +288,28 @@ func (p *Poller) sendSavedResult(ctx context.Context) error {
 			return nil
 		} else {
 			p.log.Warn("saved deployment result awaiting acknowledgement", "command_id", p.active.CommandID, "err", err)
+			// The server may have already closed the command (a
+			// 409 with terminal state, or a cancellation). Re-sending
+			// forever would hold the queue hostage for a result nobody
+			// will accept. Ask the control plane: if it says terminal,
+			// accept and release. The question rides the step the server
+			// already understands for a result being resent — reporting
+			// "interrupted" here marked transient send errors as
+			// recovery=required on the server, even for a deploy that
+			// succeeded.
+			if p.active.ProgressProtocol == sdkclient.DeploymentProgressProtocol {
+				if response, progressErr := p.reportProgress(ctx, "resending_result"); progressErr == nil && response.Terminal {
+					p.log.Warn("saved result rejected but the command is terminal; releasing", "command_id", p.active.CommandID)
+					p.forgetPreparationWork()
+					p.forgetReplacementWork()
+					p.forgetRestoreQuiesce()
+					if err := p.journal.clear(); err != nil {
+						return fmt.Errorf("remove terminal receipt: %w", err)
+					}
+					p.active = nil
+					return nil
+				}
+			}
 		}
 		if !sleepCtx(ctx, 5*time.Second) {
 			break

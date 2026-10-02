@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -299,9 +300,13 @@ func TestLostPollResponseRequiresReconciliation(t *testing.T) {
 	if e.calls.Load() != 0 || reports.Load() != 1 {
 		t.Fatal("lost poll response was executed")
 	}
+	// The interrupted operation gets an explicit failed result, not
+	// an endless wait. The context dies before the result is sent, so the
+	// journal carries it for the next boot's resend.
 	row, err := p.journal.load()
-	if err != nil || row == nil || row.Result != nil {
-		t.Fatal("uncertain operation must remain recorded")
+	if err != nil || row == nil || row.Result == nil || row.Result.Status != "failed" ||
+		!strings.Contains(row.Result.Error, "interrupted during this operation") {
+		t.Fatalf("the interrupted operation must carry the explicit result: %+v %v", row, err)
 	}
 }
 func TestJournalLockAndInvalidRecords(t *testing.T) {

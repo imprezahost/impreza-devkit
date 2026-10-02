@@ -31,6 +31,24 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
   (`target`, `stop_timeout_seconds`) and reports the outcome through the new
   `restore_quiesce` receipt on the deploy result.
 
+## Agent 0.6.26 — 2026-10-02
+
+- Answer a refused operation instead of leaving it pending. When the agent
+  is interrupted during an operation and will not repeat it, the server now
+  receives a readable failed result: a verified preparation says what was
+  restored, and anything that cannot be verified says so and asks for an
+  explicit retry. A supervised worker that stopped without a receipt no
+  longer holds every later command on the server.
+- A network failure while delivering a result no longer marks the
+  deployment for recovery review. The resend asks about a closed command
+  with the status the server already understands, and a command the server
+  already closed is accepted instead of being re-sent forever.
+- A failed update no longer leaves the boot unit of the allowlists
+  silently disabled: the updater says so, exits with a code of its own and
+  names the repair command, and the agent retries the enable once at
+  startup. The unit is now also installed or repaired by every update,
+  not only by a fresh installation.
+
 ## Agent 0.6.25 — 2026-09-30
 
 - Respect the host firewall when application containers connect to the host.

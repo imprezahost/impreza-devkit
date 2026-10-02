@@ -44,6 +44,9 @@ func TestRequiredStartupStates(t *testing.T) {
 		strict, legacy bool
 	}{
 		{"empty", nil, false, false},
+		// v2: a running service with no declared healthcheck is
+		// ready — the settle gate's stability is the requirement, the
+		// same semantics as `docker compose up --wait`.
 		{"no declared health", []containerState{{Status: "running"}}, false, true},
 		{"healthy", []containerState{{Status: "running", Health: "healthy"}}, true, true},
 		{"starting", []containerState{{Status: "running", Health: "starting"}}, false, false},

@@ -76,7 +76,12 @@ func (d *Docker) captureRelease(ctx context.Context, dir, id string, protected .
 	if err != nil {
 		return nil, err
 	}
-	if len(states) == 0 || (policy.RequireHealthy && !startupStatesOK(states, true)) {
+	// The startup policy on disk is the one the running release was
+	// deployed with: under v2 a healthcheck-less stack that is serving is a
+	// valid recovery target. Judging it with the v1 predicate would drop
+	// every v2 application out of the release history — its second failing
+	// deploy would have nothing to roll back to.
+	if len(states) == 0 || (policy.RequireHealthy && !startupStatesOKProtocol(states, true, policy.V2)) {
 		return nil, nil
 	}
 	running := false

@@ -1347,11 +1347,33 @@ func (d *Docker) awaitStackSettledPolicy(ctx context.Context, deploymentID strin
 			}
 		}
 
-		allOK := startupStatesOK(states, policy.RequireHealthy)
+		allOK := startupStatesOKProtocol(states, policy.RequireHealthy, policy.V2)
 		if allOK {
-			stable++
-			if stable >= settleStableSamples {
-				return settleHealthy, describeStates(states)
+			// v2: a healthcheck-less service has to survive the
+			// full v2StableWindow without a restart before the gate
+			// calls it ready. Any restart during the window resets the
+			// count — a crash-looping service never accumulates enough.
+			if policy.V2 && !hasHealthcheck(states) {
+				restarted := false
+				for _, s := range states {
+					if s.Restarts > baseline[s.Name] {
+						restarted = true
+						break
+					}
+				}
+				if restarted {
+					stable = 0
+				} else {
+					stable++
+				}
+				if stable >= int(v2StableWindow/settleInterval) {
+					return settleHealthy, describeStates(states)
+				}
+			} else {
+				stable++
+				if stable >= settleStableSamples {
+					return settleHealthy, describeStates(states)
+				}
 			}
 		} else {
 			stable = 0

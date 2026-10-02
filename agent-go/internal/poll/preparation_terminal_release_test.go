@@ -32,7 +32,7 @@ import (
 	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 )
 
-var x74Container = strings.Repeat("a", 64)
+var terminalContainer = strings.Repeat("a", 64)
 
 // terminalServer always answers that the command is closed.
 func terminalServer(t *testing.T, terminals *atomic.Int32) *httptest.Server {
@@ -42,9 +42,9 @@ func terminalServer(t *testing.T, terminals *atomic.Int32) *httptest.Server {
 		switch r.URL.Path {
 		case "/v1/agent/command-progress":
 			terminals.Add(1)
-			fmt.Fprint(w, `{"success":true,"data":{"command_id":"cmd_x74","terminal":true,"status":"failed"}}`)
+			fmt.Fprint(w, `{"success":true,"data":{"command_id":"cmd_terminal","terminal":true,"status":"failed"}}`)
 		case "/v1/agent/command-control":
-			fmt.Fprint(w, `{"success":true,"data":{"command_id":"cmd_x74","phase":"preparing","cancel_requested":false}}`)
+			fmt.Fprint(w, `{"success":true,"data":{"command_id":"cmd_terminal","phase":"preparing","cancel_requested":false}}`)
 		default:
 			w.WriteHeader(204)
 		}
@@ -74,8 +74,8 @@ func fakeHost(t *testing.T, container string, alive bool) {
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 }
 
-// x74Work is the journal of a supervised build the tests resume.
-type x74Work struct {
+// terminalWork is the journal of a supervised build the tests resume.
+type terminalWork struct {
 	phase   string // busy or aborted
 	owned   bool   // the request names the controlled builder
 	invalid bool   // the receipt is bound to another request
@@ -84,14 +84,14 @@ type x74Work struct {
 // buildRecord writes a finished build worker (its receipt without a verdict,
 // as the worker's own budget leaves it), the app's configuration of the
 // failed deployment, and the journal record.
-func buildRecord(t *testing.T, p *Poller, dir string, w x74Work) (*commandRecord, string) {
+func buildRecord(t *testing.T, p *Poller, dir string, w terminalWork) (*commandRecord, string) {
 	t.Helper()
 	workID := strings.Repeat("f", 32)
 	workerDir := filepath.Join(p.journal.dir, "preparation-"+workID)
 	if err := os.MkdirAll(workerDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	request, _ := json.Marshal(map[string]any{"version": 1, "id": workID, "command_id": "cmd_x74", "deployment_id": "dpl_x74",
+	request, _ := json.Marshal(map[string]any{"version": 1, "id": workID, "command_id": "cmd_terminal", "deployment_id": "dpl_terminal",
 		"state_dir": dir, "step": "build", "owned_builder": w.owned})
 	sum := sha256.Sum256(request)
 	hash := hex.EncodeToString(sum[:])
@@ -105,19 +105,19 @@ func buildRecord(t *testing.T, p *Poller, dir string, w x74Work) (*commandRecord
 			t.Fatal(err)
 		}
 	}
-	app := filepath.Join(dir, "apps", "dpl_x74")
+	app := filepath.Join(dir, "apps", "dpl_terminal")
 	if err := os.MkdirAll(app, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(app, "compose.yaml"), []byte("new"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	record := &commandRecord{Version: 1, AgentID: "agt_fixture", ControlPlaneURL: p.cfg.ControlPlaneURL, CommandID: "cmd_x74", ControlToken: "fixture",
+	record := &commandRecord{Version: 1, AgentID: "agt_fixture", ControlPlaneURL: p.cfg.ControlPlaneURL, CommandID: "cmd_terminal", ControlToken: "fixture",
 		ProgressProtocol: sdkclient.DeploymentProgressProtocol,
-		Preparation: &executor.PreparationRecovery{Version: 1, Phase: w.phase, DeploymentID: "dpl_x74",
+		Preparation: &executor.PreparationRecovery{Version: 1, Phase: w.phase, DeploymentID: "dpl_terminal",
 			Files:      []executor.PreparationFile{{Name: "compose.yaml", Data: []byte("old"), Mode: 0o600, Exists: true}, {Name: ".env"}, {Name: "startup.json"}},
-			Containers: []string{x74Container},
-			Work:       &executor.PreparationWork{ID: workID, Step: "build", CommandID: "cmd_x74", RequestSHA256: hash}}}
+			Containers: []string{terminalContainer},
+			Work:       &executor.PreparationWork{ID: workID, Step: "build", CommandID: "cmd_terminal", RequestSHA256: hash}}}
 	return record, workerDir
 }
 
@@ -128,7 +128,7 @@ type resumeOutcome struct {
 	config    string
 }
 
-func runResume(t *testing.T, w x74Work, window time.Duration) resumeOutcome {
+func runResume(t *testing.T, w terminalWork, window time.Duration) resumeOutcome {
 	t.Helper()
 	dir := t.TempDir()
 	var count atomic.Int32
@@ -150,7 +150,7 @@ func runResume(t *testing.T, w x74Work, window time.Duration) resumeOutcome {
 	defer cancel()
 	_ = p.resumeRecord(ctx)
 	saved, err := p.journal.load()
-	config, _ := os.ReadFile(filepath.Join(dir, "apps", "dpl_x74", "compose.yaml"))
+	config, _ := os.ReadFile(filepath.Join(dir, "apps", "dpl_terminal", "compose.yaml"))
 	return resumeOutcome{released: err == nil && saved == nil && p.active == nil, terminals: count.Load(), workerDir: workerDir, config: string(config)}
 }
 
@@ -186,40 +186,40 @@ func assertHeld(t *testing.T, out resumeOutcome, what string) {
 
 func TestTerminalServerReleasesAPlainBuildWithoutVerdict(t *testing.T) {
 	linuxOnly(t)
-	fakeHost(t, x74Container, false)
-	assertReleased(t, runResume(t, x74Work{phase: "busy"}, 20*time.Second), "a closed command's build killed at its budget")
+	fakeHost(t, terminalContainer, false)
+	assertReleased(t, runResume(t, terminalWork{phase: "busy"}, 20*time.Second), "a closed command's build killed at its budget")
 }
 
 func TestTerminalServerReleasesAPlainBuildWithAnInvalidReceipt(t *testing.T) {
 	linuxOnly(t)
-	fakeHost(t, x74Container, false)
-	assertReleased(t, runResume(t, x74Work{phase: "busy", invalid: true}, 20*time.Second),
+	fakeHost(t, terminalContainer, false)
+	assertReleased(t, runResume(t, terminalWork{phase: "busy", invalid: true}, 20*time.Second),
 		"a closed command's stopped build with a receipt that cannot be reconciled")
 }
 
 func TestTerminalServerReleasesAnAbortedCheckpoint(t *testing.T) {
 	linuxOnly(t)
-	fakeHost(t, x74Container, false)
-	assertReleased(t, runResume(t, x74Work{phase: "aborted"}, 20*time.Second), "a closed command's aborted checkpoint")
+	fakeHost(t, terminalContainer, false)
+	assertReleased(t, runResume(t, terminalWork{phase: "aborted"}, 20*time.Second), "a closed command's aborted checkpoint")
 }
 
 func TestTerminalServerKeepsAControlledBuildInReview(t *testing.T) {
 	linuxOnly(t)
-	fakeHost(t, x74Container, false)
+	fakeHost(t, terminalContainer, false)
 	// The builder container can outlive a stopped unit; the controlled
 	// builder's own recovery owns it (a request the agent cannot bind counts
 	// as a controlled build too).
-	assertHeld(t, runResume(t, x74Work{phase: "busy", owned: true}, 3*time.Second), "a controlled build in review")
+	assertHeld(t, runResume(t, terminalWork{phase: "busy", owned: true}, 3*time.Second), "a controlled build in review")
 }
 
 func TestTerminalServerKeepsAnUnverifiableCheckpoint(t *testing.T) {
 	linuxOnly(t)
 	fakeHost(t, strings.Repeat("b", 64), false) // the containers changed since the preparation
-	assertHeld(t, runResume(t, x74Work{phase: "aborted"}, 3*time.Second), "a checkpoint whose restore cannot be verified")
+	assertHeld(t, runResume(t, terminalWork{phase: "aborted"}, 3*time.Second), "a checkpoint whose restore cannot be verified")
 }
 
 func TestLiveWorkerStillHoldsTheJournal(t *testing.T) {
 	linuxOnly(t)
-	fakeHost(t, x74Container, true)
-	assertHeld(t, runResume(t, x74Work{phase: "busy", invalid: true}, 3*time.Second), "a build whose worker may still be changing images")
+	fakeHost(t, terminalContainer, true)
+	assertHeld(t, runResume(t, terminalWork{phase: "busy", invalid: true}, 3*time.Second), "a build whose worker may still be changing images")
 }

@@ -38,6 +38,13 @@ type AppManifest struct {
 type ManifestStartup struct {
 	RequireHealthy bool `json:"require_healthy"`
 	TimeoutSeconds int  `json:"timeout_seconds,omitempty"`
+	// Protocol selects the startup gate semantics. Empty (or the v1
+	// name) keeps the v1 behavior: a service that declares no healthcheck
+	// never passes the required gate. "startup-health-v2" treats a
+	// healthcheck-less service as ready once it is running and stable,
+	// the same as `docker compose up --wait`; a service with a
+	// healthcheck still has to reach `healthy` under either protocol.
+	Protocol string `json:"protocol,omitempty"`
 }
 
 // ManifestRuntime describes how the app actually runs on the host.
@@ -74,7 +81,7 @@ type ManifestRuntime struct {
 	TorEgress                        bool                          `json:"tor_egress,omitempty"`
 	// Sandbox (capability agent-sandbox-v1) opts the deployment
 	// into the ephemeral confined runtime class.
-	Sandbox                          *SandboxSpec                  `json:"sandbox,omitempty"`
+	Sandbox *SandboxSpec `json:"sandbox,omitempty"`
 }
 
 // SandboxSpec is the manifest's runtime.sandbox block: the wall-clock
@@ -242,8 +249,8 @@ type Route struct {
 // Mode=enforce after the tenant's false-positive review (decision 7.4);
 // Mode=audit renders DetectionOnly and never blocks.
 type RouteShield struct {
-	Profile string `json:"profile"`            // standard | hardened | max
-	Mode    string `json:"mode,omitempty"`     // audit (default) | enforce
+	Profile string `json:"profile"`        // standard | hardened | max
+	Mode    string `json:"mode,omitempty"` // audit (default) | enforce
 }
 
 // ShieldProtocol is the poll capability an agent announces when its proxy
