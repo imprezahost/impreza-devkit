@@ -1,6 +1,6 @@
 module github.com/imprezahost/impreza-devkit/caddy-build
 
-go 1.26.0
+go 1.26.3
 
 require (
 	github.com/caddyserver/caddy/v2 v2.11.4
@@ -17,6 +17,7 @@ require (
 	dario.cat/mergo v1.0.2 // indirect
 	filippo.io/bigmod v0.1.0 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
+	github.com/imprezahost/impreza-devkit/sdk-go v0.0.0 // indirect
 	github.com/AndreasBriese/bbloom v0.0.0-20190825152654-46b345b51c96 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/DeRuina/timberjack v1.4.2 // indirect
@@ -194,3 +195,7 @@ require (
 replace github.com/imprezahost/impreza-devkit/caddy-dns-impreza => ../../../../caddy-dns-impreza
 
 replace github.com/imprezahost/impreza-devkit/caddy-shield => ../../../../caddy-shield
+
+replace github.com/corazawaf/coraza-caddy/v2 => ../../../../caddy-coraza
+
+replace github.com/imprezahost/impreza-devkit/sdk-go => ../../../../sdk-go

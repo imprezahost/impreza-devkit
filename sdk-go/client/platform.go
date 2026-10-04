@@ -249,8 +249,11 @@ type Route struct {
 // Mode=enforce after the tenant's false-positive review (decision 7.4);
 // Mode=audit renders DetectionOnly and never blocks.
 type RouteShield struct {
-	Profile string `json:"profile"`        // standard | hardened | max
-	Mode    string `json:"mode,omitempty"` // audit (default) | enforce
+	Controls   *ShieldControls   `json:"controls,omitempty"`
+	Protocol   string            `json:"protocol,omitempty"`
+	Exclusions []ShieldExclusion `json:"exclusions,omitempty"`
+	Profile    string            `json:"profile"`        // standard | hardened | max
+	Mode       string            `json:"mode,omitempty"` // audit (default) | enforce
 }
 
 // ShieldProtocol is the poll capability an agent announces when its proxy

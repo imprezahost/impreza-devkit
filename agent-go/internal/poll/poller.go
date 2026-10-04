@@ -9,14 +9,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/proxy"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/config"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/executor"
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/probeguard"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/sysload"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/upgrade"
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/uptimeprobe"
 	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 )
 
@@ -34,6 +38,11 @@ type Poller struct {
 	journal      *commandJournal
 	active       *commandRecord
 	journalErr   error
+
+	// The vantage prober, set by vantageLoop once the control
+	// plane confirms the mark. nil on a customer agent — the capability
+	// is never announced and no probe runs.
+	vantageProbe *uptimeprobe.Prober
 }
 
 // New constructs a Poller for the given config + executor. The SDK
@@ -121,11 +130,21 @@ func (p *Poller) Run(ctx context.Context) error {
 		defer close(metricsDone)
 		p.metricsLoop(ctx)
 	}()
+	// The prober is built here, BEFORE the goroutines start, so
+	// the poll loop's capability announcement never races a field write.
+	// vantageLoop only asks the control plane whether to start it.
+	p.vantageProbe = uptimeprobe.New(p.client, uptimeprobe.DefaultSocks, p.log)
+	probeDone := make(chan struct{})
+	go func() {
+		defer close(probeDone)
+		p.vantageLoop(ctx)
+	}()
 	defer func() {
 		// Wait for the heartbeat goroutine to wind down so caller
 		// teardown (e.g. writing PID files, closing logs) sees a
 		// truly idle agent.
 		cancel()
+		<-probeDone
 		<-hbDone
 		<-metricsDone
 	}()
@@ -142,7 +161,7 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 			return err
 		}
 	}
-	capabilities := []string{executor.TorEgressProtocol, executor.TorDataOwnerProtocol, "onion-auth-v1", "onion-profile-v1", "onion-deploy-profile-v1", "onion-custody-v1", "onion-purge-v1", "onion-private-preview-v1", "startup-health-v1", "startup-health-v2", "deploy-cancel-v1", "build-secrets-v1", "compose-source-files-v1", sdkclient.ServiceBindingProtocol, sdkclient.ServiceBindingRetirementProtocol, sdkclient.ServiceBindingGenerationProtocol, sdkclient.ServiceBindingGenerationRetirementProtocol, sdkclient.ServiceBindingRotationProtocol, sdkclient.ServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingGenerationProtocol, sdkclient.MysqlServiceBindingGenerationRetirementProtocol, sdkclient.MysqlServiceBindingRotationProtocol, sdkclient.MysqlServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingRestoreProtocol, sdkclient.TrafficSwitchProtocol, sdkclient.PreviewBasicAuthProtocol, sdkclient.ServiceBindingRestoreProtocol, sdkclient.ShieldProtocol, sdkclient.ProxyMetricsProtocol, sdkclient.SandboxProtocol}
+	capabilities := []string{executor.TorEgressProtocol, executor.TorDataOwnerProtocol, "onion-auth-v1", "onion-profile-v1", "onion-deploy-profile-v1", "onion-custody-v1", "onion-purge-v1", "onion-private-preview-v1", "startup-health-v1", "startup-health-v2", "deploy-cancel-v1", "build-secrets-v1", "compose-source-files-v1", sdkclient.ServiceBindingProtocol, sdkclient.ServiceBindingRetirementProtocol, sdkclient.ServiceBindingGenerationProtocol, sdkclient.ServiceBindingGenerationRetirementProtocol, sdkclient.ServiceBindingRotationProtocol, sdkclient.ServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingGenerationProtocol, sdkclient.MysqlServiceBindingGenerationRetirementProtocol, sdkclient.MysqlServiceBindingRotationProtocol, sdkclient.MysqlServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingRestoreProtocol, sdkclient.TrafficSwitchProtocol, sdkclient.PreviewBasicAuthProtocol, sdkclient.ServiceBindingRestoreProtocol, sdkclient.ShieldProtocol, sdkclient.ProxyMetricsProtocol, sdkclient.SandboxProtocol, sdkclient.ReadySwapProtocol}
 	if p.journal != nil {
 		capabilities = append(capabilities, sdkclient.DeploymentProgressProtocol)
 		if _, ok := p.exec.(*executor.Docker); ok {
@@ -164,7 +183,19 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 			return nil
 		}
 
+		// Image installation can finish after the poller starts; negotiate on the next poll.
+		if !slices.Contains(capabilities, "shield-v2") && proxy.ShieldV2Available() {
+			capabilities = append(capabilities, "shield-v2")
+		}
 		pollCapabilities := append([]string(nil), capabilities...)
+		if proxy.ShieldControlsAvailable() {
+			pollCapabilities = append(pollCapabilities, sdkclient.ShieldControlsProtocol)
+		}
+		// Uptime-probe-v1 rides the announcement ONLY while the
+		// vantage probe loop is live for this credential.
+		if p.vantageProbe != nil && p.vantageProbe.Active() {
+			pollCapabilities = append(pollCapabilities, probeguard.Protocol)
+		}
 		if docker, ok := p.exec.(*executor.Docker); ok {
 			if enabled, err := docker.ControlledBuildsEnabled(); err == nil && enabled {
 				pollCapabilities = append(pollCapabilities, executor.ControlledBuildProtocol)
@@ -423,5 +454,34 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 		return false
 	case <-t.C:
 		return true
+	}
+}
+
+// vantageLoop gates the uptime probe on the server's vantage mark. It
+// re-asks periodically (a credential can be marked later, or the mark
+// removed); between checks it sleeps long — the route is one GET per
+// minute at most. When the answer is yes the probe loop starts inside
+// this goroutine; Run returns when ctx is done or the mark was removed,
+// and in the latter case the loop comes back here, sleeps and re-asks,
+// so the capability drops out of the announcement until the mark
+// returns.
+func (p *Poller) vantageLoop(ctx context.Context) {
+	if p.client == nil || p.vantageProbe == nil {
+		return
+	}
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if p.vantageProbe.IsVantage(ctx) {
+			p.log.Info("uptime probe: this agent is a marked vantage; starting the probe loop")
+			p.vantageProbe.Run(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+		}
+		if !sleepCtx(ctx, time.Minute) {
+			return
+		}
 	}
 }

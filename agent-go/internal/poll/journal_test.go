@@ -134,6 +134,9 @@ func TestInterruptedFenceReplaysOnlySavedReviewedPayload(t *testing.T) {
 				return
 			}
 			w.WriteHeader(204)
+		case "/v1/agent/uptime/targets":
+			// A customer agent asks; the control plane answers 403.
+			w.WriteHeader(403)
 		default:
 			t.Errorf("unexpected request %s", r.URL.Path)
 			w.WriteHeader(404)
@@ -225,6 +228,9 @@ func TestSavedResultsSurviveRestartWithoutExecution(t *testing.T) {
 						return
 					}
 					w.WriteHeader(204)
+				case "/v1/agent/uptime/targets":
+					// A customer agent asks; the control plane answers 403.
+					w.WriteHeader(403)
 				default:
 					t.Error(r.URL.Path)
 					w.WriteHeader(404)
@@ -286,6 +292,9 @@ func TestLostPollResponseRequiresReconciliation(t *testing.T) {
 			reports.Add(1)
 			fmt.Fprint(w, `{"success":true,"data":{"command_id":"cmd_lost","terminal":false,"status":"in_progress"}}`)
 			stop()
+		case "/v1/agent/uptime/targets":
+			// A customer agent asks; the control plane answers 403.
+			w.WriteHeader(403)
 		default:
 			t.Error("unexpected action " + r.URL.Path)
 			w.WriteHeader(404)
@@ -412,6 +421,9 @@ func TestUnstartedRecoveryVerifiesControlAndPersistsOutcome(t *testing.T) {
 						t.Error("incorrect reconciled result")
 					}
 					w.WriteHeader(204)
+				case "/v1/agent/uptime/targets":
+					// A customer agent asks; the control plane answers 403.
+					w.WriteHeader(403)
 				default:
 					t.Error("unexpected execution or poll: " + r.URL.Path)
 					w.WriteHeader(500)

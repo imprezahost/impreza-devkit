@@ -5,7 +5,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 	"net/http"
+	"net/netip"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +58,13 @@ type PowMiddleware struct {
 	// MUST be left off for plain-HTTP onion routes where Secure would make
 	// the browser drop the cookie.
 	SecureCookie bool `json:"secure_cookie,omitempty"`
+	// Empty paths protect every path. Deadline temporarily overrides paths
+	// and disabled base protection, without mutating the persisted base settings.
+	Paths            []string `json:"paths,omitempty"`
+	TrustedSources   []string `json:"trusted_sources,omitempty"`
+	AttackUntil      int64    `json:"attack_until,omitempty"`
+	BaselineDisabled bool     `json:"baseline_disabled,omitempty"`
+	trusted          []netip.Prefix
 
 	logger *zap.Logger `json:"-"`
 	chal   *cappedStore
@@ -63,7 +73,7 @@ type PowMiddleware struct {
 	windowMin  int64 // start of current 60s window (unix seconds)
 	windowHits int64
 	hotWindows int64 // consecutive windows over threshold
-	difficulty int    // current effective difficulty
+	difficulty int   // current effective difficulty
 	lastHot    time.Time
 }
 
@@ -79,6 +89,33 @@ func (m *PowMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for d.NextBlock(0) {
 			switch d.Val() {
+			case "path_prefix":
+				var v string
+				if !d.AllArgs(&v) {
+					return d.ArgErr()
+				}
+				m.Paths = append(m.Paths, v)
+			case "trusted_source":
+				var v string
+				if !d.AllArgs(&v) {
+					return d.ArgErr()
+				}
+				m.TrustedSources = append(m.TrustedSources, v)
+			case "attack_until":
+				var v string
+				if !d.AllArgs(&v) {
+					return d.ArgErr()
+				}
+				n, err := strconv.ParseInt(v, 10, 64)
+				if err != nil {
+					return d.Err("invalid Shield attack deadline")
+				}
+				m.AttackUntil = n
+			case "baseline_disabled":
+				if d.NextArg() {
+					return d.ArgErr()
+				}
+				m.BaselineDisabled = true
 			case "deployment":
 				if !d.AllArgs(&m.Deployment) {
 					return d.ArgErr()
@@ -167,12 +204,27 @@ func (m *PowMiddleware) Provision(ctx caddy.Context) error {
 	if m.AdaptiveThreshold < 0 {
 		return fmt.Errorf("shield_pow: adaptive_threshold cannot be negative")
 	}
+	var err error
+	m.trusted, err = validateControlFields(m.Paths, m.TrustedSources, m.AttackUntil)
+	if err != nil {
+		return err
+	}
 	m.chal = newCappedStore(65536, func() int64 { return time.Now().UnixNano() })
 	m.difficulty = m.Difficulty
 	return nil
 }
 
 func (m *PowMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	// Deadline evaluation runs in the proxy, with no control-plane dependency.
+	// Check both the decoded path and its normalized form: app normalization
+	// must not turn an unprotected traversal into a protected login endpoint.
+	attack := m.attackActive()
+	if trustedPeer(r, m.trusted) || (!attack && m.BaselineDisabled) {
+		return next.ServeHTTP(w, r)
+	}
+	if r.URL.Path != VerifyPath && !attack && !powPathMatches(r.URL.Path, m.Paths) && !powPathMatches(path.Clean(r.URL.Path), m.Paths) {
+		return next.ServeHTTP(w, r)
+	}
 	if r.URL.Path == VerifyPath {
 		return m.serveVerify(w, r)
 	}
@@ -187,7 +239,7 @@ func (m *PowMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 // countAdaptive maintains the rolling per-minute request count and steps
 // difficulty up after sustained load and down after quiet periods.
 func (m *PowMiddleware) countAdaptive() {
-	if m.AdaptiveThreshold == 0 {
+	if m.AdaptiveThreshold == 0 || m.attackActive() {
 		return
 	}
 	now := time.Now().Unix()
@@ -220,6 +272,9 @@ func (m *PowMiddleware) countAdaptive() {
 func (m *PowMiddleware) currentDifficulty() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.attackActive() && m.difficulty < sdkclient.ShieldAttackDifficulty {
+		return sdkclient.ShieldAttackDifficulty
+	}
 	return m.difficulty
 }
 
@@ -244,7 +299,7 @@ func (m *PowMiddleware) cookieValid(r *http.Request) bool {
 	if err != nil || time.Now().Unix() >= expUnix {
 		return false
 	}
-	want := hmacHex(exp + "|" + nonce + "|" + m.Deployment)
+	want := hmacHex(exp + "|" + nonce + "|" + m.cookieScope())
 	return constantTimeEqual(want, strings.ToLower(mac))
 }
 
@@ -252,7 +307,7 @@ func (m *PowMiddleware) cookieValid(r *http.Request) bool {
 func (m *PowMiddleware) issueCookie(w http.ResponseWriter) {
 	exp := time.Now().Add(time.Duration(m.CookieTTLSeconds) * time.Second).Unix()
 	nonce := mustRandomHex(16)
-	mac := hmacHex(fmt.Sprintf("%d|%s|%s", exp, nonce, m.Deployment))
+	mac := hmacHex(fmt.Sprintf("%d|%s|%s", exp, nonce, m.cookieScope()))
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    fmt.Sprintf("%d.%s.%s", exp, nonce, mac),

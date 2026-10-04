@@ -1,0 +1,3755 @@
+{
+  "crs_version": "4.25.0",
+  "rules": {
+    "901001": {
+      "blocking": true,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901100": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901110": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901111": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901115": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901120": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901125": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901130": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901140": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901141": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901142": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901143": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901160": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901162": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901163": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901164": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901165": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901167": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901168": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901169": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901170": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901171": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901200": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901320": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901340": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901350": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901400": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901410": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901450": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901500": {
+      "blocking": true,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "901510": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "905100": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "905110": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "911011": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "911012": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "911013": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "911014": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "911015": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "911016": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "911017": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "911018": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "911100": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Method is not allowed by policy",
+      "detection": true
+    },
+    "913011": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "913012": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "913013": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "913014": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "913015": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "913016": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "913017": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "913018": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "913100": {
+      "blocking": false,
+      "category": "other",
+      "description": "Found User-Agent associated with security scanner",
+      "detection": true
+    },
+    "920011": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "920012": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "920013": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "920014": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "920015": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "920016": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "920017": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "920018": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "920100": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Invalid HTTP Request Line",
+      "detection": true
+    },
+    "920120": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Attempted multipart/form-data bypass",
+      "detection": true
+    },
+    "920121": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Attempted multipart/form-data bypass",
+      "detection": true
+    },
+    "920160": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Content-Length HTTP header is not numeric",
+      "detection": true
+    },
+    "920170": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "GET or HEAD Request with Body Content",
+      "detection": true
+    },
+    "920171": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "GET or HEAD Request with Transfer-Encoding",
+      "detection": true
+    },
+    "920180": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "POST without Content-Length and Transfer-Encoding headers",
+      "detection": true
+    },
+    "920181": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Content-Length and Transfer-Encoding headers present",
+      "detection": true
+    },
+    "920190": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Range: Invalid Last Byte Value",
+      "detection": true
+    },
+    "920200": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Range: Too many fields (6 or more)",
+      "detection": true
+    },
+    "920201": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Range: Too many fields for pdf request (63 or more)",
+      "detection": true
+    },
+    "920202": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Range: Too many fields for pdf request (6 or more)",
+      "detection": true
+    },
+    "920210": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Multiple/Conflicting Connection Header Data Found",
+      "detection": true
+    },
+    "920230": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Multiple URL Encoding Detected",
+      "detection": true
+    },
+    "920240": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "URL Encoding Abuse Attack Attempt",
+      "detection": true
+    },
+    "920250": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "UTF8 Encoding Abuse Attack Attempt",
+      "detection": true
+    },
+    "920260": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Unicode Full/Half Width Abuse Attack Attempt",
+      "detection": true
+    },
+    "920270": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Invalid character in request (null character)",
+      "detection": true
+    },
+    "920271": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Invalid character in request (non printable characters)",
+      "detection": true
+    },
+    "920272": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Invalid character in request (outside of printable chars below ascii 127)",
+      "detection": true
+    },
+    "920273": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Invalid character in request (outside of very strict set)",
+      "detection": true
+    },
+    "920274": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Invalid character in request headers (outside of very strict set)",
+      "detection": true
+    },
+    "920275": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Invalid character in request headers (outside of very strict set)",
+      "detection": true
+    },
+    "920280": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Request Missing a Host Header",
+      "detection": true
+    },
+    "920290": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Empty Host Header",
+      "detection": true
+    },
+    "920300": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Request Missing an Accept Header",
+      "detection": true
+    },
+    "920310": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Request Has an Empty Accept Header",
+      "detection": true
+    },
+    "920311": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Request Has an Empty Accept Header",
+      "detection": true
+    },
+    "920320": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Missing User Agent Header",
+      "detection": true
+    },
+    "920330": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Empty User Agent Header",
+      "detection": true
+    },
+    "920340": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Content-Type header missing from request with non-zero Content-Length",
+      "detection": true
+    },
+    "920350": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Host header is a numeric IP address",
+      "detection": true
+    },
+    "920360": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Argument name too long",
+      "detection": true
+    },
+    "920370": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Argument value too long",
+      "detection": true
+    },
+    "920380": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Too many arguments in request",
+      "detection": true
+    },
+    "920390": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Total arguments size exceeded",
+      "detection": true
+    },
+    "920400": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Uploaded file size too large",
+      "detection": true
+    },
+    "920410": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Total uploaded files size too large",
+      "detection": true
+    },
+    "920420": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Request content type is not allowed by policy",
+      "detection": true
+    },
+    "920430": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP protocol version is not allowed by policy",
+      "detection": true
+    },
+    "920440": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "URL file extension is restricted by policy",
+      "detection": true
+    },
+    "920450": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP header is restricted by policy (the matched input)",
+      "detection": true
+    },
+    "920451": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP header is restricted by policy (the matched input)",
+      "detection": true
+    },
+    "920460": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Abnormal character escapes in request",
+      "detection": true
+    },
+    "920470": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Illegal Content-Type header",
+      "detection": true
+    },
+    "920480": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Request content type charset is not allowed by policy",
+      "detection": true
+    },
+    "920490": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Request header x-up-devcap-post-charset detected in combination with prefix 'UP' to User-Agent",
+      "detection": true
+    },
+    "920500": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Attempt to access a backup or working file",
+      "detection": true
+    },
+    "920510": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Invalid Cache-Control request header",
+      "detection": true
+    },
+    "920520": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Accept-Encoding header exceeded sensible length",
+      "detection": true
+    },
+    "920521": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Illegal Accept-Encoding header",
+      "detection": true
+    },
+    "920530": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Multiple charsets detected in content type header",
+      "detection": true
+    },
+    "920539": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "920540": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Possible Unicode character bypass detected",
+      "detection": true
+    },
+    "920600": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Illegal Accept header: charset parameter",
+      "detection": true
+    },
+    "920610": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Raw (unencoded) fragment in request URI",
+      "detection": true
+    },
+    "920620": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Multiple Content-Type Request Headers",
+      "detection": true
+    },
+    "920640": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Content-Type header missing from request with body",
+      "detection": true
+    },
+    "920650": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP method override attempt via _method parameter",
+      "detection": true
+    },
+    "920660": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Obsolete Request-Range header detected",
+      "detection": true
+    },
+    "921011": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "921012": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "921013": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "921014": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "921015": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "921016": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "921017": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "921018": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "921110": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP Request Smuggling Attack",
+      "detection": true
+    },
+    "921120": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP Response Splitting Attack",
+      "detection": true
+    },
+    "921130": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP Response Splitting Attack",
+      "detection": true
+    },
+    "921140": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP Header Injection Attack via headers",
+      "detection": true
+    },
+    "921150": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP Header Injection Attack via payload (CR/LF detected)",
+      "detection": true
+    },
+    "921151": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP Header Injection Attack via payload (CR/LF detected)",
+      "detection": true
+    },
+    "921160": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP Header Injection Attack via payload (CR/LF and header-name detected)",
+      "detection": true
+    },
+    "921170": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "921180": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP Parameter Pollution (the matched input)",
+      "detection": true
+    },
+    "921190": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP Splitting (CR/LF in request filename detected)",
+      "detection": true
+    },
+    "921200": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "LDAP Injection Attack",
+      "detection": true
+    },
+    "921210": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP Parameter Pollution after detecting bogus char after parameter array",
+      "detection": true
+    },
+    "921220": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP Parameter Pollution possible via array notation",
+      "detection": true
+    },
+    "921230": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "HTTP Range Header detected",
+      "detection": true
+    },
+    "921240": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "mod_proxy attack attempt detected",
+      "detection": true
+    },
+    "921250": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Old Cookies V1 usage attempt detected",
+      "detection": true
+    },
+    "921421": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Content-Type header: Dangerous content type outside the mime type declaration",
+      "detection": true
+    },
+    "921422": {
+      "blocking": false,
+      "category": "protocol",
+      "description": "Content-Type header: Dangerous content type outside the mime type declaration",
+      "detection": true
+    },
+    "922100": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "922110": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "922120": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "922130": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "922140": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "922150": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "930011": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "930012": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "930013": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "930014": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "930015": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "930016": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "930017": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "930018": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "930100": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "Path Traversal Attack (/../) or (/.../)",
+      "detection": true
+    },
+    "930110": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "Path Traversal Attack (/../) or (/.../)",
+      "detection": true
+    },
+    "930120": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OS File Access Attempt",
+      "detection": true
+    },
+    "930121": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OS File Access Attempt in REQUEST_HEADERS",
+      "detection": true
+    },
+    "930130": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "Restricted File Access Attempt",
+      "detection": true
+    },
+    "930140": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "Restricted File Access Attempt: AI Coding Assistant Artifact",
+      "detection": true
+    },
+    "931011": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "931012": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "931013": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "931014": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "931015": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "931016": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "931017": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "931018": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "931100": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "Possible Remote File Inclusion (RFI) Attack: URL Parameter using IP Address",
+      "detection": true
+    },
+    "931110": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "Possible Remote File Inclusion (RFI) Attack: Common RFI Vulnerable Parameter Name used w/URL Payload",
+      "detection": true
+    },
+    "931120": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "Possible Remote File Inclusion (RFI) Attack: URL Payload Used w/Trailing Question Mark Character (?)",
+      "detection": true
+    },
+    "931130": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "Possible Remote File Inclusion (RFI) Attack: Off-Domain Reference/Link",
+      "detection": true
+    },
+    "931131": {
+      "blocking": false,
+      "category": "LFI",
+      "description": "Possible Remote File Inclusion (RFI) Attack",
+      "detection": true
+    },
+    "932011": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "932012": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "932013": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "932014": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "932015": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "932016": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "932017": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "932018": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "932120": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Windows PowerShell Command Found",
+      "detection": true
+    },
+    "932125": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Windows Powershell Alias Command Injection",
+      "detection": true
+    },
+    "932130": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Shell Expression Found",
+      "detection": true
+    },
+    "932131": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Shell Expression Found",
+      "detection": true
+    },
+    "932140": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Windows FOR/IF Command Found",
+      "detection": true
+    },
+    "932160": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Shell Code Found",
+      "detection": true
+    },
+    "932161": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Shell Code Found in REQUEST_HEADERS",
+      "detection": true
+    },
+    "932170": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Shellshock (CVE-2014-6271)",
+      "detection": true
+    },
+    "932171": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Shellshock (CVE-2014-6271)",
+      "detection": true
+    },
+    "932175": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix shell alias invocation",
+      "detection": true
+    },
+    "932180": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Restricted File Upload Attempt",
+      "detection": true
+    },
+    "932190": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Wildcard bypass technique attempt",
+      "detection": true
+    },
+    "932200": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "RCE Bypass Technique",
+      "detection": true
+    },
+    "932205": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "RCE Bypass Technique",
+      "detection": true
+    },
+    "932206": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "RCE Bypass Technique",
+      "detection": true
+    },
+    "932207": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "RCE Bypass Technique",
+      "detection": true
+    },
+    "932210": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: SQLite System Command Execution",
+      "detection": true
+    },
+    "932220": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Command Injection with pipe",
+      "detection": true
+    },
+    "932230": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Command Injection (2-3 chars)",
+      "detection": true
+    },
+    "932231": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Command Injection",
+      "detection": true
+    },
+    "932232": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Command Injection",
+      "detection": true
+    },
+    "932235": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Command Injection (command without evasion)",
+      "detection": true
+    },
+    "932236": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Command Injection (command without evasion)",
+      "detection": true
+    },
+    "932237": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Shell Code Found in REQUEST_HEADERS",
+      "detection": true
+    },
+    "932238": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Shell Code Found in REQUEST_HEADERS",
+      "detection": true
+    },
+    "932239": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Command Injection found in user-agent or referer header",
+      "detection": true
+    },
+    "932240": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Command Injection evasion attempt detected",
+      "detection": true
+    },
+    "932250": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Direct Unix Command Execution",
+      "detection": true
+    },
+    "932260": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Direct Unix Command Execution",
+      "detection": true
+    },
+    "932270": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Shell Expression Found",
+      "detection": true
+    },
+    "932271": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix Shell Expression Found",
+      "detection": true
+    },
+    "932280": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Brace Expansion Found",
+      "detection": true
+    },
+    "932281": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Brace Expansion Found",
+      "detection": true
+    },
+    "932300": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: SMTP Command Execution",
+      "detection": true
+    },
+    "932301": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: SMTP Command Execution",
+      "detection": true
+    },
+    "932310": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: IMAP Command Execution",
+      "detection": true
+    },
+    "932311": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: IMAP Command Execution",
+      "detection": true
+    },
+    "932320": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: POP3 Command Execution",
+      "detection": true
+    },
+    "932321": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: POP3 Command Execution",
+      "detection": true
+    },
+    "932330": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix shell history invocation",
+      "detection": true
+    },
+    "932331": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Unix shell history invocation",
+      "detection": true
+    },
+    "932340": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Direct Unix Command Execution (No Arguments)",
+      "detection": true
+    },
+    "932350": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Direct Unix Command Execution (No Arguments)",
+      "detection": true
+    },
+    "932370": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Windows Command Injection",
+      "detection": true
+    },
+    "932371": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Windows Command Injection",
+      "detection": true
+    },
+    "932380": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Windows Command Injection",
+      "detection": true
+    },
+    "932390": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Shell Fork Bomb",
+      "detection": true
+    },
+    "933011": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "933012": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "933013": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "933014": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "933015": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "933016": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "933017": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "933018": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "933100": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: PHP Open Tag Found",
+      "detection": true
+    },
+    "933110": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: PHP Script File Upload Found",
+      "detection": true
+    },
+    "933111": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: PHP Script File Upload Found",
+      "detection": true
+    },
+    "933120": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: Configuration Directive Found",
+      "detection": true
+    },
+    "933130": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: Variables Found",
+      "detection": true
+    },
+    "933131": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: Variables Found",
+      "detection": true
+    },
+    "933135": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: Variable Access Found",
+      "detection": true
+    },
+    "933140": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: I/O Stream Found",
+      "detection": true
+    },
+    "933150": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: High-Risk PHP Function Name Found",
+      "detection": true
+    },
+    "933151": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: Medium-Risk PHP Function Name Found",
+      "detection": true
+    },
+    "933152": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: Medium-Risk PHP Function Name Found",
+      "detection": true
+    },
+    "933153": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: Medium-Risk PHP Function Name Found",
+      "detection": true
+    },
+    "933160": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: High-Risk PHP Function Call Found",
+      "detection": true
+    },
+    "933161": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: Low-Value PHP Function Call Found",
+      "detection": true
+    },
+    "933170": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: Serialized Object Injection",
+      "detection": true
+    },
+    "933180": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: Variable Function Call Found",
+      "detection": true
+    },
+    "933190": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: PHP Closing Tag Found",
+      "detection": true
+    },
+    "933200": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: Wrapper scheme detected",
+      "detection": true
+    },
+    "933210": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: Variable Function Call Found",
+      "detection": true
+    },
+    "933211": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: Variable Function Call Found",
+      "detection": true
+    },
+    "933220": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "PHP Injection Attack: PHP Session File Upload Attempt",
+      "detection": true
+    },
+    "934011": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "934012": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "934013": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "934014": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "934015": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "934016": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "934017": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "934018": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "934100": {
+      "blocking": false,
+      "category": "other",
+      "description": "Node.js Injection Attack 1/2",
+      "detection": true
+    },
+    "934101": {
+      "blocking": false,
+      "category": "other",
+      "description": "Node.js Injection Attack 2/2",
+      "detection": true
+    },
+    "934110": {
+      "blocking": false,
+      "category": "other",
+      "description": "Possible Server Side Request Forgery (SSRF) Attack: Cloud provider metadata URL in Parameter",
+      "detection": true
+    },
+    "934120": {
+      "blocking": false,
+      "category": "other",
+      "description": "Possible Server Side Request Forgery (SSRF) Attack: URL Parameter using IP Address",
+      "detection": true
+    },
+    "934130": {
+      "blocking": false,
+      "category": "other",
+      "description": "JavaScript Prototype Pollution",
+      "detection": true
+    },
+    "934140": {
+      "blocking": false,
+      "category": "other",
+      "description": "Perl Injection Attack",
+      "detection": true
+    },
+    "934150": {
+      "blocking": false,
+      "category": "other",
+      "description": "Ruby Injection Attack",
+      "detection": true
+    },
+    "934160": {
+      "blocking": false,
+      "category": "other",
+      "description": "Node.js DoS attack",
+      "detection": true
+    },
+    "934170": {
+      "blocking": false,
+      "category": "other",
+      "description": "PHP data scheme attack",
+      "detection": true
+    },
+    "934180": {
+      "blocking": false,
+      "category": "other",
+      "description": "SSTI Attack",
+      "detection": true
+    },
+    "934190": {
+      "blocking": false,
+      "category": "other",
+      "description": "Possible Server Side Request Forgery (SSRF) Attack: Scheme-less localhost or internal hostname detected",
+      "detection": true
+    },
+    "941010": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "941011": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "941012": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "941013": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "941014": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "941015": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "941016": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "941017": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "941018": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "941100": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "XSS Attack Detected via libinjection",
+      "detection": true
+    },
+    "941101": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "XSS Attack Detected via libinjection",
+      "detection": true
+    },
+    "941110": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "XSS Filter - Category 1: Script Tag Vector",
+      "detection": true
+    },
+    "941120": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "XSS Filter - Category 2: Event Handler Vector",
+      "detection": true
+    },
+    "941130": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "XSS Filter - Category 3: Attribute Vector",
+      "detection": true
+    },
+    "941140": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "XSS Filter - Category 4: Javascript URI Vector",
+      "detection": true
+    },
+    "941150": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "XSS Filter - Category 5: Disallowed HTML Attributes",
+      "detection": true
+    },
+    "941160": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "NoScript XSS InjectionChecker: HTML Injection",
+      "detection": true
+    },
+    "941170": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "NoScript XSS InjectionChecker: Attribute Injection",
+      "detection": true
+    },
+    "941180": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "Node-Validator Deny List Keywords",
+      "detection": true
+    },
+    "941181": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "Node-Validator Deny List Keywords",
+      "detection": true
+    },
+    "941190": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "IE XSS Filters - Attack Detected",
+      "detection": true
+    },
+    "941200": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "IE XSS Filters - Attack Detected",
+      "detection": true
+    },
+    "941210": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "Javascript Word Detected",
+      "detection": true
+    },
+    "941220": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "IE XSS Filters - Attack Detected",
+      "detection": true
+    },
+    "941230": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "IE XSS Filters - Attack Detected",
+      "detection": true
+    },
+    "941240": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "IE XSS Filters - Attack Detected",
+      "detection": true
+    },
+    "941250": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "IE XSS Filters - Attack Detected",
+      "detection": true
+    },
+    "941260": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "IE XSS Filters - Attack Detected",
+      "detection": true
+    },
+    "941270": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "IE XSS Filters - Attack Detected",
+      "detection": true
+    },
+    "941280": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "IE XSS Filters - Attack Detected",
+      "detection": true
+    },
+    "941290": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "IE XSS Filters - Attack Detected",
+      "detection": true
+    },
+    "941300": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "IE XSS Filters - Attack Detected",
+      "detection": true
+    },
+    "941310": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "US-ASCII Malformed Encoding XSS Filter - Attack Detected",
+      "detection": true
+    },
+    "941320": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "Possible XSS Attack Detected - HTML Tag Handler",
+      "detection": true
+    },
+    "941330": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "IE XSS Filters - Attack Detected",
+      "detection": true
+    },
+    "941340": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "IE XSS Filters - Attack Detected",
+      "detection": true
+    },
+    "941350": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "UTF-7 Encoding IE XSS - Attack Detected",
+      "detection": true
+    },
+    "941360": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "JSFuck / Hieroglyphy obfuscation detected",
+      "detection": true
+    },
+    "941370": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "JavaScript global variable found",
+      "detection": true
+    },
+    "941380": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "AngularJS client side template injection detected",
+      "detection": true
+    },
+    "941390": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "Javascript method detected",
+      "detection": true
+    },
+    "941400": {
+      "blocking": false,
+      "category": "XSS",
+      "description": "XSS JavaScript function without parentheses",
+      "detection": true
+    },
+    "942011": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "942012": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "942013": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "942014": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "942015": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "942016": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "942017": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "942018": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "942100": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Injection Attack Detected via libinjection",
+      "detection": true
+    },
+    "942101": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Injection Attack Detected via libinjection",
+      "detection": true
+    },
+    "942120": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Injection Attack: SQL Operator Detected",
+      "detection": true
+    },
+    "942130": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Injection Attack: SQL Boolean-based attack detected",
+      "detection": true
+    },
+    "942131": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Injection Attack: SQL Boolean-based attack detected",
+      "detection": true
+    },
+    "942140": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Injection Attack: Common DB Names Detected",
+      "detection": true
+    },
+    "942150": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Injection Attack: SQL function name detected",
+      "detection": true
+    },
+    "942151": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Injection Attack: SQL function name detected",
+      "detection": true
+    },
+    "942152": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Injection Attack: SQL function name detected",
+      "detection": true
+    },
+    "942160": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects blind sqli tests using sleep() or benchmark()",
+      "detection": true
+    },
+    "942170": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects SQL benchmark and sleep injection attempts including conditional queries",
+      "detection": true
+    },
+    "942180": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects basic SQL authentication bypass attempts 1/3",
+      "detection": true
+    },
+    "942190": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects MSSQL code execution and information gathering attempts",
+      "detection": true
+    },
+    "942200": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects MySQL comment-/space-obfuscated injections and backtick termination",
+      "detection": true
+    },
+    "942210": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects chained SQL injection attempts 1/2",
+      "detection": true
+    },
+    "942220": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Looking for integer overflow attacks, these are taken from skipfish, except 2.2.2250738585072011e-308 is the \\\"magic number\\\" crash",
+      "detection": true
+    },
+    "942230": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects conditional SQL injection attempts",
+      "detection": true
+    },
+    "942240": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects MySQL charset switch and MSSQL DoS attempts",
+      "detection": true
+    },
+    "942250": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects MATCH AGAINST, MERGE and EXECUTE IMMEDIATE injections",
+      "detection": true
+    },
+    "942251": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects HAVING injections",
+      "detection": true
+    },
+    "942260": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects basic SQL authentication bypass attempts 2/3",
+      "detection": true
+    },
+    "942270": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Looking for basic sql injection. Common attack string for mysql, oracle and others",
+      "detection": true
+    },
+    "942280": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects Postgres pg_sleep injection, waitfor delay attacks and database shutdown attempts",
+      "detection": true
+    },
+    "942290": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Finds basic MongoDB SQL injection attempts",
+      "detection": true
+    },
+    "942300": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects MySQL comments, conditions and ch(a)r injections",
+      "detection": true
+    },
+    "942310": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects chained SQL injection attempts 2/2",
+      "detection": true
+    },
+    "942320": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects MySQL and PostgreSQL stored procedure/function injections",
+      "detection": true
+    },
+    "942321": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects MySQL and PostgreSQL stored procedure/function injections",
+      "detection": true
+    },
+    "942330": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects classic SQL injection probings 1/3",
+      "detection": true
+    },
+    "942340": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects basic SQL authentication bypass attempts 3/3",
+      "detection": true
+    },
+    "942350": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects MySQL UDF injection and other data/structure manipulation attempts",
+      "detection": true
+    },
+    "942360": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects concatenated basic SQL injection and SQLLFI attempts",
+      "detection": true
+    },
+    "942361": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects basic SQL injection based on keyword alter or union",
+      "detection": true
+    },
+    "942362": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects concatenated basic SQL injection and SQLLFI attempts",
+      "detection": true
+    },
+    "942370": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects classic SQL injection probings 2/3",
+      "detection": true
+    },
+    "942380": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Injection Attack",
+      "detection": true
+    },
+    "942390": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Injection Attack",
+      "detection": true
+    },
+    "942400": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Injection Attack",
+      "detection": true
+    },
+    "942410": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Injection Attack",
+      "detection": true
+    },
+    "942420": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Restricted SQL Character Anomaly Detection (cookies): # of special characters exceeded (8)",
+      "detection": true
+    },
+    "942421": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Restricted SQL Character Anomaly Detection (cookies): # of special characters exceeded (3)",
+      "detection": true
+    },
+    "942430": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Restricted SQL Character Anomaly Detection (args): # of special characters exceeded (12)",
+      "detection": true
+    },
+    "942431": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Restricted SQL Character Anomaly Detection (args): # of special characters exceeded (6)",
+      "detection": true
+    },
+    "942432": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Restricted SQL Character Anomaly Detection (args): # of special characters exceeded (2)",
+      "detection": true
+    },
+    "942440": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Comment Sequence Detected",
+      "detection": true
+    },
+    "942450": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Bin or Hex Encoding Identified",
+      "detection": true
+    },
+    "942460": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Meta-Character Anomaly Detection Alert - Repetitive Non-Word Characters",
+      "detection": true
+    },
+    "942470": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Injection Attack",
+      "detection": true
+    },
+    "942480": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Injection Attack",
+      "detection": true
+    },
+    "942490": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects classic SQL injection probings 3/3",
+      "detection": true
+    },
+    "942500": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "MySQL in-line comment detected",
+      "detection": true
+    },
+    "942510": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQLi bypass attempt by ticks or backticks detected",
+      "detection": true
+    },
+    "942511": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQLi bypass attempt by ticks detected",
+      "detection": true
+    },
+    "942520": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects basic SQL authentication bypass attempts 4.0/4",
+      "detection": true
+    },
+    "942521": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects basic SQL authentication bypass attempts 4.1/4",
+      "detection": true
+    },
+    "942522": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "Detects basic SQL authentication bypass attempts 4.1/4",
+      "detection": true
+    },
+    "942530": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQLi query termination detected",
+      "detection": true
+    },
+    "942540": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "SQL Authentication bypass (split query)",
+      "detection": true
+    },
+    "942550": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "JSON-Based SQL Injection",
+      "detection": true
+    },
+    "942560": {
+      "blocking": false,
+      "category": "SQLi",
+      "description": "MySQL Scientific Notation payload detected",
+      "detection": true
+    },
+    "943011": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "943012": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "943013": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "943014": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "943015": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "943016": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "943017": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "943018": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "943100": {
+      "blocking": false,
+      "category": "other",
+      "description": "Possible Session Fixation Attack: Setting Cookie Values in HTML",
+      "detection": true
+    },
+    "943110": {
+      "blocking": false,
+      "category": "other",
+      "description": "Possible Session Fixation Attack: SessionID Parameter Name with Off-Domain Referer",
+      "detection": true
+    },
+    "943120": {
+      "blocking": false,
+      "category": "other",
+      "description": "Possible Session Fixation Attack: SessionID Parameter Name with No Referer",
+      "detection": true
+    },
+    "944011": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "944012": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "944013": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "944014": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "944015": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "944016": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "944017": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "944018": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "944100": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Suspicious Java class detected",
+      "detection": true
+    },
+    "944110": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Java process spawn (CVE-2017-9805)",
+      "detection": true
+    },
+    "944120": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Java serialization (CVE-2015-4852)",
+      "detection": true
+    },
+    "944130": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Suspicious Java class detected",
+      "detection": true
+    },
+    "944140": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Java Injection Attack: Java Script File Upload Found",
+      "detection": true
+    },
+    "944150": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Potential Remote Command Execution: Log4j / Log4shell",
+      "detection": true
+    },
+    "944151": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Potential Remote Command Execution: Log4j / Log4shell",
+      "detection": true
+    },
+    "944152": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Potential Remote Command Execution: Log4j / Log4shell",
+      "detection": true
+    },
+    "944200": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Magic bytes Detected, probable java serialization in use",
+      "detection": true
+    },
+    "944210": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Magic bytes Detected Base64 Encoded, probable java serialization in use",
+      "detection": true
+    },
+    "944240": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Java serialization (CVE-2015-4852)",
+      "detection": true
+    },
+    "944250": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Suspicious Java method detected",
+      "detection": true
+    },
+    "944260": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Remote Command Execution: Malicious class-loading payload",
+      "detection": true
+    },
+    "944300": {
+      "blocking": false,
+      "category": "RCE",
+      "description": "Base64 encoded string matched suspicious keyword",
+      "detection": true
+    },
+    "949011": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949012": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949013": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949014": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949015": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949016": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949017": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949018": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949052": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949053": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949054": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949055": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949059": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949060": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949061": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949062": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949063": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949110": {
+      "blocking": true,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949111": {
+      "blocking": true,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949152": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949153": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949154": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949155": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949159": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949160": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949161": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949162": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "949163": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "950010": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "950011": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "950012": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "950013": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "950014": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "950015": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "950016": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "950017": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "950018": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "950021": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "950100": {
+      "blocking": false,
+      "category": "other",
+      "description": "The Application Returned a 500-Level Status Code",
+      "detection": true
+    },
+    "950130": {
+      "blocking": false,
+      "category": "other",
+      "description": "Directory Listing",
+      "detection": true
+    },
+    "950140": {
+      "blocking": false,
+      "category": "other",
+      "description": "CGI source code leakage",
+      "detection": true
+    },
+    "950150": {
+      "blocking": false,
+      "category": "other",
+      "description": "ASP.NET exception leakage",
+      "detection": true
+    },
+    "951010": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "951011": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "951012": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "951013": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "951014": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "951015": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "951016": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "951017": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "951018": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "951100": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "951110": {
+      "blocking": false,
+      "category": "other",
+      "description": "Microsoft Access SQL Information Leakage",
+      "detection": true
+    },
+    "951120": {
+      "blocking": false,
+      "category": "other",
+      "description": "Oracle SQL Information Leakage",
+      "detection": true
+    },
+    "951130": {
+      "blocking": false,
+      "category": "other",
+      "description": "DB2 SQL Information Leakage",
+      "detection": true
+    },
+    "951140": {
+      "blocking": false,
+      "category": "other",
+      "description": "EMC SQL Information Leakage",
+      "detection": true
+    },
+    "951150": {
+      "blocking": false,
+      "category": "other",
+      "description": "firebird SQL Information Leakage",
+      "detection": true
+    },
+    "951160": {
+      "blocking": false,
+      "category": "other",
+      "description": "Frontbase SQL Information Leakage",
+      "detection": true
+    },
+    "951170": {
+      "blocking": false,
+      "category": "other",
+      "description": "hsqldb SQL Information Leakage",
+      "detection": true
+    },
+    "951180": {
+      "blocking": false,
+      "category": "other",
+      "description": "informix SQL Information Leakage",
+      "detection": true
+    },
+    "951190": {
+      "blocking": false,
+      "category": "other",
+      "description": "ingres SQL Information Leakage",
+      "detection": true
+    },
+    "951200": {
+      "blocking": false,
+      "category": "other",
+      "description": "interbase SQL Information Leakage",
+      "detection": true
+    },
+    "951210": {
+      "blocking": false,
+      "category": "other",
+      "description": "maxDB SQL Information Leakage",
+      "detection": true
+    },
+    "951220": {
+      "blocking": false,
+      "category": "other",
+      "description": "mssql SQL Information Leakage",
+      "detection": true
+    },
+    "951230": {
+      "blocking": false,
+      "category": "other",
+      "description": "mysql SQL Information Leakage",
+      "detection": true
+    },
+    "951240": {
+      "blocking": false,
+      "category": "other",
+      "description": "postgres SQL Information Leakage",
+      "detection": true
+    },
+    "951250": {
+      "blocking": false,
+      "category": "other",
+      "description": "sqlite SQL Information Leakage",
+      "detection": true
+    },
+    "951260": {
+      "blocking": false,
+      "category": "other",
+      "description": "Sybase SQL Information Leakage",
+      "detection": true
+    },
+    "952010": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "952011": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "952012": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "952013": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "952014": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "952015": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "952016": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "952017": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "952018": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "952110": {
+      "blocking": false,
+      "category": "other",
+      "description": "Java Errors",
+      "detection": true
+    },
+    "953010": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "953011": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "953012": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "953013": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "953014": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "953015": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "953016": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "953017": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "953018": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "953100": {
+      "blocking": false,
+      "category": "other",
+      "description": "PHP Information Leakage",
+      "detection": true
+    },
+    "953101": {
+      "blocking": false,
+      "category": "other",
+      "description": "PHP Information Leakage",
+      "detection": true
+    },
+    "953110": {
+      "blocking": false,
+      "category": "other",
+      "description": "PHP source code leakage",
+      "detection": true
+    },
+    "953120": {
+      "blocking": false,
+      "category": "other",
+      "description": "PHP source code leakage",
+      "detection": true
+    },
+    "954010": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "954011": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "954012": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "954013": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "954014": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "954015": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "954016": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "954017": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "954018": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "954100": {
+      "blocking": false,
+      "category": "other",
+      "description": "Disclosure of IIS install location",
+      "detection": true
+    },
+    "954101": {
+      "blocking": false,
+      "category": "other",
+      "description": "Disclosure of IIS install location",
+      "detection": true
+    },
+    "954110": {
+      "blocking": false,
+      "category": "other",
+      "description": "Application Availability Error",
+      "detection": true
+    },
+    "954120": {
+      "blocking": false,
+      "category": "other",
+      "description": "IIS Information Leakage",
+      "detection": true
+    },
+    "954130": {
+      "blocking": false,
+      "category": "other",
+      "description": "IIS Information Leakage",
+      "detection": true
+    },
+    "955010": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "955011": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "955012": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "955013": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "955014": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "955015": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "955016": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "955017": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "955018": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "955100": {
+      "blocking": false,
+      "category": "other",
+      "description": "PHP Web shell detected",
+      "detection": true
+    },
+    "955110": {
+      "blocking": false,
+      "category": "other",
+      "description": "r57 web shell",
+      "detection": true
+    },
+    "955120": {
+      "blocking": false,
+      "category": "other",
+      "description": "WSO web shell",
+      "detection": true
+    },
+    "955130": {
+      "blocking": false,
+      "category": "other",
+      "description": "b4tm4n web shell",
+      "detection": true
+    },
+    "955140": {
+      "blocking": false,
+      "category": "other",
+      "description": "Mini Shell web shell",
+      "detection": true
+    },
+    "955150": {
+      "blocking": false,
+      "category": "other",
+      "description": "Ashiyane web shell",
+      "detection": true
+    },
+    "955160": {
+      "blocking": false,
+      "category": "other",
+      "description": "Symlink_Sa web shell",
+      "detection": true
+    },
+    "955170": {
+      "blocking": false,
+      "category": "other",
+      "description": "CasuS web shell",
+      "detection": true
+    },
+    "955180": {
+      "blocking": false,
+      "category": "other",
+      "description": "GRP WebShell",
+      "detection": true
+    },
+    "955190": {
+      "blocking": false,
+      "category": "other",
+      "description": "NGHshell web shell",
+      "detection": true
+    },
+    "955200": {
+      "blocking": false,
+      "category": "other",
+      "description": "SimAttacker web shell",
+      "detection": true
+    },
+    "955210": {
+      "blocking": false,
+      "category": "other",
+      "description": "Unknown web shell",
+      "detection": true
+    },
+    "955220": {
+      "blocking": false,
+      "category": "other",
+      "description": "lama's'hell web shell",
+      "detection": true
+    },
+    "955230": {
+      "blocking": false,
+      "category": "other",
+      "description": "lostDC web shell",
+      "detection": true
+    },
+    "955240": {
+      "blocking": false,
+      "category": "other",
+      "description": "Unknown web shell",
+      "detection": true
+    },
+    "955250": {
+      "blocking": false,
+      "category": "other",
+      "description": "Unknown web shell",
+      "detection": true
+    },
+    "955260": {
+      "blocking": false,
+      "category": "other",
+      "description": "Ru24PostWebShell web shell",
+      "detection": true
+    },
+    "955270": {
+      "blocking": false,
+      "category": "other",
+      "description": "s72 Shell web shell",
+      "detection": true
+    },
+    "955280": {
+      "blocking": false,
+      "category": "other",
+      "description": "PhpSpy web shell",
+      "detection": true
+    },
+    "955290": {
+      "blocking": false,
+      "category": "other",
+      "description": "g00nshell web shell",
+      "detection": true
+    },
+    "955300": {
+      "blocking": false,
+      "category": "other",
+      "description": "PuNkHoLic shell web shell",
+      "detection": true
+    },
+    "955310": {
+      "blocking": false,
+      "category": "other",
+      "description": "azrail web shell",
+      "detection": true
+    },
+    "955320": {
+      "blocking": false,
+      "category": "other",
+      "description": "SmEvK_PaThAn Shell web shell",
+      "detection": true
+    },
+    "955330": {
+      "blocking": false,
+      "category": "other",
+      "description": "Shell I web shell",
+      "detection": true
+    },
+    "955340": {
+      "blocking": false,
+      "category": "other",
+      "description": "b374k m1n1 web shell",
+      "detection": true
+    },
+    "955350": {
+      "blocking": false,
+      "category": "other",
+      "description": "webadmin.php file manager",
+      "detection": true
+    },
+    "955400": {
+      "blocking": false,
+      "category": "other",
+      "description": "ASP Web shell detected",
+      "detection": true
+    },
+    "956010": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "956011": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "956012": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "956013": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "956014": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "956015": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "956016": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "956017": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "956018": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "956100": {
+      "blocking": false,
+      "category": "other",
+      "description": "RUBY Information Leakage",
+      "detection": true
+    },
+    "956110": {
+      "blocking": false,
+      "category": "other",
+      "description": "Ruby source code leakage",
+      "detection": true
+    },
+    "959011": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959012": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959013": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959014": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959015": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959016": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959017": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959018": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959052": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959053": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959054": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959055": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959059": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959060": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959061": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959062": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959063": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959100": {
+      "blocking": true,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959101": {
+      "blocking": true,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959152": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959153": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959154": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959155": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959159": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959160": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959161": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959162": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "959163": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980011": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980012": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980013": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980014": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980015": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980016": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980017": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980018": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980041": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980042": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980043": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980044": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980045": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980046": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980047": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980048": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980049": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980050": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980051": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980099": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    },
+    "980170": {
+      "blocking": false,
+      "category": "other",
+      "description": "OWASP CRS control or anomaly evaluation.",
+      "detection": false
+    }
+  }
+}

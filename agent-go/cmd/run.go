@@ -221,6 +221,9 @@ func runRun(cmd *cobra.Command, _ []string) error {
 		if err := exec.ReconcileRestoreQuiesce(startupCtx, poller.ActiveCommandID()); err != nil {
 			return fmt.Errorf("restore quiesce reconciliation failed: %w", err)
 		}
+		// A ready swap this process was running when it stopped is
+		// settled on one serving version before any other command runs.
+		exec.RecoverInterruptedSwaps(startupCtx)
 		// Reconcile privacy boundaries before accepting commands on upgraded hosts.
 		if exec.Tor != nil && exec.Proxy != nil {
 			if entries, err := os.ReadDir(filepath.Join(stateDir, "proxy", "tor", "services")); err == nil && len(entries) > 0 {

@@ -112,6 +112,13 @@ Agents 0.6.2 and later reject unsupported command kinds with status failed and a
 Agent 0.6.22 adds `agent-upgrade-v1`. An explicit customer request from the portal, API or MCP stages the updater bundled with the agent; only after the control plane acknowledges the job does a separate systemd unit run it. The unit requires a signed channel manifest and the exact version requested, then the next heartbeat verifies the result. Hosts without the prerequisites do not advertise the capability. Agents before 0.6.22 must be updated once with the manual update command above.
 
 
+## Uptime vantage probing
+
+Agents marked by the platform as a probe vantage run the `uptime-probe-v1` capability: they fetch their probe targets and post one result round per minute-window, probing each target with a single 15-second budget that covers DNS resolution, connection, TLS and the HEAD answer together. Targets are only probed at addresses the destination guard validated on that round; refusals log the deployment and the range class (private, cgnat, benchmarking...), never the hostname or the address. `.onion` targets go through the local Tor SOCKS only for valid v3 onion hostnames and fail closed without Tor. Accounts with more probe targets than the per-round window (100) are covered by a window that advances every round, so every target is measured at least once across rounds.
+
+Operator note: the probe loop reacts to the control plane refusing the vantage mark (403/401 on the targets fetch) at the NEXT fetch — up to one interval of rounds can still be posted after a revocation reaches the API. Heartbeat and poll of a vantage credential are refused by the platform by design; the agent keeps running.
+
+
 ## Required healthy startup
 
 Agent 0.6.3 supports opt-in required healthy startup. Generated Node deployments can set `require_healthy_start: true` with an explicit `healthcheck_path` and `startup_timeout_seconds` from 30 to 600 (default 60). The first deployment fails if it does not become healthy; named volumes are preserved. Retained releases keep their own startup policy for automatic recovery and manual rollback. Older agents must be updated explicitly before using this option. See [deployment settings](https://docs.imprezahost.com/tutorials/agent-apps-panels.html#required-startup).

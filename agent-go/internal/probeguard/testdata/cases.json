@@ -1,0 +1,33 @@
+{
+  "_comment": "Shared table of the uptime vantage destination guard: the same cases run against probeguard (Go, in the agent) and against the control plane's guard; cases.json is the single source, so the two sides never diverge. host: the name looked up (the synthetic resolver answers the listed IPs); want: \"allow\" or \"deny\".",
+  "cases": [
+    {"host": "probe-ok.example", "ips": ["203.0.113.10"], "want": "deny", "note": "IPv4 documentation ranges are denied — the real positive uses a real public IP; this case pins that 203.0.113/24 is denied too"},
+    {"host": "private-10.example", "ips": ["10.0.0.5"], "want": "deny"},
+    {"host": "private-17216.example", "ips": ["172.16.0.9"], "want": "deny"},
+    {"host": "private-192168.example", "ips": ["192.168.1.30"], "want": "deny"},
+    {"host": "loopback.example", "ips": ["127.0.0.1"], "want": "deny"},
+    {"host": "linklocal-metadata.example", "ips": ["169.254.169.254"], "want": "deny", "note": "the metadata service lives here"},
+    {"host": "cgnat.example", "ips": ["100.64.0.1"], "want": "deny"},
+    {"host": "benchmark.example", "ips": ["198.18.0.1"], "want": "deny"},
+    {"host": "multicast.example", "ips": ["224.0.0.5"], "want": "deny"},
+    {"host": "protocol-assignments.example", "ips": ["192.0.0.9"], "want": "deny"},
+    {"host": "reserved-240.example", "ips": ["240.0.0.1"], "want": "deny"},
+    {"host": "this-network.example", "ips": ["0.0.0.7"], "want": "deny"},
+    {"host": "nat64-loopback.example", "ips": ["64:ff9b::7f00:1"], "want": "deny", "note": "127.0.0.1 dressed as IPv6"},
+    {"host": "nat64-private.example", "ips": ["64:ff9b::a00:1"], "want": "deny", "note": "10.0.0.1 via NAT64"},
+    {"host": "sixtofour.example", "ips": ["2002::1"], "want": "deny"},
+    {"host": "v6-loopback.example", "ips": ["::1"], "want": "deny"},
+    {"host": "v6-ula.example", "ips": ["fd00::5"], "want": "deny"},
+    {"host": "v6-linklocal.example", "ips": ["fe80::5"], "want": "deny"},
+    {"host": "v6-multicast.example", "ips": ["ff02::1"], "want": "deny"},
+    {"host": "v6-discard.example", "ips": ["100::1"], "want": "deny"},
+    {"host": "v6-documentation.example", "ips": ["2001:db8::1"], "want": "deny"},
+    {"host": "mapped-v4-private.example", "ips": ["::ffff:10.0.0.5"], "want": "deny", "note": "a v4-mapped address must be unwrapped"},
+    {"host": "mapped-v4-loopback.example", "ips": ["::ffff:127.0.0.1"], "want": "deny"},
+    {"host": "mixed-honest.example", "ips": ["192.0.2.10", "8.8.8.8"], "want": "deny", "note": "one denied address refuses the whole target"},
+    {"host": "mixed-v6.example", "ips": ["2606:4700::1111", "fc00::9"], "want": "deny"},
+    {"host": "unresolvable.example", "ips": [], "want": "deny", "note": "no DNS answer: never probed"},
+    {"host": "public-v4.example", "ips": ["192.0.2.0"], "want": "deny", "note": "IPv4 documentation is denied (see the first case); the real-host positive uses a real public IP"},
+    {"host": "public-v6.example", "ips": ["2606:4700::1111"], "want": "allow", "note": "real public IPv6 (Cloudflare) — the only allow of the synthetic table"}
+  ]
+}

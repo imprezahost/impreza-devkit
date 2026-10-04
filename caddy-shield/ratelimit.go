@@ -3,6 +3,7 @@ package caddyshield
 import (
 	"fmt"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -25,15 +26,17 @@ func init() {
 // for BanDuration). This is abuse protection, not volumetric DDoS
 // mitigation.
 type RateLimitMiddleware struct {
-	Deployment   string `json:"deployment,omitempty"`
-	WindowSeconds int   `json:"window_seconds,omitempty"`
-	Limit        int    `json:"limit,omitempty"`
-	BanSeconds   int    `json:"ban_seconds,omitempty"`
+	Deployment    string `json:"deployment,omitempty"`
+	WindowSeconds int    `json:"window_seconds,omitempty"`
+	Limit         int    `json:"limit,omitempty"`
+	BanSeconds    int    `json:"ban_seconds,omitempty"`
 	// StrikeFactor: requests beyond StrikeFactor×Limit in one window
 	// trigger the temporary ban.
 	StrikeFactor int `json:"strike_factor,omitempty"`
 
-	logger *zap.Logger `json:"-"`
+	TrustedSources []string `json:"trusted_sources,omitempty"`
+	trusted        []netip.Prefix
+	logger         *zap.Logger `json:"-"`
 
 	mu      sync.Mutex
 	buckets map[string]*rlBucket
@@ -57,6 +60,12 @@ func (m *RateLimitMiddleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		for d.NextBlock(0) {
 			switch d.Val() {
+			case "trusted_source":
+				var v string
+				if !d.AllArgs(&v) {
+					return d.ArgErr()
+				}
+				m.TrustedSources = append(m.TrustedSources, v)
 			case "deployment":
 				if !d.AllArgs(&m.Deployment) {
 					return d.ArgErr()
@@ -135,12 +144,20 @@ func (m *RateLimitMiddleware) Provision(ctx caddy.Context) error {
 	if m.StrikeFactor > 10 {
 		return fmt.Errorf("shield_rate_limit: strike_factor must be <= 10")
 	}
+	var err error
+	m.trusted, err = validateControlFields(nil, m.TrustedSources, 0)
+	if err != nil {
+		return err
+	}
 	m.buckets = make(map[string]*rlBucket)
 	m.bans = newCappedStore(65536, func() int64 { return time.Now().UnixNano() })
 	return nil
 }
 
 func (m *RateLimitMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	if trustedPeer(r, m.trusted) {
+		return next.ServeHTTP(w, r)
+	}
 	key := clientKey(r)
 
 	if m.bans.has(key) {

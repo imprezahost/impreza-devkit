@@ -139,6 +139,17 @@ type Docker struct {
 	// journal that cannot be verified. Rebuilt from disk at startup; the
 	// agent keeps serving everything else.
 	quiescePoisoned map[string]string
+
+	// replacementWorkID names the supervised worker running this Docker
+	// (empty in the agent process); a ready swap records it in its journal.
+	replacementWorkID string
+	// Ready-swap seams (tests); nil means the real Docker, proxy and network.
+	readySwapRouter  swapRouter
+	readySwapCompose func(ctx context.Context, appDir, file string, args ...string) ([]byte, error)
+	readySwapInspect func(ctx context.Context, name string) (swapContainer, error)
+	readySwapProbe   func(ctx context.Context, url, host string) (int, error)
+	readySwapSleep   func(ctx context.Context, wait time.Duration) bool
+	readySwapClock   func() time.Time
 }
 
 // NewDocker returns a Docker executor rooted at stateDir, with a Caddy
@@ -2112,7 +2123,7 @@ func shieldFromPayload(s *sdkclient.RouteShield) *proxy.ShieldConfig {
 	if mode == "" {
 		mode = "audit"
 	}
-	return &proxy.ShieldConfig{Profile: s.Profile, Mode: mode}
+	return &proxy.ShieldConfig{Profile: s.Profile, Mode: mode, Protocol: s.Protocol, Exclusions: s.Exclusions, Controls: s.Controls}
 }
 
 // basicAuthFromPayload maps the server's route credential gate onto the

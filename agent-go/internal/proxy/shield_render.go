@@ -18,16 +18,18 @@ package proxy
 
 import (
 	"fmt"
+	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 	"strings"
+	"time"
 )
 
 // Shield profiles and modes accepted in a Route.
 const (
-	shieldProfileStandard  = "standard"
-	shieldProfileHardened  = "hardened"
-	shieldProfileMax       = "max"
-	shieldModeAudit        = "audit"
-	shieldModeEnforce      = "enforce"
+	shieldProfileStandard = "standard"
+	shieldProfileHardened = "hardened"
+	shieldProfileMax      = "max"
+	shieldModeAudit       = "audit"
+	shieldModeEnforce     = "enforce"
 )
 
 // ShieldConfig is the per-deployment Impreza Shield policy.
@@ -37,7 +39,10 @@ type ShieldConfig struct {
 	// Mode governs the WAF engine: audit (DetectionOnly) or enforce
 	// (blocking). The control plane only sends enforce after the tenant's
 	// false-positive review; the agent double-checks here.
-	Mode string
+	Mode       string
+	Protocol   string
+	Exclusions []sdkclient.ShieldExclusion
+	Controls   *sdkclient.ShieldControls
 }
 
 // validate refuses malformed shield policies instead of emitting fragments
@@ -46,8 +51,26 @@ func (s *ShieldConfig) validate() error {
 	if s == nil {
 		return nil
 	}
+	if s.Protocol != "" && s.Protocol != sdkclient.ShieldV2Protocol {
+		return fmt.Errorf("unsupported Shield protocol")
+	}
+	if len(s.Exclusions) > 0 && s.Protocol != sdkclient.ShieldV2Protocol {
+		return fmt.Errorf("Shield exclusions require shield-v2")
+	}
+	if err := sdkclient.ValidateShieldExclusions(s.Exclusions); err != nil {
+		return err
+	}
+	if s.Controls != nil && s.Protocol != sdkclient.ShieldV2Protocol {
+		return fmt.Errorf("Shield controls require shield-v2")
+	}
+	if err := sdkclient.ValidateShieldControls(s.Controls, time.Now()); err != nil {
+		return err
+	}
+	if s.Profile == "off" && (s.Controls == nil || s.Controls.AttackExpiresAt == 0) {
+		return fmt.Errorf("off routes require a persisted attack deadline")
+	}
 	switch s.Profile {
-	case shieldProfileStandard, shieldProfileHardened, shieldProfileMax:
+	case "off", shieldProfileStandard, shieldProfileHardened, shieldProfileMax:
 	default:
 		return fmt.Errorf("shield profile %q is not one of standard|hardened|max", s.Profile)
 	}
@@ -58,7 +81,7 @@ func (s *ShieldConfig) validate() error {
 	}
 	// The standard profile is audit-only by decision 7.4; enforce belongs to
 	// hardened/max only.
-	if s.Profile == shieldProfileStandard && s.Mode == shieldModeEnforce {
+	if (s.Profile == shieldProfileStandard || s.Profile == "off") && s.Mode == shieldModeEnforce {
 		return fmt.Errorf("shield profile standard never enforces (audit-only by design)")
 	}
 	return nil
@@ -85,26 +108,44 @@ func (s *ShieldConfig) paranoiaLevel() int {
 // block. secureCookie MUST be false for onion blocks (plain HTTP — the
 // Secure attribute would make browsers drop the cookie) and true for
 // clearnet. deploymentID only labels metrics counters.
-func writeShieldDirectives(sb *strings.Builder, deploymentID string, sc *ShieldConfig, secureCookie bool) {
+func writeShieldDirectives(sb *strings.Builder, deploymentID string, sc *ShieldConfig, secureCookie bool, onion bool) {
 	if sc == nil {
 		return
 	}
 
-	// WAF: Coraza with the CRS embedded in the image's Go module graph.
-	fmt.Fprintf(sb, "  coraza_waf {\n")
-	fmt.Fprintf(sb, "    load_owasp_crs\n")
-	fmt.Fprintf(sb, "    directives `\n")
-	fmt.Fprintf(sb, "Include @coraza.conf-recommended\n")
-	fmt.Fprintf(sb, "Include @crs-setup.conf.example\n")
-	fmt.Fprintf(sb, "Include @owasp_crs/*.conf\n")
-	fmt.Fprintf(sb, "SecRuleEngine %s\n", sc.wafEngineMode())
-	fmt.Fprintf(sb, "SecAction \"id:910500,phase:1,pass,nolog,setvar:tx.paranoia_level=%d\"\n", sc.paranoiaLevel())
-	// Privacy: the Coraza audit log embeds the client IP; it stays off.
-	fmt.Fprintf(sb, "SecAuditEngine Off\n")
-	fmt.Fprintf(sb, "    `\n")
-	fmt.Fprintf(sb, "  }\n")
+	// WAF stays unchanged during attack mode, including off.
+	if sc.Profile != "off" {
+		// WAF: Coraza with the CRS embedded in the image's Go module graph.
+		fmt.Fprintf(sb, "  coraza_waf {\n")
+		if sc.Protocol == sdkclient.ShieldV2Protocol {
+			fmt.Fprintf(sb, "    deployment %s\n    shield_mode %s\n", deploymentID, map[bool]string{true: "enforce", false: "audit"}[sc.Mode == shieldModeEnforce])
+		}
+		fmt.Fprintf(sb, "    load_owasp_crs\n")
+		fmt.Fprintf(sb, "    directives `\n")
+		fmt.Fprintf(sb, "Include @coraza.conf-recommended\n")
+		fmt.Fprintf(sb, "Include @crs-setup.conf.example\n")
+		for i, x := range sc.Exclusions {
+			if x.PathPrefix != "" {
+				fmt.Fprintf(sb, "SecRule REQUEST_FILENAME %q %q\n", "@beginsWith "+x.PathPrefix, fmt.Sprintf("id:%d,phase:1,pass,nolog,t:none,t:normalizePath,ctl:ruleRemoveById=%d", 810000+i, x.RuleID))
+			}
+		}
+		fmt.Fprintf(sb, "Include @owasp_crs/*.conf\n")
+		for _, x := range sc.Exclusions {
+			if x.PathPrefix == "" {
+				fmt.Fprintf(sb, "SecRuleRemoveById %d\n", x.RuleID)
+			}
+		}
 
-	if sc.Profile == shieldProfileStandard {
+		fmt.Fprintf(sb, "SecRuleEngine %s\n", sc.wafEngineMode())
+		fmt.Fprintf(sb, "SecAction \"id:910500,phase:1,pass,nolog,setvar:tx.paranoia_level=%d\"\n", sc.paranoiaLevel())
+		// Privacy: the Coraza audit log embeds the client IP; it stays off.
+		fmt.Fprintf(sb, "SecAuditEngine Off\n")
+		fmt.Fprintf(sb, "    `\n")
+		fmt.Fprintf(sb, "  }\n")
+
+	}
+	baseDisabled := sc.Profile == shieldProfileStandard || sc.Profile == "off"
+	if baseDisabled && (sc.Controls == nil || sc.Controls.AttackExpiresAt == 0) {
 		return
 	}
 
@@ -117,12 +158,31 @@ func writeShieldDirectives(sb *strings.Builder, deploymentID string, sc *ShieldC
 		cookieTTL, challengeTTL = "30m", "2m"
 		window, limit, ban = "1m", 120, "15m"
 	}
-	fmt.Fprintf(sb, "  shield_rate_limit {\n")
-	fmt.Fprintf(sb, "    deployment %s\n", deploymentID)
-	fmt.Fprintf(sb, "    window %s\n", window)
-	fmt.Fprintf(sb, "    limit %d\n", limit)
-	fmt.Fprintf(sb, "    ban %s\n", ban)
-	fmt.Fprintf(sb, "  }\n")
+	if sc.Controls != nil {
+		if sc.Controls.PowDifficulty != nil {
+			difficulty = *sc.Controls.PowDifficulty
+			maxDifficulty, threshold = difficulty, 0 // An explicit difficulty stays fixed; only profile defaults adapt.
+		}
+		if sc.Controls.RateLimitRPM != nil {
+			window, limit = "1m", *sc.Controls.RateLimitRPM
+		}
+	}
+	// Trusted ranges refer to a clearnet peer, never to Tor's local forwarding socket.
+	trusted := []string(nil)
+	if sc.Controls != nil && !onion {
+		trusted = sc.Controls.TrustedSources
+	}
+	if !baseDisabled {
+		fmt.Fprintf(sb, "  shield_rate_limit {\n")
+		fmt.Fprintf(sb, "    deployment %s\n", deploymentID)
+		fmt.Fprintf(sb, "    window %s\n", window)
+		fmt.Fprintf(sb, "    limit %d\n", limit)
+		fmt.Fprintf(sb, "    ban %s\n", ban)
+		for _, cidr := range trusted {
+			fmt.Fprintf(sb, "    trusted_source %s\n", cidr)
+		}
+		fmt.Fprintf(sb, "  }\n")
+	}
 	fmt.Fprintf(sb, "  shield_pow {\n")
 	fmt.Fprintf(sb, "    deployment %s\n", deploymentID)
 	fmt.Fprintf(sb, "    difficulty %d\n", difficulty)
@@ -130,6 +190,18 @@ func writeShieldDirectives(sb *strings.Builder, deploymentID string, sc *ShieldC
 	fmt.Fprintf(sb, "    adaptive_threshold %d\n", threshold)
 	fmt.Fprintf(sb, "    cookie_ttl %s\n", cookieTTL)
 	fmt.Fprintf(sb, "    challenge_ttl %s\n", challengeTTL)
+	if baseDisabled {
+		fmt.Fprintf(sb, "    baseline_disabled\n")
+	}
+	if sc.Controls != nil {
+		for _, path := range sc.Controls.PowPaths {
+			fmt.Fprintf(sb, "    path_prefix %s\n", path)
+		}
+		for _, cidr := range trusted {
+			fmt.Fprintf(sb, "    trusted_source %s\n", cidr)
+		}
+		fmt.Fprintf(sb, "    attack_until %d\n", sc.Controls.AttackExpiresAt)
+	}
 	if secureCookie {
 		fmt.Fprintf(sb, "    secure_cookie\n")
 	}

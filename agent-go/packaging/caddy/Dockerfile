@@ -10,6 +10,8 @@ ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOWORK=off GOMAXPROCS=2
 WORKDIR /src/agent-go/packaging/caddy/application
 COPY caddy-dns-impreza /src/caddy-dns-impreza
 COPY caddy-shield /src/caddy-shield
+COPY caddy-coraza /src/caddy-coraza
+COPY sdk-go /src/sdk-go
 COPY agent-go/packaging/caddy/application ./
 RUN go mod download \
     && test "$(go list -m -f '{{.Version}}' github.com/caddyserver/caddy/v2)" = "v${CADDY_VERSION}" \
@@ -18,6 +20,9 @@ RUN go mod download \
 FROM caddy:${CADDY_VERSION}-alpine
 ARG CADDY_VERSION
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+COPY caddy-coraza/LICENSE /usr/share/licenses/impreza-caddy/coraza-caddy.LICENSE
+COPY caddy-coraza/UPSTREAM.md /usr/share/licenses/impreza-caddy/coraza-caddy.NOTICE
+COPY sdk-go/client/shield_rules.LICENSE /usr/share/licenses/impreza-caddy/OWASP-CRS.LICENSE
 RUN caddy list-modules | grep -q '^dns\.providers\.impreza$' \
     || (echo 'FATAL: Impreza DNS provider missing' && exit 1)
 RUN caddy list-modules | grep -q '^http\.handlers\.waf$' \
@@ -29,3 +34,7 @@ RUN caddy list-modules | grep -q '^http\.handlers\.shield_rate_limit$' \
 LABEL org.opencontainers.image.source="https://github.com/imprezahost/impreza-devkit"
 LABEL org.opencontainers.image.description="Caddy ${CADDY_VERSION} with the Impreza DNS provider and Impreza Shield (Coraza WAF + PoW + rate limit)"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
+
+LABEL org.impreza.shield.protocol="shield-v2"
+
+LABEL org.impreza.shield.controls="shield-v2-controls"

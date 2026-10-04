@@ -12,6 +12,7 @@ package proxy
 
 import (
 	"context"
+	"math"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -67,6 +68,36 @@ func parseExposition(text string) map[scrapeKey]float64 {
 			continue
 		}
 		var key scrapeKey
+		if name == "impreza_shield_waf_requests_total" || name == "impreza_shield_waf_rules_total" {
+			if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 9007199254740991 || math.Trunc(value) != value {
+				continue
+			}
+			if sdkclient.ValidateShieldDeployment(labels["deployment"]) != nil {
+				continue
+			}
+			outcome := labels["outcome"]
+			if outcome != "matched" && outcome != "would_block" && outcome != "blocked" {
+				continue
+			}
+			if name == "impreza_shield_waf_requests_total" {
+				if len(labels) != 2 || outcome == "matched" {
+					continue
+				}
+				key = scrapeKey{metric: "waf_requests", deployment: labels["deployment"], label: outcome}
+			} else {
+				if len(labels) != 4 {
+					continue
+				}
+				id, err := strconv.Atoi(labels["rule_id"])
+				meta, ok := sdkclient.ShieldRule(id)
+				if err != nil || !ok || !meta.Detection || meta.Category != labels["category"] {
+					continue
+				}
+				key = scrapeKey{metric: "waf_rule", deployment: labels["deployment"], label: strconv.Itoa(id) + "|" + outcome}
+			}
+			out[key] = value
+			continue
+		}
 		switch {
 		case strings.HasPrefix(name, "impreza_proxy_requests_total"):
 			key = scrapeKey{metric: "requests", deployment: labels["deployment"], label: labels["class"]}
@@ -166,8 +197,8 @@ func aggregateDeltas(delta map[scrapeKey]float64) map[string]*sdkclient.AppProxy
 		byDep[dep] = m
 		return m
 	}
-	buckets := map[string][]float64{}   // dep → cumulative bucket counts
-	bucketLe := map[string][]float64{}  // dep → sorted le values
+	buckets := map[string][]float64{}  // dep → cumulative bucket counts
+	bucketLe := map[string][]float64{} // dep → sorted le values
 	for k, v := range delta {
 		switch k.metric {
 		case "requests":
@@ -199,6 +230,31 @@ func aggregateDeltas(delta map[scrapeKey]float64) map[string]*sdkclient.AppProxy
 			get(k.deployment).ShieldPassed += int64(v)
 		case "shield_rate_limited":
 			get(k.deployment).ShieldRateLimited += int64(v)
+		case "waf_requests":
+			m := get(k.deployment)
+			if m.WAF == nil {
+				m.WAF = &sdkclient.ShieldWAFMetrics{}
+			}
+			if k.label == "would_block" {
+				m.WAF.WouldBlock += int64(v)
+			} else if k.label == "blocked" {
+				m.WAF.Blocked += int64(v)
+			}
+		case "waf_rule":
+			parts := strings.Split(k.label, "|")
+			if len(parts) != 2 {
+				continue
+			}
+			id, err := strconv.Atoi(parts[0])
+			meta, ok := sdkclient.ShieldRule(id)
+			if err != nil || !ok {
+				continue
+			}
+			m := get(k.deployment)
+			if m.WAF == nil {
+				m.WAF = &sdkclient.ShieldWAFMetrics{}
+			}
+			m.WAF.Rules = append(m.WAF.Rules, sdkclient.ShieldWAFRuleMetrics{RuleID: id, Category: meta.Category, Outcome: parts[1], Count: int64(v)})
 		case "latency_bucket":
 			le, err := strconv.ParseFloat(k.label, 64)
 			if err != nil {
@@ -209,6 +265,15 @@ func aggregateDeltas(delta map[scrapeKey]float64) map[string]*sdkclient.AppProxy
 		}
 	}
 	for dep, m := range byDep {
+		if m.WAF != nil {
+			sort.Slice(m.WAF.Rules, func(i, j int) bool {
+				a, b := m.WAF.Rules[i], m.WAF.Rules[j]
+				if a.RuleID != b.RuleID {
+					return a.RuleID < b.RuleID
+				}
+				return a.Outcome < b.Outcome
+			})
+		}
 		m.LatencyP50Ms = percentileFromBuckets(bucketLe[dep], buckets[dep], 0.50)
 		m.LatencyP95Ms = percentileFromBuckets(bucketLe[dep], buckets[dep], 0.95)
 		m.LatencyP99Ms = percentileFromBuckets(bucketLe[dep], buckets[dep], 0.99)

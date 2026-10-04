@@ -43,6 +43,9 @@ func TestResultACKFaultMatrix(t *testing.T) {
 					case "/sink":
 						sinks.Add(1)
 						w.WriteHeader(204)
+					case "/v1/agent/uptime/targets":
+						// A customer agent asks; the control plane answers 403.
+						w.WriteHeader(403)
 					case "/v1/agent/deploy-result":
 						var result sdkclient.DeployResult
 						if err := json.NewDecoder(r.Body).Decode(&result); err != nil {

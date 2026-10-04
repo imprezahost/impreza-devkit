@@ -279,6 +279,41 @@ type DeployPayload struct {
 	// the journal and handshake keep a database from losing its most
 	// recent writes to a restore that raced a live server.
 	Quiesce *DeployQuiesce `json:"quiesce,omitempty"`
+	// ReadySwap (ready-swap-v1) asks a redeploy to start the new version next
+	// to the running one, prove it ready through the proxy network and only
+	// then move the route. Sent only to agents advertising ReadySwapProtocol.
+	ReadySwap *ReadySwapPolicy `json:"ready_swap,omitempty"`
+}
+
+// ReadySwapProtocol is the capability for ready-then-switch redeploys.
+const ReadySwapProtocol = "ready-swap-v1"
+
+// ReadySwapPolicy is the readiness contract of a ready-swap redeploy.
+type ReadySwapPolicy struct {
+	// Path is the HTTP path requested on the new container ("/..." only).
+	Path string `json:"path"`
+	// StatusMin and StatusMax bound the accepted HTTP status (inclusive).
+	StatusMin int `json:"status_min"`
+	StatusMax int `json:"status_max"`
+	// TimeoutSeconds bounds each readiness proof (30-600).
+	TimeoutSeconds int `json:"timeout_seconds"`
+	// DrainSeconds is how long the replaced container keeps serving
+	// requests already in flight after the route moved (0-60).
+	DrainSeconds int `json:"drain_seconds"`
+}
+
+// ReadySwapReport says how far a ready-swap redeploy went.
+type ReadySwapReport struct {
+	// Outcome: switched (the new version serves), kept_previous (the new
+	// version never took traffic; the previous one serves), refused (the
+	// deployment does not qualify; nothing was changed), recovered_previous
+	// or recovered_new (an interrupted swap was settled on one version).
+	Outcome string `json:"outcome"`
+	// Phase is the last phase reached: starting_next, routed_next,
+	// replacing_app, routed_app, done.
+	Phase string `json:"phase"`
+	// Reason explains a refusal or a failure, in English, without secrets.
+	Reason string `json:"reason,omitempty"`
 }
 
 // DeployQuiesce names the application a restore job must quiet down.
@@ -703,6 +738,7 @@ type DeployResult struct {
 	ControlToken              string                           `json:"control_token,omitempty"`
 	PreparationRestored       bool                             `json:"preparation_restored,omitempty"`
 	StartupCheck              *DeploymentStartupCheck          `json:"startup_check,omitempty"`
+	ReadySwap                 *ReadySwapReport                 `json:"ready_swap,omitempty"`
 	CommandID                 string                           `json:"command_id"`
 	Status                    string                           `json:"status"` // success | failed | timeout | partial
 	DeploymentID              string                           `json:"deployment_id,omitempty"`

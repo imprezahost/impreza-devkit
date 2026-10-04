@@ -47,20 +47,6 @@ const (
 	NetworkName = "impreza-proxy"
 	// ContainerName is the singleton Caddy container per host.
 	ContainerName = "impreza_caddy"
-	// Image is the Caddy image. We ship a custom build that bundles
-	// the caddy-dns-impreza module on top of caddy:<ver>-alpine so
-	// Caddy can complete ACME DNS-01 challenges by proxying TXT-record
-	// writes through the Impreza public API (the operator's CF token
-	// stays IP-restricted on the control plane — see
-	// caddy-dns-impreza/README.md for the rationale). This build, published
-	// as caddy:2.11.4-s1, adds the Impreza Shield stack: Coraza WAF with the
-	// embedded OWASP CRS, the shield_pow proof-of-work gate and
-	// shield_rate_limit. It is pinned by the digest of its multi-arch index;
-	// EnsureRunning recreates the proxy container whenever the running image
-	// differs, keeping the bind-mounted /data. The 2-cf stream keeps serving
-	// agents up to 0.6.21 unchanged.
-	//
-	Image = "ghcr.io/imprezahost/caddy@sha256:2635ee3746c1cf3c8e2a9c91400bf5c016068a836025b4ade04d5a7dd707d83f"
 	// Env-var names the Caddy container reads to authenticate against
 	// the Impreza public API on every DNS-01 present/cleanup. These
 	// are set by SetImprezaCredentials in the env-file EnsureRunning passes
@@ -73,6 +59,19 @@ const (
 	ImprezaAgentSecretEnvVar = "IMPREZA_AGENT_SECRET"
 	ImprezaAPIURLEnvVar      = "IMPREZA_API_URL"
 )
+
+// Image is the Caddy image. We ship a custom build that bundles the
+// caddy-dns-impreza module on top of caddy:<ver>-alpine so Caddy can
+// complete ACME DNS-01 challenges by proxying TXT-record writes through the
+// Impreza public API (the operator's CF token stays IP-restricted on the
+// control plane — see caddy-dns-impreza/README.md for the rationale). The
+// build adds the Impreza Shield stack: Coraza WAF with the embedded OWASP
+// CRS, the shield_pow proof-of-work gate and shield_rate_limit. It is pinned
+// by the digest of its multi-arch index; EnsureRunning recreates the proxy
+// container whenever the running image differs, keeping the bind-mounted
+// /data. The 2-cf stream keeps serving agents up to 0.6.21 unchanged. Test
+// builds can set it with -X.
+var Image = "ghcr.io/imprezahost/caddy@sha256:0ba94611f8c3d914180efa6b9ddc3e9e73099781b0374ae1ee8357540799543e"
 
 // Route describes one hostname → upstream mapping the proxy programs.
 // Set Hostname for a clearnet site (Caddy auto-TLS via Let's Encrypt),
@@ -150,6 +149,7 @@ type Caddy struct {
 	Log           *slog.Logger
 	switchReload  func(context.Context) error           // test seam for reload failure boundaries
 	containerList func(context.Context) ([]byte, error) // test seam for Docker availability
+	liveConfig    func(context.Context) ([]byte, error) // test seam for the loaded config
 
 	// Proxy-metrics scrape state: previous exposition snapshot for
 	// per-cycle deltas. Memory only, deployment-labeled series only.
@@ -220,7 +220,7 @@ func (c *Caddy) EnsureRunning(ctx context.Context) error {
 	// on missing config when there are zero deployments yet.
 	caddyfile := filepath.Join(c.StateDir, "Caddyfile")
 	if _, err := os.Stat(caddyfile); os.IsNotExist(err) {
-		if err := os.WriteFile(caddyfile, []byte("# managed by impreza-agent — do not edit\n"), 0o644); err != nil {
+		if err := os.WriteFile(caddyfile, []byte("# managed by impreza-agent — do not edit\n"), 0o600); err != nil {
 			return fmt.Errorf("write empty Caddyfile: %w", err)
 		}
 	}
@@ -558,7 +558,7 @@ func (c *Caddy) ApplyDeploymentRoutes(ctx context.Context, deploymentID string, 
 			}
 		}
 		body := renderFragment(deploymentID, routes)
-		if err := os.WriteFile(fragPath, []byte(body), 0o644); err != nil {
+		if err := writeSwitchFile(fragPath, []byte(body)); err != nil {
 			return fmt.Errorf("write fragment %s: %w", fragPath, err)
 		}
 	}
@@ -864,6 +864,10 @@ func (c *Caddy) regenerateCaddyfile() error {
 	if err != nil {
 		return err
 	}
+	if err = f.Chmod(0600); err != nil {
+		f.Close()
+		return err
+	}
 	if _, err = f.WriteString(sb.String()); err != nil {
 		f.Close()
 		return err
@@ -993,7 +997,7 @@ func renderFragment(deploymentID string, routes []Route) string {
 			writeBasicAuth(&sb, r.BasicAuth)
 			// A Secure cookie attribute is only correct on TLS; plain-HTTP
 			// clearnet (TLSMode none) drops it just like an onion origin.
-			writeShieldDirectives(&sb, deploymentID, r.Shield, r.TLSMode != "none")
+			writeShieldDirectives(&sb, deploymentID, r.Shield, r.TLSMode != "none", false)
 			writeProxyMetrics(&sb, deploymentID)
 			// Dual-stack deployments advertise their onion mirror so Tor
 			// Browser shows ".onion available" on the clearnet site. The
@@ -1015,7 +1019,7 @@ func renderFragment(deploymentID string, routes []Route) string {
 			sb.WriteString("  bind unix//config/onion-private/http.sock|0600\n")
 			writeBasicAuth(&sb, r.BasicAuth)
 			// No Secure cookie attribute on plain-HTTP onion origins.
-			writeShieldDirectives(&sb, deploymentID, r.Shield, false)
+			writeShieldDirectives(&sb, deploymentID, r.Shield, false, true)
 			writeProxyMetrics(&sb, deploymentID)
 			fmt.Fprintf(&sb, "  reverse_proxy %s\n", r.Upstream)
 			fmt.Fprintf(&sb, "}\n")

@@ -12,24 +12,25 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
-### Agent
+## Agent 0.6.27 — 2026-10-04
 
-- Run a file restore with the target application stopped, behind the new
-  `restore-quiesce-v1` capability. The restore job stages and verifies the
-  archive with the application running; the agent then disables restart
-  durably, stops every container of the target, and only after confirming
-  none is left running releases the data exchange. The command waits for the
-  job container's real exit code, starts the application again on its
-  existing containers (no recreate, no image pull), and checks it settles. A
-  job that fails after the exchange started is rolled back to the
-  application's previous data while it is still stopped, and an agent
-  restart during the window resumes the operation from an on-disk journal
-  instead of leaving the application down. The control plane opts a job in
-  with the `quiesce` payload block; jobs without it behave exactly as
-  before.
-- The Go SDK's deploy payload accepts the optional `quiesce` block
-  (`target`, `stop_timeout_seconds`) and reports the outcome through the new
-  `restore_quiesce` receipt on the deploy result.
+- Ship the Shield v2 web application firewall behind the new
+  `shield-v2-*` capabilities: the managed proxy renders the WAF audit and
+  per-route exclusions of OWASP CRS detection rules, an IP allowlist, an
+  under-attack mode, per-path proof-of-work challenges and per-window
+  request counters. WAF findings are reported as CRS rule IDs and counts
+  only, and a blocked request is not written to the proxy's logs. Routes
+  without a Shield configuration are untouched. The proxy now runs the
+  caddy:2.11.4-s2 image (pinned by digest): the first deploy with a route
+  after the update (or the agent start, on servers with onion services)
+  recreates the proxy container on it and keeps its certificates and data.
+- Redeploy an application with a ready swap: the replacement application
+  is started and its readiness is verified before the traffic moves, and
+  the previous release is kept until the new one serves (the
+  `ready-swap-v1` opt-in on a redeploy).
+- An uptime prober capability (`uptime-probe-v1`), active only on agents
+  the platform marks as an uptime vantage: a regular agent probes nothing
+  and behaves exactly as before.
 
 ## Agent 0.6.26 — 2026-10-02
 

@@ -91,7 +91,13 @@ func replacementPayload(p sdkclient.DeployPayload) sdkclient.DeployPayload {
 		runtime.ServiceBindingRotationProtocol = p.Manifest.Runtime.ServiceBindingRotationProtocol
 		runtime.ServiceBindingRotation = p.Manifest.Runtime.ServiceBindingRotation
 	}
-	return sdkclient.DeployPayload{DeploymentID: p.DeploymentID, Vars: p.Vars, Routes: p.Routes, ServiceBindingRetirementAuthorizations: p.ServiceBindingRetirementAuthorizations, RestorePlanID: p.RestorePlanID, Manifest: sdkclient.AppManifest{Runtime: runtime, Lifecycle: p.Manifest.Lifecycle}}
+	// The ready swap runs inside the worker, so its policy must cross
+	// this boundary, and so must Sandbox: the worker's eligibility check
+	// refuses sandboxed apps, and without it a sandboxed app would pass.
+	// Sandbox was already applied to the Compose file before the handoff;
+	// the replacement never re-applies it.
+	runtime.Sandbox = p.Manifest.Runtime.Sandbox
+	return sdkclient.DeployPayload{DeploymentID: p.DeploymentID, Vars: p.Vars, Routes: p.Routes, ServiceBindingRetirementAuthorizations: p.ServiceBindingRetirementAuthorizations, RestorePlanID: p.RestorePlanID, ReadySwap: p.ReadySwap, Manifest: sdkclient.AppManifest{Runtime: runtime, Lifecycle: p.Manifest.Lifecycle}}
 }
 func (d *Docker) createReplacementWork(cmd *sdkclient.PollCommand, p sdkclient.DeployPayload, previous *runtimeRelease, redeploy bool, containers []string, sourceScan ...*json.RawMessage) (*ReplacementWork, error) {
 	docker, err := exec.LookPath("docker")
@@ -189,10 +195,58 @@ func (d *Docker) CompletedReplacementWork(w *ReplacementWork) (*sdkclient.Deploy
 		defer cancel()
 		out, stateErr := exec.CommandContext(ctx, "systemctl", "show", "impreza-replacement-"+w.ID+".service", "--property=ActiveState", "--value").Output()
 		if stateErr != nil || !slices.Contains([]string{"active", "activating"}, strings.TrimSpace(string(out))) {
+			if stateErr == nil {
+				if recovered := d.recoverSwapOfDeadWorker(w); recovered != nil {
+					return recovered, nil
+				}
+			}
 			return nil, errors.New("replacement worker is unavailable without a receipt; review required")
 		}
 	}
 	return r, err
+}
+
+// workerStopped reads the worker unit's state; only a successful read of a
+// stopped unit counts (a D-Bus error proves nothing).
+var workerStopped = func(id string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "systemctl", "show", "impreza-replacement-"+id+".service", "--property=ActiveState", "--value").Output()
+	return err == nil && slices.Contains([]string{"inactive", "failed"}, strings.TrimSpace(string(out)))
+}
+
+// recoverSwapOfDeadWorker settles a ready swap its worker left behind
+// and seals the outcome as the worker's receipt, so the operation completes
+// with a verified result instead of waiting for review. Anything else a dead
+// worker leaves keeps the existing review-required answer.
+func (d *Docker) recoverSwapOfDeadWorker(w *ReplacementWork) *sdkclient.DeployResult {
+	rec, err := readSwapJournal(d.appDir(w.DeploymentID))
+	if err != nil || rec.WorkID != w.ID || rec.CommandID != w.CommandID {
+		return nil
+	}
+	// Two reads, apart: a unit that is still registering reads the same once.
+	if !workerStopped(w.ID) || !sleepContext(context.Background(), 2*time.Second) || !workerStopped(w.ID) {
+		return nil
+	}
+	dir, request, err := d.loadReplacementWork(w)
+	if err != nil {
+		return nil
+	}
+	if request.Proxy && d.Proxy == nil && d.readySwapRouter == nil {
+		d.Proxy = proxy.New(d.StateDir, d.Log)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), replacementBudget)
+	defer cancel()
+	result := d.RecoverReadySwap(ctx, w.DeploymentID)
+	if result == nil || !slices.Contains([]string{"success", "failed"}, result.Status) {
+		return nil
+	}
+	result.CommandID, result.DeploymentID, result.ControlToken = w.CommandID, w.DeploymentID, ""
+	if err := writePrivateWorkJSON(dir, "result.json", replacementReceipt{Version: 1, ID: w.ID, RequestSHA256: w.RequestSHA256, Result: *result}, replacementRecordLimit); err != nil {
+		d.Log.Warn("ready swap: recovered outcome not sealed", "err", err)
+		return nil
+	}
+	return result
 }
 func (d *Docker) launchReplacementWork(ctx context.Context, w *ReplacementWork) error {
 	if err := w.Validate(); err != nil {
@@ -290,7 +344,7 @@ func (d *Docker) ForgetReplacementWork(w *ReplacementWork) error {
 // contact the API. A saved request grants one execution, including normal startup
 // recovery; a crash cannot be retried by invoking the worker again.
 func RunReplacementWorker(stateDir, id string) error {
-	d := &Docker{StateDir: stateDir, Log: slog.Default()}
+	d := &Docker{StateDir: stateDir, Log: slog.Default(), replacementWorkID: id}
 	dir, err := d.replacementDirectory(id)
 	if err != nil {
 		return err

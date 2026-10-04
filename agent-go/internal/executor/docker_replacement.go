@@ -41,10 +41,14 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 	// replacement phase, including for customer-authored Compose manifests.
 	upArgs := []string{"up", "-d", "--no-build", "--pull", "never"}
 	upTimeout := composeUpTimeout
-	d.Log.Info("docker deploy: bringing stack up",
-		"deployment_id", p.DeploymentID, "build", p.Manifest.Runtime.Build != nil)
 	upCtx, cancelUp := context.WithTimeout(ctx, upTimeout)
 	defer cancelUp()
+	var swapReport *sdkclient.ReadySwapReport
+	defer func() {
+		if swapReport != nil && result.ReadySwap == nil {
+			result.ReadySwap = swapReport
+		}
+	}()
 	failStartup := func(reason string) sdkclient.DeployResult {
 		d.deploymentProgress(ctx, cmd, "recovering")
 		r := d.recoverStartup(ctx, appDir, p.DeploymentID, previousRelease, isRedeploy, reason)
@@ -52,11 +56,31 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 		r.DeploymentID = p.DeploymentID
 		return r
 	}
-	if out, err := d.compose(upCtx, appDir, upArgs...); err != nil {
-		failLogs := d.grabFailureLogs(ctx, appDir)
-		return failStartup(fmt.Sprintf(
-			"docker compose up: %v\n%s\n%s", err, tail(out, 1536), failLogs,
-		))
+	// A ready swap replaces `compose up` with start beside, prove, move
+	// the route (ready_swap.go). A first install has nothing to keep serving.
+	swapped := false
+	if p.ReadySwap != nil {
+		if !isRedeploy {
+			swapReport = &sdkclient.ReadySwapReport{Outcome: "not_used", Reason: "first deploy: there was no running version to keep serving"}
+		} else {
+			r, rep, handled := d.readySwap(ctx, cmd, p, previousRelease, d.replacementWorkID)
+			swapReport = rep
+			if handled && r.Status != "success" {
+				r.CommandID = cmd.ID
+				return r
+			}
+			swapped = handled
+		}
+	}
+	if !swapped {
+		d.Log.Info("docker deploy: bringing stack up",
+			"deployment_id", p.DeploymentID, "build", p.Manifest.Runtime.Build != nil)
+		if out, err := d.compose(upCtx, appDir, upArgs...); err != nil {
+			failLogs := d.grabFailureLogs(ctx, appDir)
+			return failStartup(fmt.Sprintf(
+				"docker compose up: %v\n%s\n%s", err, tail(out, 1536), failLogs,
+			))
+		}
 	}
 
 	if p.Manifest.Runtime.TorEgress && d.Proxy != nil {
