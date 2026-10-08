@@ -87,7 +87,9 @@ type ManifestRuntime struct {
 // SandboxSpec is the manifest's runtime.sandbox block: the wall-clock
 // budget that defines the class plus app-specific ephemeral mounts.
 type SandboxSpec struct {
-	MaxLifetimeMinutes int `json:"max_lifetime_minutes,omitempty"`
+	// ForkPreview confines the build and runtime of untrusted PR code.
+	ForkPreview        bool `json:"fork_preview,omitempty"`
+	MaxLifetimeMinutes int  `json:"max_lifetime_minutes,omitempty"`
 	// ExtraTmpfs lists additional in-container paths (absolute, no "..")
 	// mounted as tmpfs for apps whose writable state lives outside /tmp and
 	// /run (e.g. /var/cache/nginx). Always ephemeral — never a host volume.
@@ -96,6 +98,7 @@ type SandboxSpec struct {
 
 // SandboxProtocol is the poll capability for the sandbox runtime class.
 const SandboxProtocol = "agent-sandbox-v1"
+const PreviewForkProtocol = "preview-fork-sandbox-v1"
 
 // BuildContext tells the agent to fetch + extract a build context
 // tarball before `docker compose up`. Used by Phase 12 Iteration 3
@@ -242,6 +245,17 @@ type Route struct {
 	// Shield carries the deployment's Impreza Shield policy onto
 	// every route of that deployment. Nil = profile off.
 	Shield *RouteShield `json:"shield,omitempty"`
+	// PlatformRoutes (capability status-page-v1) map reserved path
+	// prefixes onto the control plane's public pages (the opt-in public
+	// status page). The server sends them only to agents that announced
+	// the capability; older agents never see the field.
+	PlatformRoutes []RoutePlatform `json:"platform_routes,omitempty"`
+}
+
+// RoutePlatform is one reserved path prefix served by the platform itself.
+type RoutePlatform struct {
+	Prefix   string `json:"prefix"`
+	Upstream string `json:"upstream"`
 }
 
 // RouteShield is the per-deployment Impreza Shield policy rendered by the

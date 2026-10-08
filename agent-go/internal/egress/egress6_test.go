@@ -17,7 +17,7 @@ import (
 // filter in the v6 chain — the physdev RETURN at the top is the only bridge
 // rule, so traffic from ANY bridge hits the destination blocks.
 func TestRules6Shape(t *testing.T) {
-	rules := Rules6([]string{"2001:db8::53"})
+	rules := Rules6([]string{"2001:db8::53"}, []string{"docker0"})
 	var sb strings.Builder
 	for _, r := range rules {
 		sb.WriteString(strings.Join(r, " "))
@@ -98,7 +98,7 @@ func TestApply6Reconcile(t *testing.T) {
 		return nil, errors.New("unexpected ip6tables call: " + call)
 	}
 	dir := t.TempDir()
-	status, err := apply6(context.Background(), run, dir, nil)
+	status, err := apply6(context.Background(), run, dir, nil, []string{"docker0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestApply6Reconcile(t *testing.T) {
 	}
 	// Second apply with matching fingerprint makes no mutating calls.
 	before := len(calls)
-	if _, err := apply6(context.Background(), run, dir, nil); err != nil {
+	if _, err := apply6(context.Background(), run, dir, nil, []string{"docker0"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range calls[before:] {
@@ -132,7 +132,7 @@ func TestApply6Reconcile(t *testing.T) {
 // Docker bridges returning to the operator's INPUT policy and drops the
 // rest; every rule is bridge-scoped so remote management never matches.
 func TestHostRules6Shape(t *testing.T) {
-	rules := HostRules6()
+	rules := HostRules6([]string{"docker0", "br-111122223333"})
 	if len(rules) != 6 {
 		t.Fatalf("unexpected v6 host rule count: %d", len(rules))
 	}
@@ -146,9 +146,9 @@ func TestHostRules6Shape(t *testing.T) {
 		"-i docker0 -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN",
 		"-i docker0 -p ipv6-icmp -j RETURN",
 		"-i docker0 -j DROP",
-		"-i br+ -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN",
-		"-i br+ -p ipv6-icmp -j RETURN",
-		"-i br+ -j DROP",
+		"-i br-111122223333 -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN",
+		"-i br-111122223333 -p ipv6-icmp -j RETURN",
+		"-i br-111122223333 -j DROP",
 	} {
 		if !strings.Contains(joined, want+"\n") {
 			t.Fatalf("v6 host rules missing %q:\n%s", want, joined)

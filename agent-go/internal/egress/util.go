@@ -226,3 +226,13 @@ func readBoundedRegularFile(path string, limit int64) ([]byte, error) {
 	}
 	return raw, nil
 }
+
+// Enforced reports whether the v4 FORWARD half (the per-bridge SMTP/rate and
+// metadata drops under DOCKER-USER) was in force at its last recorded apply.
+// Callers that reapply the baseline outside the boot/ticker path use it to keep
+// the fail-open contract on hosts where that half never applies: Docker with
+// "iptables": false has no DOCKER-USER chain, yet the host INPUT half and the
+// v6 half may still apply there, so they are not the anchor.
+func Enforced(stateDir string) bool {
+	return readStatus(stateDir).Applied
+}

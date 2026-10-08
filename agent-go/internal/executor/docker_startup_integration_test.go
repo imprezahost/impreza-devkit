@@ -51,7 +51,10 @@ func TestDockerRequiredStartup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 	d := &Docker{StateDir: t.TempDir(), Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	id := fmt.Sprintf("required_start_%d", time.Now().UnixNano())
+	// A conforming deployment identity: the manual rollback goes through
+	// the same fence check as production, which refuses ids outside the
+	// dpl_<hex> shape.
+	id := "dpl_" + fmt.Sprintf("%016x", time.Now().UnixNano()%int64(1e16))
 	dir := d.appDir(id)
 	t.Cleanup(func() {
 		c, stop := context.WithTimeout(context.Background(), time.Minute)

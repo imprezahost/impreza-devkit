@@ -34,10 +34,11 @@ type Poller struct {
 	log            *slog.Logger
 
 	// Static metadata included in every heartbeat. Set at construction.
-	agentVersion string
-	journal      *commandJournal
-	active       *commandRecord
-	journalErr   error
+	inventoryDemand chan sdkclient.InventoryRequest
+	agentVersion    string
+	journal         *commandJournal
+	active          *commandRecord
+	journalErr      error
 
 	// The vantage prober, set by vantageLoop once the control
 	// plane confirms the mark. nil on a customer agent — the capability
@@ -120,11 +121,14 @@ func (p *Poller) Run(ctx context.Context) error {
 			return err
 		}
 	}
+	p.inventoryDemand = make(chan sdkclient.InventoryRequest, 1)
 	hbDone := make(chan struct{})
 	go func() {
 		defer close(hbDone)
 		p.heartbeatLoop(ctx)
 	}()
+	inventoryDone := make(chan struct{})
+	go func() { defer close(inventoryDone); p.inventoryLoop(ctx) }()
 	metricsDone := make(chan struct{})
 	go func() {
 		defer close(metricsDone)
@@ -147,6 +151,7 @@ func (p *Poller) Run(ctx context.Context) error {
 		<-probeDone
 		<-hbDone
 		<-metricsDone
+		<-inventoryDone
 	}()
 
 	return p.pollLoop(ctx)
@@ -161,7 +166,7 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 			return err
 		}
 	}
-	capabilities := []string{executor.TorEgressProtocol, executor.TorDataOwnerProtocol, "onion-auth-v1", "onion-profile-v1", "onion-deploy-profile-v1", "onion-custody-v1", "onion-purge-v1", "onion-private-preview-v1", "startup-health-v1", "startup-health-v2", "deploy-cancel-v1", "build-secrets-v1", "compose-source-files-v1", sdkclient.ServiceBindingProtocol, sdkclient.ServiceBindingRetirementProtocol, sdkclient.ServiceBindingGenerationProtocol, sdkclient.ServiceBindingGenerationRetirementProtocol, sdkclient.ServiceBindingRotationProtocol, sdkclient.ServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingGenerationProtocol, sdkclient.MysqlServiceBindingGenerationRetirementProtocol, sdkclient.MysqlServiceBindingRotationProtocol, sdkclient.MysqlServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingRestoreProtocol, sdkclient.TrafficSwitchProtocol, sdkclient.PreviewBasicAuthProtocol, sdkclient.ServiceBindingRestoreProtocol, sdkclient.ShieldProtocol, sdkclient.ProxyMetricsProtocol, sdkclient.SandboxProtocol, sdkclient.ReadySwapProtocol}
+	capabilities := []string{proxy.StatusPageProtocol, sdkclient.HostInventoryProtocol, executor.TorEgressProtocol, executor.TorDataOwnerProtocol, "onion-auth-v1", "onion-profile-v1", "onion-deploy-profile-v1", "onion-custody-v1", "onion-purge-v1", "onion-private-preview-v1", "startup-health-v1", "startup-health-v2", "deploy-cancel-v1", "build-secrets-v1", "compose-source-files-v1", sdkclient.ServiceBindingProtocol, sdkclient.ServiceBindingRetirementProtocol, sdkclient.ServiceBindingGenerationProtocol, sdkclient.ServiceBindingGenerationRetirementProtocol, sdkclient.ServiceBindingRotationProtocol, sdkclient.ServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingGenerationProtocol, sdkclient.MysqlServiceBindingGenerationRetirementProtocol, sdkclient.MysqlServiceBindingRotationProtocol, sdkclient.MysqlServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingRestoreProtocol, sdkclient.TrafficSwitchProtocol, sdkclient.PreviewBasicAuthProtocol, sdkclient.ServiceBindingRestoreProtocol, sdkclient.ShieldProtocol, sdkclient.ProxyMetricsProtocol, sdkclient.SandboxProtocol, sdkclient.ReadySwapProtocol}
 	if p.journal != nil {
 		capabilities = append(capabilities, sdkclient.DeploymentProgressProtocol)
 		if _, ok := p.exec.(*executor.Docker); ok {
@@ -199,6 +204,9 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 		if docker, ok := p.exec.(*executor.Docker); ok {
 			if enabled, err := docker.ControlledBuildsEnabled(); err == nil && enabled {
 				pollCapabilities = append(pollCapabilities, executor.ControlledBuildProtocol)
+				if p.journal != nil && docker.SupervisePreparation {
+					pollCapabilities = append(pollCapabilities, sdkclient.PreviewForkProtocol)
+				}
 			}
 		}
 		cmd, ok, err := p.client.AgentPoll(ctx, &sdkclient.PollRequest{Capabilities: pollCapabilities})
@@ -396,8 +404,9 @@ func (p *Poller) metricsLoop(ctx context.Context) {
 // doesn't justify tearing down the daemon.
 func (p *Poller) sendHeartbeat(ctx context.Context) {
 	report := sdkclient.AgentReport{
-		ReportedAt: time.Now().UTC(),
-		Version:    p.agentVersion,
+		InventoryProtocol: sdkclient.HostInventoryProtocol,
+		ReportedAt:        time.Now().UTC(),
+		Version:           p.agentVersion,
 	}
 
 	// Phase 9.23: ship the current resource snapshot so the control
@@ -429,9 +438,16 @@ func (p *Poller) sendHeartbeat(ctx context.Context) {
 		report.Ingress = collector.CollectIngress()
 	}
 
-	if err := p.client.AgentReport(ctx, report); err != nil {
+	demand, err := p.client.AgentHeartbeat(ctx, report)
+	if err != nil {
 		p.log.Warn("heartbeat: report failed", "err", err)
 		return
+	}
+	if demand.Due {
+		select {
+		case p.inventoryDemand <- demand:
+		default:
+		}
 	}
 }
 

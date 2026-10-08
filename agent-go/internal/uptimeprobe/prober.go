@@ -213,9 +213,11 @@ func (p *Prober) fetchTargets(ctx context.Context) (TargetsResponse, error) {
 	if err := p.client.Get(ctx, "/v1/agent/uptime/targets", nil, &resp); err != nil {
 		return resp, err
 	}
-	if len(resp.Targets) > MaxTargets {
-		resp.Targets = resp.Targets[:MaxTargets]
-	}
+	// The whole list goes to probeAll: cutting it to the first MaxTargets
+	// here would hide the tail from the rotating window, and with a stable
+	// server order the same head would be measured forever while the rest
+	// never was. probeAll selects MaxTargets per round and rotates, so
+	// every target is measured at least once per ceil(n/MaxTargets) rounds.
 	return resp, nil
 }
 

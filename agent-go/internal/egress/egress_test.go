@@ -12,13 +12,13 @@ import (
 )
 
 func TestRulesScopeAndOperatorPolicy(t *testing.T) {
-	rules := Rules([]string{"10.0.0.2", "1.1.1.1"})
+	rules := Rules([]string{"10.0.0.2", "1.1.1.1"}, []string{"docker0", "br-111122223333"})
 	for _, rule := range rules {
 		line := strings.Join(rule, " ")
 		if strings.Contains(line, "ACCEPT") {
 			t.Fatal("baseline bypasses later operator policy")
 		}
-		if strings.HasSuffix(line, "-j DROP") && line != "-d 169.254.0.0/16 -j DROP" && !(strings.HasPrefix(line, "-i docker0 ") || strings.HasPrefix(line, "-i br+ ")) {
+		if strings.HasSuffix(line, "-j DROP") && line != "-d 169.254.0.0/16 -j DROP" && !(strings.HasPrefix(line, "-i docker0 ") || strings.HasPrefix(line, "-i br-111122223333 ")) {
 			t.Fatal("drop affects ingress or unrelated forwarding")
 		}
 	}
@@ -33,7 +33,7 @@ func TestRulesScopeAndOperatorPolicy(t *testing.T) {
 	if strings.Join(rules[len(rules)-1], " ") != "-j RETURN" {
 		t.Fatal("operator continuation absent")
 	}
-	for _, iface := range []string{"docker0", "br+"} {
+	for _, iface := range []string{"docker0", "br-111122223333"} {
 		for _, dest := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"} {
 			found := false
 			for _, rule := range rules {
@@ -49,11 +49,11 @@ func TestRulesScopeAndOperatorPolicy(t *testing.T) {
 }
 
 func TestHostRulesScopeAndShape(t *testing.T) {
-	rules := HostRules()
+	rules := HostRules([]string{"docker0", "br-111122223333"})
 	if len(rules) != 6 {
 		t.Fatalf("unexpected host rule count: %d", len(rules))
 	}
-	for _, iface := range []string{"docker0", "br+"} {
+	for _, iface := range []string{"docker0", "br-111122223333"} {
 		est := false
 		icmp := false
 		drop := false
@@ -79,7 +79,7 @@ func TestHostRulesScopeAndShape(t *testing.T) {
 	// operator's INPUT policy (and remote management) stays in charge.
 	for _, rule := range rules {
 		line := strings.Join(rule, " ")
-		if !strings.HasPrefix(line, "-i docker0 ") && !strings.HasPrefix(line, "-i br+ ") {
+		if !strings.HasPrefix(line, "-i docker0 ") && !strings.HasPrefix(line, "-i br-111122223333 ") {
 			t.Fatalf("host rule without bridge scope: %s", line)
 		}
 		if strings.Contains(line, "ACCEPT") {
@@ -219,18 +219,18 @@ func readApplied(t *testing.T, dir string) Status {
 
 func TestApplyIdempotentAndReconciles(t *testing.T) {
 	ctx, fake, resolv, dir := applyFixture(t)
-	if err := applyAll(ctx, fake.run, resolv, dir); err != nil {
+	if err := applyAll(ctx, fake.run, resolv, dir, []string{"docker0"}); err != nil {
 		t.Fatal(err)
 	}
 	status := readApplied(t, dir)
-	if !status.Applied || status.Error != "" || status.LastAttempt == "" || status.Fingerprint == "" || status.Rules != len(Rules([]string{"10.0.0.2"})) || status.Resolvers != 1 {
+	if !status.Applied || status.Error != "" || status.LastAttempt == "" || status.Fingerprint == "" || status.Rules != len(Rules([]string{"10.0.0.2"}, []string{"docker0"})) || status.Resolvers != 1 {
 		t.Fatalf("initial apply status mismatch: %+v", status)
 	}
 	if len(fake.chains[Chain]) != status.Rules || len(fake.chains[ParentChain]) != 1 || !reflect.DeepEqual(fake.chains[ParentChain][0], []string{"-j", Chain}) {
 		t.Fatal("chain content or parent link incorrect after apply")
 	}
 	mutations := fake.mutations
-	if err := applyAll(ctx, fake.run, resolv, dir); err != nil {
+	if err := applyAll(ctx, fake.run, resolv, dir, []string{"docker0"}); err != nil {
 		t.Fatal(err)
 	}
 	if fake.mutations != mutations {
@@ -238,7 +238,7 @@ func TestApplyIdempotentAndReconciles(t *testing.T) {
 	}
 	// External drift to our chain is reconciled; the parent chain is untouched.
 	fake.chains[Chain] = nil
-	if err := applyAll(ctx, fake.run, resolv, dir); err != nil {
+	if err := applyAll(ctx, fake.run, resolv, dir, []string{"docker0"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.chains[Chain]) != status.Rules || len(fake.chains[ParentChain]) != 1 {
@@ -248,7 +248,7 @@ func TestApplyIdempotentAndReconciles(t *testing.T) {
 	if err := os.WriteFile(resolv, []byte("nameserver 192.168.1.1\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := applyAll(ctx, fake.run, resolv, dir); err != nil {
+	if err := applyAll(ctx, fake.run, resolv, dir, []string{"docker0"}); err != nil {
 		t.Fatal(err)
 	}
 	if readApplied(t, dir).Fingerprint == status.Fingerprint {
@@ -256,7 +256,7 @@ func TestApplyIdempotentAndReconciles(t *testing.T) {
 	}
 	// A vanished parent chain is an explicit fail-open error, never a flush.
 	delete(fake.chains, ParentChain)
-	if err := applyAll(ctx, fake.run, resolv, dir); err == nil || readApplied(t, dir).Applied {
+	if err := applyAll(ctx, fake.run, resolv, dir, []string{"docker0"}); err == nil || readApplied(t, dir).Applied {
 		t.Fatal("missing docker chain was not reported fail-open")
 	}
 }
@@ -264,7 +264,7 @@ func TestApplyIdempotentAndReconciles(t *testing.T) {
 func TestApplyFailOpenWithoutIPTables(t *testing.T) {
 	ctx, fake, resolv, dir := applyFixture(t)
 	fake.failAll = true
-	err := applyAll(ctx, fake.run, resolv, dir)
+	err := applyAll(ctx, fake.run, resolv, dir, []string{"docker0"})
 	if err == nil {
 		t.Fatal("iptables absence was not reported")
 	}

@@ -20,6 +20,11 @@ import (
 	"github.com/imprezahost/impreza-devkit/sdk-go/config"
 )
 
+// MaxResponseBytes caps every control-plane response read. A compromised
+// or buggy plane must not be able to exhaust a probe point's memory
+// with an unbounded body: anything larger is a loud error.
+const MaxResponseBytes = 4 << 20 // 4 MiB — the targets list is ~200 B/target
+
 // Client is the entry point for every API call. Construct one per
 // invocation via New(); it carries the auth-injecting transport and
 // the resolved base URL.
@@ -221,6 +226,17 @@ func (c *Client) Delete(ctx context.Context, path string, body any) error {
 // custom-deploy build contexts from
 // `GET /v1/agent/custom-deploy-contexts/{id}`.
 func (c *Client) GetRaw(ctx context.Context, path string, query url.Values) ([]byte, error) {
+	return c.GetRawLimit(ctx, path, query, MaxResponseBytes)
+}
+
+// GetRawLimit is GetRaw with an explicit ceiling, for a download whose size
+// the control plane declared beforehand (a custom-deploy build context may be
+// up to 100 MB, far above MaxResponseBytes). Anything above limit is an
+// error, never read further.
+func (c *Client) GetRawLimit(ctx context.Context, path string, query url.Values, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("GetRawLimit: the limit must be positive, got %d", limit)
+	}
 	u, err := url.Parse(c.BaseURL + path)
 	if err != nil {
 		return nil, fmt.Errorf("build URL %s%s: %w", c.BaseURL, path, err)
@@ -240,9 +256,12 @@ func (c *Client) GetRaw(ctx context.Context, path string, query url.Values) ([]b
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("control-plane response exceeds the %d-byte ceiling", limit)
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return body, nil
@@ -285,9 +304,12 @@ func (c *Client) PostRaw(ctx context.Context, path, contentType string, body []b
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("read response: %w", err)
+	}
+	if len(raw) > MaxResponseBytes {
+		return fmt.Errorf("control-plane response exceeds the %d MiB ceiling", MaxResponseBytes>>20)
 	}
 	if resp.StatusCode == http.StatusNoContent {
 		return nil
@@ -367,9 +389,12 @@ func (c *Client) doWithHeaders(ctx context.Context, method, path string, query u
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("read response: %w", err)
+	}
+	if len(raw) > MaxResponseBytes {
+		return fmt.Errorf("control-plane response exceeds the %d MiB ceiling", MaxResponseBytes>>20)
 	}
 
 	// 2xx with explicitly no body — handled before the Content-Type

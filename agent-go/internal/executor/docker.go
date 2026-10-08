@@ -127,6 +127,11 @@ type Docker struct {
 	Log                  *slog.Logger
 	Proxy                *proxy.Caddy // optional — when nil, routes are ignored
 	Tor                  *proxy.Tor   // optional — when nil, onion is ignored
+	// EgressApply reapplies the egress baselines. Optional seam so
+	// executor tests observe the call without iptables; nil runs the real
+	// egress.Apply + egress.Apply6 (both FORWARD halves and both host
+	// halves live there).
+	EgressApply func(ctx context.Context, stateDir string) error
 
 	// Client is the SDK client used to ship log chunks back to the
 	// control plane (for the logs_tail command kind). When nil, the
@@ -283,6 +288,15 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	}
 	if err := validateServiceBindingManifest(p); err != nil {
 		return failResult(cmd.ID, err.Error())
+	}
+	if p.Manifest.Runtime.Sandbox != nil && p.Manifest.Runtime.Sandbox.ForkPreview {
+		if err := validateForkPayload(p); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+		enabled, err := d.ControlledBuildsEnabled()
+		if err != nil || !enabled || !d.SupervisePreparation || d.SavePreparation == nil || cmd.ControlToken == "" || cmd.ProgressProtocol != sdkclient.DeploymentProgressProtocol {
+			return failResult(cmd.ID, "Fork previews require explicit builder prepare and journaled controlled builds; no source was fetched.")
+		}
 	}
 	if err := validateEnvNames(p.Vars); err != nil {
 		return failResult(cmd.ID, err.Error())
@@ -463,6 +477,11 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		)
 	}
 
+	if p.Manifest.Runtime.Sandbox != nil && p.Manifest.Runtime.Sandbox.ForkPreview {
+		if err := validateForkDockerfile(appDir, p.Manifest.Runtime.Build); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+	}
 	// Scan only fetched source, never persisted app data or runtime/build secrets.
 	var sourceScan *json.RawMessage
 	if p.Manifest.Runtime.Build != nil {
@@ -612,6 +631,11 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		if sandboxErr != nil {
 			return failResult(cmd.ID, sandboxErr.Error())
 		}
+		if p.Manifest.Runtime.Sandbox.ForkPreview {
+			if err := proxy.EnsureTorEgressNetwork(ctx, p.DeploymentID, true); err != nil {
+				return failResult(cmd.ID, err.Error())
+			}
+		}
 		if err := writeSandboxDeadline(d.appDir(p.DeploymentID), *p.Manifest.Runtime.Sandbox); err != nil {
 			return failResult(cmd.ID, "write sandbox deadline: "+err.Error())
 		}
@@ -643,6 +667,18 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		}
 		cancelNet()
 
+		// A freshly created bridge is not in the last egress apply's
+		// enumeration — reapply now so containers joining this network get
+		// the per-interface drops immediately instead of at the next
+		// reconcile. A failed reapply fails the deploy: the network never
+		// stays open in silence.
+		egCtx, cancelEg := context.WithTimeout(ctx, 30*time.Second)
+		if err := d.reapplyEgress(egCtx, "proxy network"); err != nil {
+			cancelEg()
+			return failResult(cmd.ID, err.Error())
+		}
+		cancelEg()
+
 		// Phase 9.11d v2: the agent's OWN credentials reach Caddy via
 		// SetImprezaCredentials at startup (cmd/run.go) — not via
 		// per-deploy vars. The CF token never reaches the agent.
@@ -658,6 +694,17 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		}
 	}
 
+	if p.Manifest.Runtime.Sandbox != nil && p.Manifest.Runtime.Sandbox.ForkPreview {
+		if d.Proxy == nil {
+			return failResult(cmd.ID, "fork preview requires managed onion ingress")
+		}
+		if err := proxy.ConnectTorEgressIngress(ctx, p.DeploymentID); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+		if err := proxy.ConfigureForkFirewall(ctx, p.DeploymentID); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
+	}
 	// Phase 90 — onion-only deploys: provision Tor BEFORE compose pull/up
 	// so the container's first boot reads the real .onion address from
 	// .env. Detection: any route with empty Hostname + Onion.Enabled
@@ -990,7 +1037,19 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 	// pulled cache a retry needs. keep_images combined with purge_data is
 	// refused at payload validation, before anything runs.
 	args := uninstallDownArgs(p.PurgeData, p.KeepImages)
-	out, downErr := d.compose(downCtx, appDir, args...)
+	var out []byte
+	var downErr error
+	if !exists(filepath.Join(appDir, composeFileName)) {
+		// A deploy whose preparation died before writing compose.yaml
+		// leaves nothing for `compose down` to remove — the command would
+		// fail with "no configuration file provided" and only the label
+		// sweep would do the work anyway. Sweep directly and keep the
+		// success clean, without the misleading error tail.
+		d.Log.Info("docker uninstall: no compose.yaml; sweeping by label", "deployment_id", p.DeploymentID)
+		d.forceRemoveProjectContainers(ctx, p.DeploymentID)
+	} else {
+		out, downErr = d.compose(downCtx, appDir, args...)
+	}
 	if downErr != nil {
 		// Do NOT bail here. A failing `down` is exactly the case that
 		// used to strand a dead container plus the whole state dir: the
@@ -1292,6 +1351,8 @@ func (d *Docker) awaitStackSettledPolicy(ctx context.Context, deploymentID strin
 	// on the restart. A genuinely broken image never recovers, so it just
 	// takes settleStableSamples to convict it.
 	badStreak := map[string]int{}
+	// The clock-based v2 stability window (see v2_window.go).
+	var v2Window v2WindowTracker
 	var last []containerState
 
 	for {
@@ -1360,24 +1421,21 @@ func (d *Docker) awaitStackSettledPolicy(ctx context.Context, deploymentID strin
 
 		allOK := startupStatesOKProtocol(states, policy.RequireHealthy, policy.V2)
 		if allOK {
-			// v2: a healthcheck-less service has to survive the
-			// full v2StableWindow without a restart before the gate
-			// calls it ready. Any restart during the window resets the
-			// count — a crash-looping service never accumulates enough.
-			if policy.V2 && !hasHealthcheck(states) {
-				restarted := false
-				for _, s := range states {
-					if s.Restarts > baseline[s.Name] {
-						restarted = true
-						break
-					}
-				}
-				if restarted {
-					stable = 0
-				} else {
-					stable++
-				}
-				if stable >= int(v2StableWindow/settleInterval) {
+			// v2: a service without a healthcheck has to survive a full
+			// v2StableWindow since the LAST restart before the gate calls
+			// the stack ready. The window is measured on the clock, not on
+			// a sample count: a sample count of window/interval only
+			// observes window-interval seconds (12 for a 15s window with
+			// 3s samples), and a crash between samples could slip through.
+			// Any restart re-arms the window, so a slow crash loop — one
+			// that stays under the fast-path thresholds — never becomes
+			// ready. Mixed stacks count too: while a service without a
+			// check is part of the set, its stability is what the window
+			// watches.
+			if v2WindowApplies(policy, states) {
+				now := time.Now()
+				v2Window.observe(states, baseline, now)
+				if v2Window.ready(now, v2StableWindow) {
 					return settleHealthy, describeStates(states)
 				}
 			} else {
@@ -1457,6 +1515,13 @@ func (d *Docker) rollbackFailedDeploy(ctx context.Context, appDir, deploymentID 
 	}
 	downCtx, cancel := context.WithTimeout(ctx, composeDownTimeout)
 	defer cancel()
+	if !exists(filepath.Join(appDir, composeFileName)) {
+		// Nothing was ever deployed from this directory (the
+		// preparation died before compose.yaml existed); sweep directly.
+		d.Log.Info("deploy rollback: no compose.yaml; sweeping by label", "deployment_id", deploymentID)
+		d.forceRemoveProjectContainers(ctx, deploymentID)
+		return
+	}
 	if out, err := d.compose(downCtx, appDir, args...); err != nil {
 		d.Log.Warn("deploy rollback: compose down failed, falling back to label sweep",
 			"deployment_id", deploymentID, "reason", reason, "err", err, "out", tail(out, 512))
@@ -1812,6 +1877,15 @@ func (d *Docker) updateRoutes(ctx context.Context, cmd *sdkclient.PollCommand) s
 		}
 		cancelNet()
 
+		// Same as the deploy path — the network may have just been
+		// created here too, and the containers keep serving on it.
+		egCtx2, cancelEg2 := context.WithTimeout(ctx, 30*time.Second)
+		if err := d.reapplyEgress(egCtx2, "proxy network (routes)"); err != nil {
+			cancelEg2()
+			return failResult(cmd.ID, err.Error())
+		}
+		cancelEg2()
+
 		// Phase 9.11d v2: credentials are owned by the agent process
 		// (cmd/run.go calls SetImprezaCredentials at startup), not
 		// re-shipped from the server per-command. Nothing to do here.
@@ -1854,6 +1928,7 @@ func (d *Docker) updateRoutes(ctx context.Context, cmd *sdkclient.PollCommand) s
 				TLSDNSProvider: dnsProvider,
 				BasicAuth:      basicAuthFromPayload(r.BasicAuth),
 				Shield:         shieldFromPayload(r.Shield),
+				PlatformRoutes: platformRoutesFromPayload(r.PlatformRoutes),
 			})
 		}
 		applyCtx, cancelApply := context.WithTimeout(ctx, composeQueryTimeout)
@@ -1914,6 +1989,15 @@ func (d *Docker) logsTail(ctx context.Context, cmd *sdkclient.PollCommand) sdkcl
 		}
 	}
 
+	if !exists(filepath.Join(appDir, composeFileName)) {
+		// The deployment never got past preparation — there is no
+		// compose file and no container to read logs from. Answer with a
+		// final chunk instead of a compose error.
+		d.shipChunk(ctx, p, "logs_tail: no compose file for deployment; no containers were ever created.\n", true)
+		return sdkclient.DeployResult{
+			CommandID: cmd.ID, Status: "success", DeploymentID: p.DeploymentID,
+		}
+	}
 	values, redactionErr := d.runtimeServiceBindingRedactions(p.DeploymentID)
 	if redactionErr != nil {
 		return failResult(cmd.ID, "Logs withheld because private credential state could not be verified.")
@@ -2115,6 +2199,17 @@ func writeAtomic(path string, data []byte, mode os.FileMode) error {
 
 // shieldFromPayload maps the server's shield policy onto the proxy route.
 // A nil or empty policy stays nil: profile off renders no directives.
+func platformRoutesFromPayload(in []sdkclient.RoutePlatform) []proxy.PlatformRoute {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]proxy.PlatformRoute, 0, len(in))
+	for _, r := range in {
+		out = append(out, proxy.PlatformRoute{Prefix: r.Prefix, Upstream: r.Upstream})
+	}
+	return out
+}
+
 func shieldFromPayload(s *sdkclient.RouteShield) *proxy.ShieldConfig {
 	if s == nil || s.Profile == "" {
 		return nil
@@ -2361,6 +2456,8 @@ func fetchAndExtractBuildContext(
 	if bc == nil {
 		return errors.New("build context is nil")
 	}
+	// The public limit on a build-context tarball is 100 MB per upload.
+	const maxBuildContextBytes = 100 << 20
 	// Phase 15 — git-clone path takes precedence when set. The agent
 	// shallow-clones the repo at the requested ref directly into
 	// destDir + skips the tarball-download path entirely. URL + SHA256
@@ -2409,7 +2506,13 @@ func fetchAndExtractBuildContext(
 	// VPS uplink is well under that even with overhead.
 	dlCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	body, err := cli.GetRaw(dlCtx, reqPath, nil)
+	// The read stops at the size the control plane declared (never
+	// above the 100 MB upload cap), not at the 4 MiB GetRaw ceiling.
+	limit := int64(maxBuildContextBytes)
+	if bc.SizeBytes > 0 && bc.SizeBytes < limit {
+		limit = bc.SizeBytes
+	}
+	body, err := cli.GetRawLimit(dlCtx, reqPath, nil, limit)
 	if err != nil {
 		return fmt.Errorf("download tarball: %w", err)
 	}
@@ -2595,13 +2698,31 @@ func gitCloneIntoBuildContext(
 		return fmt.Errorf("unknown git_auth_method %q", authMethod)
 	}
 
-	// Reset destDir so a partial previous clone doesn't poison the build.
-	if err := os.RemoveAll(destDir); err != nil {
-		return fmt.Errorf("clear previous build context: %w", err)
-	}
+	// The clone runs in a sibling staging directory and replaces
+	// destDir by rename only after the clone AND the pinned-commit
+	// checkout succeed. Wiping destDir up front left the deployment
+	// without the context that built the running version whenever a clone
+	// failed (revoked credential, network, the forge's state) — the
+	// image and container stayed up while the portal showed failed and no
+	// retry context existed. A failed clone now preserves the previous
+	// build-ctx byte for byte; the staging leftovers are removed either
+	// way.
 	if err := os.MkdirAll(filepath.Dir(destDir), 0o755); err != nil {
 		return fmt.Errorf("mkdir build context parent: %w", err)
 	}
+	cloneDir := destDir + ".clone"
+	stagingFinal := destDir
+	if err := os.RemoveAll(cloneDir); err != nil {
+		return fmt.Errorf("clear staged build context: %w", err)
+	}
+	defer func() {
+		// Only clears the STAGING dir; the final dir is never touched on
+		// the failure paths (the rename already moved it away on success).
+		if _, statErr := os.Stat(cloneDir); statErr == nil {
+			_ = os.RemoveAll(cloneDir)
+		}
+	}()
+	destDir = cloneDir
 
 	log.Info("docker deploy: cloning git build context",
 		"url", g.URL,
@@ -2719,6 +2840,21 @@ func gitCloneIntoBuildContext(
 
 	if err := checkoutGitCommit(cloneCtx, destDir, g.CommitSHA, env, preArgs); err != nil {
 		return err
+	}
+	// Everything succeeded — swap the staged clone into place. The
+	// rename never crosses filesystems (both live in the deployment dir);
+	// a leftover previous context is removed only now, after the new one
+	// is complete on disk.
+	if err := os.Rename(destDir, stagingFinal); err != nil {
+		// Windows and some filesystems can refuse a rename over an
+		// existing directory: fall back to remove-then-rename, the window
+		// is one syscall and only runs on the success path.
+		if rmErr := os.RemoveAll(stagingFinal); rmErr != nil {
+			return fmt.Errorf("replace previous build context: %v (remove: %v)", err, rmErr)
+		}
+		if err := os.Rename(destDir, stagingFinal); err != nil {
+			return fmt.Errorf("install staged build context: %w", err)
+		}
 	}
 
 	return nil

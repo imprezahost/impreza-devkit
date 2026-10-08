@@ -132,6 +132,15 @@ func (d *dockerFake) run(_ context.Context, args ...string) ([]byte, error) {
 	if d.down {
 		return nil, errors.New("Cannot connect to the Docker daemon")
 	}
+	// The host chain enumerates Docker's own bridges through the
+	// same calls the ingress firewall uses. Two networks: the default
+	// (docker0) and one custom-named bridge.
+	if args[0] == "network" && args[1] == "ls" {
+		return []byte("aaaaaaaaaaaa\nbbbbbbbbbbbb\n"), nil
+	}
+	if args[0] == "network" && args[1] == "inspect" {
+		return []byte("aaaaaaaaaaaa|docker0\nbbbbbbbbbbbb|br-111122223333\n"), nil
+	}
 	if args[0] == "ps" {
 		var ids []string
 		for i := range d.ports {
@@ -183,7 +192,7 @@ func TestHostJumpIsLastSoOperatorDecisionsWin(t *testing.T) {
 // same transaction (no instant without it, no instant with two).
 func TestHostUpgradeMovesTheTopJumpToTheEnd(t *testing.T) {
 	f := newHostFake("-j "+HostChain, "-j ufw-before-input", "-s 172.16.0.0/12 -j ACCEPT")
-	f.chains[HostChain] = HostRules()
+	f.chains[HostChain] = HostRules([]string{"docker0"})
 	d := &dockerFake{}
 	if err := applyHost4(t, f, d, t.TempDir()); err != nil {
 		t.Fatal(err)
@@ -232,7 +241,7 @@ func TestHostPublishedPortsReturnAndSurviveDockerDown(t *testing.T) {
 	if err := applyHost4(t, f, d, dir); err != nil {
 		t.Fatal(err)
 	}
-	for _, iface := range []string{"docker0", "br+"} {
+	for _, iface := range []string{"docker0", "br-111122223333"} {
 		for _, pp := range []string{"tcp -m tcp --dport 80", "tcp -m tcp --dport 443", "udp -m udp --dport 27015", "tcp -m tcp --dport 25565"} {
 			if !has(f.chains[HostChain], "-i "+iface+" -p "+pp+" -j RETURN") {
 				t.Fatalf("%s: published %s not returned", iface, pp)
@@ -246,12 +255,12 @@ func TestHostPublishedPortsReturnAndSurviveDockerDown(t *testing.T) {
 	}
 	// DROP stays the last rule per interface.
 	rules := f.chains[HostChain]
-	if strings.Join(rules[len(rules)-1], " ") != "-i br+ -j DROP" {
+	if strings.Join(rules[len(rules)-1], " ") != "-i docker0 -j DROP" { // ingress sorts: br-* before docker0
 		t.Fatalf("host chain does not end in the bridge drop: %q", rules[len(rules)-1])
 	}
 	before := f.restores
 	d.down = true
-	if err := applyHost4(t, f, d, dir); err != nil || f.restores != before || !has(f.chains[HostChain], "-i br+ -p tcp -m tcp --dport 443 -j RETURN") {
+	if err := applyHost4(t, f, d, dir); err != nil || f.restores != before || !has(f.chains[HostChain], "-i br-111122223333 -p tcp -m tcp --dport 443 -j RETURN") {
 		t.Fatalf("docker down changed the exceptions: %v", err)
 	}
 	// A new deployment publishes a port: the next reconcile returns it.
@@ -277,7 +286,7 @@ func TestHostOperatorPolicyAllowDisableEnable(t *testing.T) {
 	if info, _ := os.Stat(filepath.Join(dir, hostPolicyFile)); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("policy mode %v", info.Mode().Perm())
 	}
-	if err := applyHost4(t, f, d, dir); err != nil || !has(f.chains[HostChain], "-i br+ -p tcp -m tcp --dport 8080 -j RETURN") || !has(f.chains[HostChain], "-i docker0 -p udp -m udp --dport 53 -j RETURN") {
+	if err := applyHost4(t, f, d, dir); err != nil || !has(f.chains[HostChain], "-i br-111122223333 -p tcp -m tcp --dport 8080 -j RETURN") || !has(f.chains[HostChain], "-i docker0 -p udp -m udp --dport 53 -j RETURN") {
 		t.Fatalf("operator exceptions not rendered: %v", err)
 	}
 	for _, bad := range []string{"tcp/0", "tcp/70000", "icmp/1", "tcp/80;reboot", "tcp/ 80", ""} {
@@ -333,13 +342,13 @@ func TestHostInvalidPolicyChangesNothing(t *testing.T) {
 // A failed transaction is fail-open and leaves the previous rules alone.
 func TestHostRestoreFailureChangesNothing(t *testing.T) {
 	f := newHostFake("-j " + HostChain)
-	f.chains[HostChain] = HostRules()
+	f.chains[HostChain] = HostRules([]string{"docker0"})
 	f.failRestore = true
 	dir := t.TempDir()
 	if err := applyHost4(t, f, &dockerFake{}, dir); err == nil {
 		t.Fatal("failure not reported")
 	}
-	if in := f.input(); len(in) != 1 || in[0] != "-j "+HostChain || len(f.chains[HostChain]) != len(HostRules()) {
+	if in := f.input(); len(in) != 1 || in[0] != "-j "+HostChain || len(f.chains[HostChain]) != len(HostRules([]string{"docker0"})) {
 		t.Fatalf("a failed transaction changed the firewall: %q", in)
 	}
 	if st := readHostStatus4(dir); st.Applied || st.Error == "" {
@@ -377,7 +386,7 @@ func TestHostNotifyCountsNoAddresses(t *testing.T) {
 // Same behaviour for IPv6, with ICMPv6 (NDP) returned.
 func TestHost6JumpLastWithICMPv6AndExceptions(t *testing.T) {
 	f := newHostFake("-j "+HostChain, "-j ufw6-before-input")
-	f.chains[HostChain] = HostRules6()
+	f.chains[HostChain] = HostRules6([]string{"docker0"})
 	d := &dockerFake{ports: []string{proxyPorts}}
 	dir := t.TempDir()
 	if err := applyHostWith(context.Background(), hostFamily6(f.tables, f.restore), dir, d.run); err != nil {
@@ -387,7 +396,7 @@ func TestHost6JumpLastWithICMPv6AndExceptions(t *testing.T) {
 	if in[len(in)-1] != "-j "+HostChain || in[0] != "-j ufw6-before-input" {
 		t.Fatalf("v6 INPUT %q", in)
 	}
-	if !has(f.chains[HostChain], "-i br+ -p ipv6-icmp -j RETURN") || !has(f.chains[HostChain], "-i br+ -p tcp -m tcp --dport 443 -j RETURN") {
+	if !has(f.chains[HostChain], "-i br-111122223333 -p ipv6-icmp -j RETURN") || !has(f.chains[HostChain], "-i br-111122223333 -p tcp -m tcp --dport 443 -j RETURN") {
 		t.Fatal("v6 host chain misses ICMPv6 or the published port")
 	}
 	if st := readHostStatus6(dir); !st.Applied || st.Position != "last" || strings.Join(st.Ports, ",") != "tcp/80,tcp/443" {
@@ -399,7 +408,7 @@ func TestHost6JumpLastWithICMPv6AndExceptions(t *testing.T) {
 // host address) returns after the metadata drop and before every private
 // destination drop, in both families.
 func TestForwardReturnsDNATBeforePrivateDrops(t *testing.T) {
-	for name, rules := range map[string][][]string{"v4": Rules([]string{"10.0.0.2"}), "v6": Rules6(nil)} {
+	for name, rules := range map[string][][]string{"v4": Rules([]string{"10.0.0.2"}, []string{"docker0"}), "v6": Rules6(nil, []string{"docker0"})} {
 		dnat, meta, firstDrop := -1, -1, -1
 		for i, r := range rules {
 			line := strings.Join(r, " ")

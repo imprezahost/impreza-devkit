@@ -126,10 +126,20 @@ func TestStartupV2WindowResetsOnRestart(t *testing.T) {
 		t.Fatalf("a service that restarts inside every stability window was called healthy: %s", why)
 	}
 
-	// The same stack, left alone, settles through the window.
+	// The same stack, left alone, settles through the window — and the
+	// window it settles through is the one re-armed by the LAST restart:
+	// answering healthy before a full window has passed since that restart
+	// is exactly the "window never re-arms" bug (this test's control; the
+	// crash-loop counter must not be the thing that catches it — one bump
+	// after the settle's own baseline stays far below that threshold).
+	bumpRestarts(t, double.StatePath(), id)
+	settleStart := time.Now()
 	verdict, why = d.awaitStackSettledPolicy(context.Background(), id, policy)
 	if verdict != settleHealthy {
 		t.Fatalf("a stable healthcheck-less v2 stack did not become ready: %s", why)
+	}
+	if elapsed := time.Since(settleStart); elapsed < v2StableWindow-time.Second {
+		t.Fatalf("healthy %s after the last restart: the stability window did not re-arm (one window must pass since it)", elapsed)
 	}
 }
 

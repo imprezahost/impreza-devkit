@@ -12,6 +12,63 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## Agent 0.6.28 — 2026-10-08
+
+- The `startup-health-v2` readiness window is now measured on the clock:
+  a service without a Docker healthcheck is ready only after a full window
+  has passed since the last restart the gate saw, and a single restart
+  followed by stability settles instead of timing out. A stack where any
+  service has no healthcheck watches the whole window, so a restarting
+  sidecar next to a healthy main service is no longer reported ready.
+- A failed git clone no longer takes down the running application's build
+  context: the repository is cloned into a staging directory and replaces
+  the previous context only after the clone and the pinned-commit checkout
+  both succeed.
+- Every Docker network the agent creates (the shared proxy network, or a
+  deployment's own network at `compose up`) gets the egress rules
+  immediately: the agent reapplies the v4, v6 and host baselines right
+  after creating it and fails the deploy when the reapply fails, instead of
+  leaving the new bridge without the SMTP and rate drops until the periodic
+  reconcile. Hosts where the baseline was never in force (for example
+  Docker running with `"iptables": false`) keep deploying as before.
+- The egress and host rules are scoped to the bridges Docker itself lists
+  instead of a `br+` wildcard, so a host bridge that is not Docker's (such
+  as a `br0` carrying the public interface) no longer receives the
+  container drops. When Docker does not answer, the last applied scope is
+  kept.
+- A deployment without a `compose.yaml` (never created, or removed by an
+  interrupted install) uninstalls cleanly, rolls back by removing its
+  containers by label without touching the data directory, and answers log
+  requests with an explicit no-containers note instead of an error.
+- Every response the agent reads from the control plane is size-capped
+  (4 MiB; a build-context download is capped at its declared size, at most
+  100 MB), so a misbehaving endpoint cannot exhaust the agent's memory with
+  an endless body. The Go SDK gains `MaxResponseBytes` and
+  `Client.GetRawLimit`.
+- Uptime probing covers the full target list: targets are fetched every
+  round and measured through a rotating window, so targets beyond the
+  first hundred of a vantage are probed instead of silently dropped
+  (`uptime-probe-v1`).
+- Agent-side support for features the platform switches on per server or
+  per deployment; nothing changes until the control plane uses them:
+  pull-request previews of untrusted code, built without network access
+  and run in an isolated onion-only sandbox (`preview-fork-sandbox-v1`,
+  announced only where controlled builds are enabled); a host inventory
+  that, on the control plane's request, reports a bounded allowlist of
+  host facts (operating system, kernels, package update candidates from the
+  local cache, the state of the agent, Docker and Tor services, the SSH
+  daemon's ports, login policy and host-key fingerprints, local
+  filesystems and the Docker, Tor and proxy versions) without reading logs,
+  environments or private keys (`host-inventory-v1`); and reserved
+  `/status/*` paths that serve the platform's public status page on the
+  app's own origins, including its onion address (`status-page-v1`).
+- The installer (`install.sh`) verifies the channel's signed release
+  manifest (the same Ed25519 chain `update.sh` checks) before downloading,
+  installs the version the manifest pins and records the update chain
+  state, and no longer pipes a remote script into a shell to install
+  Docker: it uses Docker's own package repositories on Debian, Ubuntu and
+  the RHEL family, and stops with a clear message elsewhere.
+
 ## Agent 0.6.27 — 2026-10-04
 
 - Ship the Shield v2 web application firewall behind the new

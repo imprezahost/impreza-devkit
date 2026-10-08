@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -32,7 +33,18 @@ func TestUpdateRequestValidation(t *testing.T) {
 	}
 }
 
+func relaxRootOwnershipForTest(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" || os.Geteuid() == 0 {
+		return
+	}
+	prev := rootOwnedDirectoryGate
+	rootOwnedDirectoryGate = false
+	t.Cleanup(func() { rootOwnedDirectoryGate = prev })
+}
+
 func TestStartRejectsChangedOrSymlinkedUpdater(t *testing.T) {
+	relaxRootOwnershipForTest(t)
 	state := t.TempDir()
 	id := "cmd_0123456789abcdef"
 	dir := filepath.Join(state, "upgrade-jobs", id)
@@ -73,6 +85,7 @@ func TestStartRejectsChangedOrSymlinkedUpdater(t *testing.T) {
 }
 
 func TestStartDoesNotRunWhenMetadataIsHostile(t *testing.T) {
+	relaxRootOwnershipForTest(t)
 	state := t.TempDir()
 	id := "cmd_0123456789abcdef"
 	dir := filepath.Join(state, "upgrade-jobs", id)

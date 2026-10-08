@@ -81,6 +81,18 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 				"docker compose up: %v\n%s\n%s", err, tail(out, 1536), failLogs,
 			))
 		}
+
+		// `compose up` creates the deployment's own bridge network —
+		// absent from the last egress enumeration. Reapply before the
+		// settle gate so the first seconds of the new stack already carry
+		// the SMTP/rate drops and the host chain; a failure rolls the
+		// replacement back (fail closed), it never leaves the bridge open.
+		egCtx, cancelEg := context.WithTimeout(ctx, 30*time.Second)
+		if err := d.reapplyEgress(egCtx, "stack network"); err != nil {
+			cancelEg()
+			return failStartup(err.Error())
+		}
+		cancelEg()
 	}
 
 	if p.Manifest.Runtime.TorEgress && d.Proxy != nil {
@@ -222,6 +234,7 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 				TLSDNSProvider: dnsProvider,
 				BasicAuth:      basicAuthFromPayload(r.BasicAuth),
 				Shield:         shieldFromPayload(r.Shield),
+				PlatformRoutes: platformRoutesFromPayload(r.PlatformRoutes),
 			})
 		}
 		applyCtx, cancelApply := context.WithTimeout(ctx, composeQueryTimeout)

@@ -91,6 +91,10 @@ type Status struct {
 	// whether the operator turned the half off.
 	Position string   `json:"position,omitempty"`
 	Ports    []string `json:"ports,omitempty"`
+	// The Docker bridge interfaces the per-iface rules were scoped
+	// to on the last successful apply. Docker-down reconciles reuse them
+	// (the ports pattern), so a daemon restart never flaps the chains.
+	Bridges  []string `json:"bridges,omitempty"`
 	Operator int      `json:"operator_exceptions,omitempty"`
 	Disabled bool     `json:"disabled,omitempty"`
 }
@@ -99,8 +103,10 @@ type Status struct {
 type commandRunner func(ctx context.Context, args ...string) ([]byte, error)
 
 // Rules returns the exact FORWARD chain content, in order. Resolver addresses
-// are validated /32 IPv4 hosts produced by ReadResolvers.
-func Rules(resolvers []string) [][]string {
+// are validated /32 IPv4 hosts produced by ReadResolvers. The per-interface
+// drops are scoped to the Docker bridge names the caller enumerated — never
+// a `br+` wildcard, which also matches host-owned bridges.
+func Rules(resolvers []string, bridges []string) [][]string {
 	rules := [][]string{
 		{"-m", "physdev", "--physdev-is-bridged", "-j", "RETURN"},
 		// Metadata is refused on every forwarded path, not only the default
@@ -127,7 +133,7 @@ func Rules(resolvers []string) [][]string {
 		[]string{"-p", "tcp", "-m", "conntrack", "--ctstate", "NEW", "-m", "multiport", "--dports", "25,465,587", "-j", "DROP"},
 		[]string{"-m", "conntrack", "--ctstate", "NEW", "-m", "hashlimit", "--hashlimit-above", rateLimit, "--hashlimit-burst", rateBurst, "--hashlimit-mode", "srcip", "--hashlimit-name", limitTable, "-j", "DROP"},
 	}
-	for _, iface := range []string{"docker0", "br+"} {
+	for _, iface := range bridges {
 		for _, rule := range blocked {
 			rules = append(rules, append([]string{"-i", iface}, rule...))
 		}
@@ -137,7 +143,7 @@ func Rules(resolvers []string) [][]string {
 
 // HostRules returns the host chain content with no exception (see host.go
 // for the exceptions and the placement of the jump).
-func HostRules() [][]string { return HostRulesFor("icmp", nil) }
+func HostRules(bridges []string) [][]string { return HostRulesFor("icmp", nil, bridges) }
 
 func realRunner(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "iptables", args...)
@@ -207,24 +213,29 @@ func reconcileChain(ctx context.Context, run commandRunner, chain, parent, label
 
 // apply reconciles the FORWARD chain only (the original v4 baseline shape,
 // preserved for compatibility with the recorded fingerprints).
-func apply(ctx context.Context, run commandRunner, stateDir string, resolvers []string) (Status, error) {
-	return reconcileChain(ctx, run, Chain, ParentChain, "egress", Rules(resolvers), len(resolvers), readStatus(stateDir))
+func apply(ctx context.Context, run commandRunner, stateDir string, resolvers []string, bridges []string) (Status, error) {
+	status, err := reconcileChain(ctx, run, Chain, ParentChain, "egress", Rules(resolvers, bridges), len(resolvers), readStatus(stateDir))
+	// Record the scope like apply6 and the host halves: Apply reads it back
+	// as the Docker-down fallback.
+	status.Bridges = bridges
+	return status, err
 }
 
 // Apply installs or verifies the v4 baseline (FORWARD and host INPUT) and
 // always records the outcome in <StateDir>/egress.json. A nil error means
 // both halves are verified in place.
 func Apply(ctx context.Context, stateDir string) error {
-	errForward := applyAll(ctx, realRunner, "/etc/resolv.conf", stateDir)
+	bridges := dockerBridgeInterfaces(ctx, realDocker, readStatus(stateDir).Bridges)
+	errForward := applyAll(ctx, realRunner, "/etc/resolv.conf", stateDir, bridges)
 	errHost := applyHostWith(ctx, hostFamily4(realRunner, realRestoreFor("iptables-restore")), stateDir, realDocker)
 	return errors.Join(errForward, errHost)
 }
 
-func applyAll(ctx context.Context, run commandRunner, resolvPath, stateDir string) error {
+func applyAll(ctx context.Context, run commandRunner, resolvPath, stateDir string, bridges []string) error {
 	resolvers, err := ReadResolvers(resolvPath)
 	var status Status
 	if err == nil {
-		status, err = apply(ctx, run, stateDir, resolvers)
+		status, err = apply(ctx, run, stateDir, resolvers, bridges)
 	}
 	if err != nil {
 		status.Applied = false

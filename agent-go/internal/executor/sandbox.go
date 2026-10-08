@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/proxy"
 	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 	"gopkg.in/yaml.v3"
 )
@@ -91,13 +92,13 @@ func applySandbox(composeYAML, deploymentID string, spec SandboxSpec) (string, e
 				return "", errors.New("sandbox refuses declared volumes (ephemeral runtime: tmpfs only)")
 			}
 		}
-	// Drop everything, then restore ONLY the classic daemon set — without
-	// CHOWN/SETUID/SETGID/DAC_OVERRIDE even stock images like nginx:alpine
-	// die at startup (chown on temp dirs, worker uid drop). The dangerous
-	// capabilities (SYS_ADMIN, NET_ADMIN, SYS_PTRACE, ...) stay dropped and
-	// no-new-privileges remains.
-	service["cap_drop"] = []string{"ALL"}
-	service["cap_add"] = []string{"CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE"}
+		// Drop everything, then restore ONLY the classic daemon set — without
+		// CHOWN/SETUID/SETGID/DAC_OVERRIDE even stock images like nginx:alpine
+		// die at startup (chown on temp dirs, worker uid drop). The dangerous
+		// capabilities (SYS_ADMIN, NET_ADMIN, SYS_PTRACE, ...) stay dropped and
+		// no-new-privileges remains.
+		service["cap_drop"] = []string{"ALL"}
+		service["cap_add"] = []string{"CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE"}
 		service["security_opt"] = []string{"no-new-privileges:true"}
 		service["read_only"] = true
 		// Read-only rootfs still needs the conventional writable paths:
@@ -124,7 +125,41 @@ func applySandbox(composeYAML, deploymentID string, spec SandboxSpec) (string, e
 		service["tmpfs"] = tmpfs
 		service["restart"] = "no" // ephemeral by contract
 		delete(service, "ports")  // ingress only via the managed reverse proxy
+		if spec.ForkPreview {
+			for _, key := range []string{"secrets", "configs", "extra_hosts", "env_file", "sysctls", "uts", "cgroup", "cgroup_parent", "use_api_socket"} {
+				if _, exists := service[key]; exists {
+					return "", fmt.Errorf("fork sandbox refuses service %s", key)
+				}
+			}
+			service["pids_limit"] = 128
+			service["networks"] = []string{"fork-internal"}
+			service["dns"] = []string{"127.0.0.1"} // no host DNS relay from untrusted runtime
+			if raw, exists := service["build"]; exists {
+				build, ok := raw.(map[string]any)
+				if !ok {
+					return "", errors.New("fork sandbox requires a reviewed build mapping")
+				}
+				for _, key := range []string{"secrets", "ssh", "entitlements", "additional_contexts", "extra_hosts", "privileged"} {
+					if _, exists := build[key]; exists {
+						return "", fmt.Errorf("fork sandbox refuses build %s", key)
+					}
+				}
+				if _, exists := build["args"]; exists {
+					return "", errors.New("fork sandbox refuses build arguments")
+				}
+				build["network"] = "none"
+				service["build"] = build
+			}
+		}
 		services[name] = service
+	}
+	if spec.ForkPreview {
+		for _, key := range []string{"secrets", "configs"} {
+			if _, exists := doc[key]; exists {
+				return "", fmt.Errorf("fork sandbox refuses %s", key)
+			}
+		}
+		doc["networks"] = map[string]any{"fork-internal": map[string]any{"external": true, "name": proxy.TorEgressNetworkName(deploymentID)}}
 	}
 	// Top-level named volumes are meaningless once binds are gone.
 	delete(doc, "volumes")

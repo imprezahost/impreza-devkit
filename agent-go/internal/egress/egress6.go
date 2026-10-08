@@ -32,7 +32,7 @@ import (
 )
 
 // Rules6 returns the exact v6 chain content, in order.
-func Rules6(resolvers6 []string) [][]string {
+func Rules6(resolvers6 []string, bridges []string) [][]string {
 	rules := [][]string{
 		{"-m", "physdev", "!", "--physdev-in", "+", "-j", "RETURN"},
 		{"-m", "physdev", "--physdev-is-bridged", "-j", "RETURN"},
@@ -101,13 +101,15 @@ func ip6tablesAvailable() bool {
 
 // apply6 mirrors apply() for the v6 family. The status shares the same file
 // with a v6 section so operators read one document.
-func apply6(ctx context.Context, run commandRunner, stateDir string, resolvers6 []string) (Status, error) {
-	return reconcileChain(ctx, run, Chain, ParentChain, "egress v6", Rules6(resolvers6), len(resolvers6), readStatus6(stateDir))
+func apply6(ctx context.Context, run commandRunner, stateDir string, resolvers6 []string, bridges []string) (Status, error) {
+	status, err := reconcileChain(ctx, run, Chain, ParentChain, "egress v6", Rules6(resolvers6, bridges), len(resolvers6), readStatus6(stateDir))
+	status.Bridges = bridges
+	return status, err
 }
 
 // HostRules6 is the v6 host chain with no exception; ICMPv6 carries NDP/RS
 // and must stay open for the bridge to work.
-func HostRules6() [][]string { return HostRulesFor("ipv6-icmp", nil) }
+func HostRules6(bridges []string) [][]string { return HostRulesFor("ipv6-icmp", nil, bridges) }
 
 // Apply6 installs or verifies the v6 baseline (FORWARD and host INPUT).
 // Unavailable ip6tables is recorded and returns nil (not an error): the v4
@@ -119,14 +121,15 @@ func Apply6(ctx context.Context, stateDir string) error {
 		errH := recordHostStatus6(stateDir, unavailable)
 		return errors.Join(errF, errH)
 	}
-	errForward := applyAll6(ctx, realRunner6, "/etc/resolv.conf", stateDir)
+	bridges := dockerBridgeInterfaces(ctx, realDocker, readStatus6(stateDir).Bridges)
+	errForward := applyAll6(ctx, realRunner6, "/etc/resolv.conf", stateDir, bridges)
 	errHost := applyHostWith(ctx, hostFamily6(realRunner6, realRestoreFor("ip6tables-restore")), stateDir, realDocker)
 	return errors.Join(errForward, errHost)
 }
 
-func applyAll6(ctx context.Context, run commandRunner, resolvPath, stateDir string) error {
+func applyAll6(ctx context.Context, run commandRunner, resolvPath, stateDir string, bridges []string) error {
 	resolvers6, _ := ReadResolvers6(resolvPath)
-	status, err := apply6(ctx, run, stateDir, resolvers6)
+	status, err := apply6(ctx, run, stateDir, resolvers6, bridges)
 	if err != nil {
 		status.Applied = false
 		status.Error = err.Error()

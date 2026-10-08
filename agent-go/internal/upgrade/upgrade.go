@@ -74,11 +74,20 @@ func jobDir(stateDir, commandID string) (string, error) {
 func realDirectory(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 ||
-		(runtime.GOOS == "linux" && (info.Mode().Perm()&0022 != 0 || !rootOwned(info))) {
+		(enforceRootOwnedDirectory() && (info.Mode().Perm()&0022 != 0 || !rootOwned(info))) {
 		return errors.New("agent update directory must be a real directory")
 	}
 	return nil
 }
+
+// The production agent runs as root and its update directories are
+// root-owned; the ownership half of the gate stays exactly that. Tests on
+// a non-root Linux box flip it off through this seam — the permission and
+// symlink halves still bite there, and nothing changes for the shipped
+// binary.
+var rootOwnedDirectoryGate = runtime.GOOS == "linux"
+
+func enforceRootOwnedDirectory() bool { return rootOwnedDirectoryGate }
 
 // Prepare stores only the updater bundled in this agent and a validated
 // channel/target. It never fetches or executes network content inside the
@@ -173,7 +182,7 @@ func start(ctx context.Context, stateDir, commandID string, execute runner) erro
 		path := filepath.Join(dir, name)
 		info, err := os.Lstat(path)
 		if err != nil || !info.Mode().IsRegular() || info.Size() != int64(len(expected)) ||
-			(runtime.GOOS == "linux" && (info.Mode().Perm()&0022 != 0 || !rootOwned(info))) {
+			(enforceRootOwnedDirectory() && (info.Mode().Perm()&0022 != 0 || !rootOwned(info))) {
 			return errors.New("prepared updater was changed")
 		}
 		actual, err := os.ReadFile(path)

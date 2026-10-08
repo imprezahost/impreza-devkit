@@ -243,10 +243,11 @@ func publishedPorts(ctx context.Context, docker dockerRunner) ([]string, error) 
 }
 
 // HostRulesFor renders the host chain for one family: per Docker bridge
-// name, established and ICMP return, then each exception, then DROP.
-func HostRulesFor(icmp string, exceptions []string) [][]string {
+// name (enumerated, never a `br+` wildcard), established and ICMP
+// return, then each exception, then DROP.
+func HostRulesFor(icmp string, exceptions []string, bridges []string) [][]string {
 	var rules [][]string
-	for _, iface := range []string{"docker0", "br+"} {
+	for _, iface := range bridges {
 		rules = append(rules,
 			[]string{"-i", iface, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"},
 			[]string{"-i", iface, "-p", icmp, "-j", "RETURN"},
@@ -351,8 +352,9 @@ func reconcileHost(ctx context.Context, fam hostFamily, stateDir string, docker 
 	if err != nil {
 		return prev, errors.New(fam.label + ": " + err.Error())
 	}
-	wanted := HostRulesFor(fam.icmp, exceptions)
-	status := Status{Rules: len(wanted), Wanted: fingerprint(wanted), Ports: published, Operator: len(policy.Allow), Position: "last"}
+	bridges := dockerBridgeInterfaces(ctx, docker, prev.Bridges)
+	wanted := HostRulesFor(fam.icmp, exceptions, bridges)
+	status := Status{Rules: len(wanted), Wanted: fingerprint(wanted), Ports: published, Operator: len(policy.Allow), Position: "last", Bridges: bridges}
 	if cerr == nil && last && prev.Applied && prev.Wanted == status.Wanted && prev.Fingerprint == sha256Sum(current) {
 		status.Applied, status.Fingerprint = true, prev.Fingerprint
 		fam.report(stateDir, prev, status, false)

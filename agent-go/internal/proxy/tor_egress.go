@@ -17,13 +17,14 @@ var torDeploymentID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,60}$`)
 func TorEgressNetworkName(id string) string { return "impreza-tor-" + id }
 
 type torNetwork struct {
+	ID         string
 	Name       string
 	Driver     string
 	Internal   bool
 	EnableIPv6 bool
 	Options    map[string]string
 	Labels     map[string]string
-	Containers map[string]struct{ Name string }
+	Containers map[string]struct{ Name, IPv4Address, IPv6Address string }
 }
 
 func inspectTorNetwork(ctx context.Context, id string) (*torNetwork, error) {
@@ -44,7 +45,7 @@ func inspectTorNetwork(ctx context.Context, id string) (*torNetwork, error) {
 	}
 	return n, nil
 }
-func EnsureTorEgressNetwork(ctx context.Context, id string) error {
+func EnsureTorEgressNetwork(ctx context.Context, id string, fork ...bool) error {
 	if !torDeploymentID.MatchString(id) {
 		return errors.New("invalid Tor network identity")
 	}
@@ -68,15 +69,24 @@ func EnsureTorEgressNetwork(ctx context.Context, id string) error {
 			exists = true
 		}
 	}
+	strictFork := len(fork) > 0 && fork[0]
 	if !exists {
-		_, err = exec.CommandContext(ctx, "docker", "network", "create", "--driver", "bridge", "--internal", "--ipv6",
+		args := []string{"network", "create", "--driver", "bridge", "--internal", "--ipv6",
 			"--opt", "com.docker.network.bridge.gateway_mode_ipv4=isolated", "--opt", "com.docker.network.bridge.gateway_mode_ipv6=isolated",
-			"--label", torNetworkLabel+"="+id, TorEgressNetworkName(id)).CombinedOutput()
+			"--label", torNetworkLabel + "=" + id}
+		if strictFork {
+			args = append(args, "--label", forkNetworkLabel+"=true")
+		}
+		args = append(args, TorEgressNetworkName(id))
+		_, err = exec.CommandContext(ctx, "docker", args...).CombinedOutput()
 		if err != nil {
 			return errors.New("Tor egress requires Docker isolated gateway support; no deployment started")
 		}
 	}
-	_, err = inspectTorNetwork(ctx, id)
+	n, err := inspectTorNetwork(ctx, id)
+	if err == nil && strictFork && n.Labels[forkNetworkLabel] != "true" {
+		return errors.New("existing preview network lacks fork isolation")
+	}
 	return err
 }
 func ConnectTorEgressIngress(ctx context.Context, id string) error {
@@ -86,11 +96,17 @@ func ConnectTorEgressIngress(ctx context.Context, id string) error {
 	}
 	for _, c := range n.Containers {
 		if c.Name == ContainerName {
+			if n.Labels[forkNetworkLabel] == "true" {
+				return ConfigureForkFirewall(ctx, id)
+			}
 			return nil
 		}
 	}
 	if err = exec.CommandContext(ctx, "docker", "network", "connect", n.Name, ContainerName).Run(); err != nil {
 		return errors.New("cannot connect managed ingress to isolated app")
+	}
+	if n.Labels[forkNetworkLabel] == "true" {
+		return ConfigureForkFirewall(ctx, id)
 	}
 	return nil
 }
@@ -106,7 +122,7 @@ func RemoveTorEgressNetwork(ctx context.Context, id string) error {
 		}
 	}
 	if !found {
-		return nil
+		return clearForkFirewall(ctx, id)
 	}
 	n, err := inspectTorNetwork(ctx, id)
 	if err != nil {
@@ -122,7 +138,7 @@ func RemoveTorEgressNetwork(ctx context.Context, id string) error {
 	if err = exec.CommandContext(ctx, "docker", "network", "rm", n.Name).Run(); err != nil {
 		return errors.New("Tor network still has endpoints; manual review required")
 	}
-	return nil
+	return clearForkFirewall(ctx, id)
 }
 func (c *Caddy) reconcileTorEgressNetworks(ctx context.Context) error {
 	out, err := exec.CommandContext(ctx, "docker", "network", "ls", "--filter", "label="+torNetworkLabel, "--format", "{{.Name}}").Output()

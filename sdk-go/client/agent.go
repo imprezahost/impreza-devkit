@@ -175,9 +175,12 @@ func Bootstrap(ctx context.Context, token string, req BootstrapRequest, opts Boo
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read bootstrap response: %w", err)
+	}
+	if len(raw) > MaxResponseBytes {
+		return nil, fmt.Errorf("bootstrap response exceeds the %d MiB ceiling", MaxResponseBytes>>20)
 	}
 
 	var env envelope
@@ -700,6 +703,7 @@ type RuntimeCounts struct {
 
 // AgentReport is the heartbeat body POSTed every ~30s.
 type AgentReport struct {
+	InventoryProtocol  string              `json:"inventory_protocol,omitempty"`
 	Runtime            *RuntimeSnapshot    `json:"runtime,omitempty"`
 	ReportedAt         time.Time           `json:"reported_at"`
 	Version            string              `json:"version,omitempty"`

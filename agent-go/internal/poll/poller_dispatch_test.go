@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/config"
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/executor"
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/probeguard"
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/proxy"
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/upgrade"
 	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 	"io"
 	"log/slog"
@@ -39,7 +42,7 @@ func TestPollReportsUnsupportedAndContinues(t *testing.T) {
 				w.WriteHeader(400)
 				return
 			}
-			expected := []string{executor.TorEgressProtocol, executor.TorDataOwnerProtocol, "onion-auth-v1", "onion-profile-v1", "onion-deploy-profile-v1", "onion-custody-v1", "onion-purge-v1", "onion-private-preview-v1", "startup-health-v1", "startup-health-v2", "deploy-cancel-v1", "build-secrets-v1", "compose-source-files-v1", sdkclient.ServiceBindingProtocol, sdkclient.ServiceBindingRetirementProtocol, sdkclient.ServiceBindingGenerationProtocol, sdkclient.ServiceBindingGenerationRetirementProtocol, sdkclient.ServiceBindingRotationProtocol, sdkclient.ServiceBindingBackupProtocol, sdkclient.TrafficSwitchProtocol, sdkclient.PreviewBasicAuthProtocol, sdkclient.ServiceBindingRestoreProtocol, sdkclient.DeploymentProgressProtocol, sdkclient.HostFailoverFenceProtocol, sdkclient.DomainHandoverProtocol, sdkclient.OnionTransferProtocol, sdkclient.HostFailoverReleaseProtocol, sdkclient.RestoreQuiesceProtocol, sdkclient.MysqlServiceBindingGenerationProtocol, sdkclient.MysqlServiceBindingGenerationRetirementProtocol, sdkclient.MysqlServiceBindingRotationProtocol, sdkclient.MysqlServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingRestoreProtocol, sdkclient.ShieldProtocol, sdkclient.ProxyMetricsProtocol, sdkclient.SandboxProtocol, sdkclient.ReadySwapProtocol}
+			expected := []string{proxy.StatusPageProtocol, sdkclient.HostInventoryProtocol, executor.TorEgressProtocol, executor.TorDataOwnerProtocol, "onion-auth-v1", "onion-profile-v1", "onion-deploy-profile-v1", "onion-custody-v1", "onion-purge-v1", "onion-private-preview-v1", "startup-health-v1", "startup-health-v2", "deploy-cancel-v1", "build-secrets-v1", "compose-source-files-v1", sdkclient.ServiceBindingProtocol, sdkclient.ServiceBindingRetirementProtocol, sdkclient.ServiceBindingGenerationProtocol, sdkclient.ServiceBindingGenerationRetirementProtocol, sdkclient.ServiceBindingRotationProtocol, sdkclient.ServiceBindingBackupProtocol, sdkclient.TrafficSwitchProtocol, sdkclient.PreviewBasicAuthProtocol, sdkclient.ServiceBindingRestoreProtocol, sdkclient.DeploymentProgressProtocol, sdkclient.HostFailoverFenceProtocol, sdkclient.DomainHandoverProtocol, sdkclient.OnionTransferProtocol, sdkclient.HostFailoverReleaseProtocol, sdkclient.RestoreQuiesceProtocol, sdkclient.MysqlServiceBindingGenerationProtocol, sdkclient.MysqlServiceBindingGenerationRetirementProtocol, sdkclient.MysqlServiceBindingRotationProtocol, sdkclient.MysqlServiceBindingBackupProtocol, sdkclient.MysqlServiceBindingRestoreProtocol, sdkclient.ShieldProtocol, sdkclient.ProxyMetricsProtocol, sdkclient.SandboxProtocol, sdkclient.ReadySwapProtocol}
 			seen := map[string]bool{}
 			for _, capability := range request.Capabilities {
 				if seen[capability] {
@@ -56,10 +59,26 @@ func TestPollReportsUnsupportedAndContinues(t *testing.T) {
 					return
 				}
 			}
-			if len(seen) != len(expected) {
-				t.Error("unexpected capability")
-				w.WriteHeader(400)
-				return
+			// These ride the announcement only when the host allows
+			// them (the upgrade capability needs Linux+root+tools; ingress
+			// and the shield family depend on the host image; the uptime
+			// probe rides while a vantage loop is live). Tolerated as
+			// extras, never required — anything else is still refused, so a
+			// typo or an unknown protocol cannot slip through silently.
+			environmental := map[string]bool{
+				upgrade.Protocol: true, sdkclient.IngressProtocol: true, "shield-v2": true,
+				sdkclient.ShieldControlsProtocol: true, probeguard.Protocol: true,
+			}
+			expectedSet := make(map[string]bool, len(expected))
+			for _, capability := range expected {
+				expectedSet[capability] = true
+			}
+			for capability := range seen {
+				if !expectedSet[capability] && !environmental[capability] {
+					t.Error("unexpected capability: " + capability)
+					w.WriteHeader(400)
+					return
+				}
 			}
 			index := int(next.Add(1)) - 1
 			if index >= len(kinds) {

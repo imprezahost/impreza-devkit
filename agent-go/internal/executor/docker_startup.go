@@ -91,6 +91,22 @@ func hasHealthcheck(states []containerState) bool {
 	return false
 }
 
+// everyServiceHasHealthcheck reports whether each service in the set
+// declares one. The v2 stability window applies to any stack where some
+// service does not: its readiness cannot be confirmed by a health probe,
+// only by surviving the window without a restart.
+func everyServiceHasHealthcheck(states []containerState) bool {
+	if len(states) == 0 {
+		return false
+	}
+	for _, s := range states {
+		if s.Health == "" {
+			return false
+		}
+	}
+	return true
+}
+
 func startupStatesOKProtocol(states []containerState, required, v2 bool) bool {
 	if len(states) == 0 {
 		return false

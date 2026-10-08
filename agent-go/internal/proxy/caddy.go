@@ -109,6 +109,32 @@ type Route struct {
 	// Shield policy (profile + mode) onto both the clearnet and onion site
 	// blocks. Nil means profile off — no directives.
 	Shield *ShieldConfig
+	// PlatformRoutes (capability status-page-v1) maps reserved path
+	// prefixes onto PLATFORM pages served by the control plane's public
+	// host — today the opt-in public status page, reachable through the
+	// app's own .onion so a Tor-only visitor never touches the clearnet.
+	// Rendered as `handle` blocks BEFORE the app's catch-all in BOTH the
+	// clearnet and onion site blocks; nil or empty renders exactly what
+	// today's agent renders (old servers never send the field).
+	PlatformRoutes []PlatformRoute
+}
+
+// StatusPageProtocol is the poll capability an agent must announce before
+// the control plane sends it PlatformRoutes (the reserved /status/* path on
+// the app's own origins). Announced unconditionally: the SERVER decides per
+// deployment (opt-in + onion) whether to use it.
+const StatusPageProtocol = "status-page-v1"
+
+// PlatformRoute is one reserved path prefix served by the platform itself.
+type PlatformRoute struct {
+	// Prefix starts with "/" and carries no wildcard — the renderer adds
+	// the matcher. Validated on write; an invalid entry is refused, never
+	// silently dropped (a dropped entry would hand the platform's path to
+	// the APP instead).
+	Prefix string
+	// Upstream is the absolute https:// base the prefix proxies to (the
+	// control plane's public host). Caddy verifies TLS with system roots.
+	Upstream string
 }
 
 // BasicAuth is one HTTP Basic credential gate for a route.
@@ -555,6 +581,11 @@ func (c *Caddy) ApplyDeploymentRoutes(ctx context.Context, deploymentID string, 
 			}
 			if err := r.Shield.validate(); err != nil {
 				return fmt.Errorf("route %s: %w", r.Hostname+r.OnionAddr, err)
+			}
+			for _, pr := range r.PlatformRoutes {
+				if err := pr.validate(); err != nil {
+					return fmt.Errorf("route %s: %w", r.Hostname+r.OnionAddr, err)
+				}
 			}
 		}
 		body := renderFragment(deploymentID, routes)
@@ -1006,6 +1037,7 @@ func renderFragment(deploymentID string, routes []Route) string {
 			if r.OnionAddr != "" {
 				fmt.Fprintf(&sb, "  header Onion-Location \"http://%s/\"\n", r.OnionAddr)
 			}
+			writePlatformRoutes(&sb, r.PlatformRoutes)
 			fmt.Fprintf(&sb, "  reverse_proxy %s\n", r.Upstream)
 			fmt.Fprintf(&sb, "}\n")
 		}
@@ -1021,6 +1053,7 @@ func renderFragment(deploymentID string, routes []Route) string {
 			// No Secure cookie attribute on plain-HTTP onion origins.
 			writeShieldDirectives(&sb, deploymentID, r.Shield, false, true)
 			writeProxyMetrics(&sb, deploymentID)
+			writePlatformRoutes(&sb, r.PlatformRoutes)
 			fmt.Fprintf(&sb, "  reverse_proxy %s\n", r.Upstream)
 			fmt.Fprintf(&sb, "}\n")
 		}
@@ -1030,6 +1063,37 @@ func renderFragment(deploymentID string, routes []Route) string {
 
 // writeBasicAuth emits the gate for a protected route. Validated upstream
 // (ApplyDeploymentRoutes), so this only ever writes a safe bcrypt line.
+// writePlatformRoutes renders the reserved platform path prefixes as
+// mutually exclusive handle blocks ahead of the app's catch-all
+// reverse_proxy. The prefix is validated by the caller (ApplyDeploymentRoutes);
+// an invalid entry would have failed the write long before rendering.
+// validate refuses anything the renderer would misread: the prefix must be
+// an absolute path without a wildcard, and the upstream must be an absolute
+// http(s) base with NO path — Caddy would otherwise prefix-rewrite every
+// request. The value is always server-chosen (the platform's own host),
+// never customer input; http is allowed for the fixture control planes.
+func (pr PlatformRoute) validate() error {
+	if !strings.HasPrefix(pr.Prefix, "/") || strings.ContainsAny(pr.Prefix, " *?") {
+		return fmt.Errorf("platform route prefix %q must be an absolute path without wildcards", pr.Prefix)
+	}
+	rest := strings.TrimPrefix(strings.TrimPrefix(pr.Upstream, "https://"), "http://")
+	if rest == pr.Upstream || rest == "" || strings.ContainsAny(pr.Upstream, " ") || strings.Contains(rest, "/") {
+		return fmt.Errorf("platform route upstream %q must be an http(s) base without a path", pr.Upstream)
+	}
+	return nil
+}
+
+func writePlatformRoutes(sb *strings.Builder, routes []PlatformRoute) {
+	for _, pr := range routes {
+		if pr.Prefix == "" || pr.Upstream == "" {
+			continue
+		}
+		fmt.Fprintf(sb, "  handle %s/* {\n", strings.TrimSuffix(pr.Prefix, "/"))
+		sb.WriteString("    reverse_proxy " + pr.Upstream + "\n")
+		sb.WriteString("  }\n")
+	}
+}
+
 func writeBasicAuth(sb *strings.Builder, b *BasicAuth) {
 	if b == nil {
 		return
