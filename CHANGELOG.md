@@ -12,6 +12,12 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+- Go SDK: a client for reviewed jurisdiction failover — pair a cold standby, confirm the copied
+  backup, prepare/read/apply a failover review, retry target activation, fail back, and run
+  standby drills (`PlatformPairColdStandby`, `PlatformPrepareFailover`, `PlatformApplyFailover`,
+  `PlatformPrepareFailback`, `PlatformRunFailoverDrill` and the matching reads). Every apply takes
+  the exact review digest and an explicit confirmation.
+
 ## Agent 0.6.29 — 2026-10-09
 
 - The installer works again on a box without Docker: sourcing the OS
