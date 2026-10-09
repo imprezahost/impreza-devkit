@@ -115,6 +115,8 @@ func HostRules6(bridges []string) [][]string { return HostRulesFor("ipv6-icmp", 
 // Unavailable ip6tables is recorded and returns nil (not an error): the v4
 // baseline governs and the status documents the v6 gap.
 func Apply6(ctx context.Context, stateDir string) error {
+	applyMu.Lock()
+	defer applyMu.Unlock()
 	if !ip6tablesAvailable() {
 		unavailable := Status{Applied: false, Error: "ip6tables or DOCKER-USER (v6) unavailable on this host"}
 		errF := recordStatus6(stateDir, unavailable)

@@ -45,6 +45,14 @@ func TestInstallCarriesTheManifestContract(t *testing.T) {
 	if bytes.Contains(InstallScript, []byte("\r\n")) {
 		t.Error("install.sh carries CRLF line endings")
 	}
+	// os-release defines VERSION; sourcing it in the
+	// installer's own shell replaced VERSION="latest" and every fresh install
+	// on Debian/Ubuntu without Docker died with "invalid pinned version".
+	for _, line := range strings.Split(string(InstallScript), "\n") {
+		if strings.TrimSpace(line) == ". /etc/os-release" {
+			t.Error("install.sh sources /etc/os-release in its own shell (overwrites VERSION)")
+		}
+	}
 	// The unpinned path must not fall back to the sibling .sha256: only the
 	// explicitly pinned path may (update.sh's documented legacy trade).
 	unpinned := string(InstallScript[strings.Index(string(InstallScript), "MANIFEST_MODE=0"):])

@@ -12,6 +12,26 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## Agent 0.6.29 — 2026-10-09
+
+- The installer works again on a box without Docker: sourcing the OS
+  release inside the installer overwrote the requested agent version with
+  the operating system's version string, and a fresh install died with
+  "invalid pinned version". The OS fields are now read without touching
+  the installer's variables.
+- The updater's post-update health watch runs 30 seconds and fails on any
+  restart of the agent service, not only on a dead unit: a candidate binary
+  that crashes after the old 10-second window — or starts crash-looping at
+  any point inside the window — is rolled back to the previous version
+  instead of being adopted and left looping. Known limit: a candidate that
+  first dies after the 30-second window is still adopted.
+- Reapplications of the network egress baseline — the periodic reconcile,
+  the firewalld reload and the deployment path that creates or reuses the
+  proxy network — are serialized inside the agent. None of them can tear
+  down the iptables rules another apply just installed, so a deployment no
+  longer races the reconcile into a window where a Docker bridge has no
+  egress drops.
+
 ## Agent 0.6.28 — 2026-10-08
 
 - The `startup-health-v2` readiness window is now measured on the clock:

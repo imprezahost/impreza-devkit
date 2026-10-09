@@ -23,6 +23,11 @@ func TestEmbeddedUpdateCarriesThePublishedGuards(t *testing.T) {
 		{">>> manifest-verify", "the manifest verifier block markers"},
 		{"impreza-agent-ingress.service", "the ingress boot unit installation"},
 		{"systemctl enable impreza-agent-ingress.service", "enabling the ingress boot unit"},
+		// The post-update health watch must stay the 30 s window that fails
+		// on any restart: shrinking the window or watching only MainPID
+		// readopts a crash-looping candidate (the 15 s probe).
+		{"RESTARTS=$(systemctl show impreza-agent.service -p NRestarts --value)", "the NRestarts baseline of the health watch"},
+		{"while [ \"$count\" -lt 30 ]; do", "the 30-second health watch window"},
 	} {
 		if !bytes.Contains(UpdateScript, []byte(pin.needle)) {
 			t.Errorf("the embedded update.sh lost %s (%q is absent)", pin.what, pin.needle)

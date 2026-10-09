@@ -225,6 +225,8 @@ func apply(ctx context.Context, run commandRunner, stateDir string, resolvers []
 // always records the outcome in <StateDir>/egress.json. A nil error means
 // both halves are verified in place.
 func Apply(ctx context.Context, stateDir string) error {
+	applyMu.Lock()
+	defer applyMu.Unlock()
 	bridges := dockerBridgeInterfaces(ctx, realDocker, readStatus(stateDir).Bridges)
 	errForward := applyAll(ctx, realRunner, "/etc/resolv.conf", stateDir, bridges)
 	errHost := applyHostWith(ctx, hostFamily4(realRunner, realRestoreFor("iptables-restore")), stateDir, realDocker)

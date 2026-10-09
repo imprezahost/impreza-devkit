@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -117,9 +116,9 @@ func runRun(cmd *cobra.Command, _ []string) error {
 	// minute: a port a new deployment publishes gets its hairpin
 	// exception, and the host jump returns to the end of INPUT after a
 	// firewall manager appended to it (ufw enable), within a minute.
-	// egressMu serializes the egress applies (the ticker and the firewalld
-	// reload series); the ingress manager has its own state lock.
-	var egressMu sync.Mutex
+	// The applies are serialized by the egress package itself
+	// (egress.applyMu), which also covers the executor's create-a-network
+	// reapply — a caller-side lock could never reach.
 	go func() {
 		var last4, last6 string
 		ticker := time.NewTicker(time.Minute)
@@ -131,9 +130,7 @@ func runRun(cmd *cobra.Command, _ []string) error {
 			case <-ticker.C:
 				ctx, cancel := context.WithTimeout(cmd.Context(), 20*time.Second)
 				// Warn when the failure changes, not once a minute.
-				egressMu.Lock()
 				err4, err6 := egress.Apply(ctx, stateDir), egress.Apply6(ctx, stateDir)
-				egressMu.Unlock()
 				if msg := errText(err4); msg != "" && msg != last4 {
 					log.Warn("egress baseline reconcile failed; previous rules remain in force", "err", err4)
 				}
@@ -167,8 +164,6 @@ func runRun(cmd *cobra.Command, _ []string) error {
 		reconcileIngress()
 		ctx, cancel := context.WithTimeout(cmd.Context(), 20*time.Second)
 		defer cancel()
-		egressMu.Lock()
-		defer egressMu.Unlock()
 		_ = egress.Apply(ctx, stateDir)
 		_ = egress.Apply6(ctx, stateDir)
 	})

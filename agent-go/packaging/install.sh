@@ -109,21 +109,24 @@ install_docker() {
             # get Docker's own apt repository (the same setup the RHEL
             # branch does with dnf); anything else stops here instead of
             # executing unverified bytes from the network.
-            . /etc/os-release
-            case "$ID" in
+            # Read the fields in subshells: sourcing os-release here would
+            # overwrite VERSION (the agent version to install) with the
+            # distribution's version string.
+            _cn=$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_CODENAME:-}")
+            case "$_id" in
                 debian|ubuntu)
                     export DEBIAN_FRONTEND=noninteractive
                     apt-get -o DPkg::Lock::Timeout=300 update -qq || true
                     apt-get -o DPkg::Lock::Timeout=300 install -y -qq ca-certificates curl gnupg || return 1
                     install -m 0755 -d /etc/apt/keyrings
-                    curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc || return 1
+                    curl -fsSL "https://download.docker.com/linux/$_id/gpg" -o /etc/apt/keyrings/docker.asc || return 1
                     chmod a+r /etc/apt/keyrings/docker.asc
-                    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID $VERSION_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+                    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$_id $_cn stable" > /etc/apt/sources.list.d/docker.list
                     apt-get -o DPkg::Lock::Timeout=300 update -qq || return 1
                     apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
                     ;;
                 *)
-                    echo "No Docker packages for this distribution: ID=$ID (install Docker yourself and re-run with IMPREZA_AGENT_SKIP_DOCKER=1)" >&2
+                    echo "No Docker packages for this distribution: ID=$_id (install Docker yourself and re-run with IMPREZA_AGENT_SKIP_DOCKER=1)" >&2
                     return 1
                     ;;
             esac
