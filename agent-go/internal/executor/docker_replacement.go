@@ -235,6 +235,7 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 				BasicAuth:      basicAuthFromPayload(r.BasicAuth),
 				Shield:         shieldFromPayload(r.Shield),
 				PlatformRoutes: platformRoutesFromPayload(r.PlatformRoutes),
+				Swap:           swapSpecFor(p, upstream),
 			})
 		}
 		applyCtx, cancelApply := context.WithTimeout(ctx, composeQueryTimeout)

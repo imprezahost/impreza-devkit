@@ -109,9 +109,9 @@ install_docker() {
             # get Docker's own apt repository (the same setup the RHEL
             # branch does with dnf); anything else stops here instead of
             # executing unverified bytes from the network.
-            # Read the fields in subshells: sourcing os-release here would
-            # overwrite VERSION (the agent version to install) with the
-            # distribution's version string.
+            # Read the fields through subshells: sourcing os-release in
+            # this shell overwrites VERSION ("24.04.5 LTS ..."), and the
+            # install then dies with "invalid pinned version".
             _cn=$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_CODENAME:-}")
             case "$_id" in
                 debian|ubuntu)
@@ -171,10 +171,14 @@ trap 'rm -rf "$TMP"' EXIT
 
 # fetch_status mirrors update.sh: https-only for network origins, plain
 # file copy for distributor-local trees (used by the release tests).
+# fetch_status URL DEST [MAX_SECONDS]: the small files (manifest, checksum)
+# keep the 60 s ceiling; the agent binary passes 180, the same ceiling
+# update.sh's download() gives it, so a slow link that finishes the ~10 MB
+# binary in over a minute still installs.
 fetch_status() {
     case "$1" in
         http://*|https://*)
-            curl --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time 60 -w '%{http_code}' -A "${IMPREZA_UA:-impreza-agent-installer/1.0}" "$1" -o "$2" 2>/dev/null || printf '000'
+            curl --silent --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 15 --max-time "${3:-60}" -w '%{http_code}' -A "${IMPREZA_UA:-impreza-agent-installer/1.0}" "$1" -o "$2" 2>/dev/null || printf '000'
         ;;
         *)
             if [ -f "$1" ]; then cp -- "$1" "$2"; printf '200'; else printf '404'; fi
@@ -530,7 +534,11 @@ say "downloading impreza-agent ($CHANNEL/$VERSION, linux-$ARCH)"
 # prelude exports IMPREZA_AGENT_USER_AGENT; if absent (manual curl|sh
 # from a customer SSH session) we fall back to a sensible default.
 IMPREZA_UA="${IMPREZA_AGENT_USER_AGENT:-impreza-agent-installer/1.0 (https://impreza.host)}"
-if ! curl -fsSL -A "$IMPREZA_UA" -o "$TMP/impreza-agent" "$BINARY_URL"; then
+# The binary rides the same fetch_status as the manifest: https-only for
+# network origins (a redirect cannot downgrade the transfer) and a plain
+# file copy for distributor-local trees, which the raw curl did not
+# support (it failed with "No host part in the URL").
+if [ "$(fetch_status "$BINARY_URL" "$TMP/impreza-agent" 180)" != "200" ]; then
     die "download failed: $BINARY_URL"
 fi
 if [ "$MANIFEST_MODE" = 1 ]; then
@@ -541,7 +549,7 @@ if [ "$MANIFEST_MODE" = 1 ]; then
     record_state
     say "verified signed manifest: version $MANIFEST_VERSION, sequence $MANIFEST_SEQ"
 else
-    if ! curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' -o "$TMP/checksum" "$BINARY_URL.sha256"; then
+    if [ "$(fetch_status "$BINARY_URL.sha256" "$TMP/checksum")" != "200" ]; then
         die "release checksum download failed"
     fi
     HASH=$(cat "$TMP/checksum")
@@ -630,8 +638,41 @@ ReadWritePaths=/var/lib/impreza-agent
 WantedBy=multi-user.target docker.service
 UNIT
 
+# The ingress boot unit (same shape the updater installs on updates):
+# render the stored allowlists before Docker publishes ports. The
+# ConditionPathExists gate keeps it a no-op until ingress.json exists.
+cat >/etc/systemd/system/impreza-agent-ingress.service <<'UNIT'
+[Unit]
+Description=Impreza ingress allowlists (restored before Docker publishes ports)
+Documentation=https://docs.imprezahost.com/agent
+# Render the stored per-deployment allowlists before Docker starts the
+# containers, so no restricted port is reachable in the boot window, and
+# again before every Docker (re)start. After the host firewall managers so
+# their startup does not reorder or flush the rules afterwards. Ordering
+# only: a failure here never blocks Docker; the agent retries and reports.
+DefaultDependencies=no
+After=local-fs.target firewalld.service ufw.service
+Before=docker.service
+ConditionPathExists=/var/lib/impreza-agent/ingress.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/impreza-agent ingress restore
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/impreza-agent
+
+[Install]
+WantedBy=multi-user.target docker.service
+UNIT
 systemctl daemon-reload
-systemctl enable impreza-agent-ingress.service >/dev/null 2>&1 || true
+if ! systemctl enable impreza-agent-ingress.service >/dev/null 2>&1; then
+    say "WARNING: the ingress boot unit could not be enabled; the allowlists stay unprotected in the boot window until it is. Repair: systemctl enable impreza-agent-ingress.service"
+fi
 
 # ─── Bootstrap ──────────────────────────────────────────────────────────
 # Idempotent: when /etc/impreza-agent/config.toml already exists, we're

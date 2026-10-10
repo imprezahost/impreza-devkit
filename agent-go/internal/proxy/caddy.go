@@ -117,6 +117,63 @@ type Route struct {
 	// clearnet and onion site blocks; nil or empty renders exactly what
 	// today's agent renders (old servers never send the field).
 	PlatformRoutes []PlatformRoute
+	// Swap turns this route's reverse_proxy into a standby pair:
+	// the serving container and the `-app-next` slot, `lb_policy first`
+	// and an active health check on the readiness path. A ready swap then
+	// moves traffic by container lifecycle — the new copy is made and
+	// proven before the old one stops — with no Caddyfile change and no
+	// reload: every reload that changed the route killed the request
+	// accepted inside the server-swap window. Nil renders the single
+	// upstream exactly as before.
+	Swap *SwapSpec
+}
+
+// SwapSpec is the standby-pair form of one route. The peer port
+// must match the route's upstream port, and the upstream must be the
+// deployment's canonical app container — the swap only applies to it.
+type SwapSpec struct {
+	// Peer is the standby upstream "container:port" (the -app-next slot).
+	Peer string
+	// Path is the readiness path Caddy polls. Validated like the swap
+	// policy's path: absolute, no "..", bounded length.
+	Path string
+	// StatusClass is the traffic gate Caddy applies ("2xx", "3xx"...):
+	// the class of the policy's minimum accepted status. Caddy's
+	// health_status takes exactly one class; the swap's authoritative
+	// readiness proof keeps using the policy's full range.
+	StatusClass string
+}
+
+var (
+	swapPathRe      = regexp.MustCompile(`^/[A-Za-z0-9._~!$&'()*+,;=:@/%-]{0,255}$`)
+	swapClassRe     = regexp.MustCompile(`^[1-5]xx$`)
+	swapPeerShapeRe = regexp.MustCompile(`^dpl_[A-Za-z0-9_-]{1,40}-app-next:[0-9]{1,5}$`)
+)
+
+// validateSwap refuses a malformed pair instead of emitting a fragment
+// `caddy reload` would reject for every deployment on the box.
+func validateSwap(deploymentID string, r Route) error {
+	if r.Swap == nil {
+		return nil
+	}
+	upstreamHost, upstreamPort, ok := strings.Cut(r.Upstream, ":")
+	if !ok || upstreamHost != deploymentID+"-app" {
+		return fmt.Errorf("swap peer: the route upstream must be the deployment's app container")
+	}
+	peerHost, peerPort, ok := strings.Cut(r.Swap.Peer, ":")
+	if !ok || !swapPeerShapeRe.MatchString(r.Swap.Peer) || peerHost != deploymentID+"-app-next" {
+		return fmt.Errorf("swap peer %q is not the deployment's standby container", r.Swap.Peer)
+	}
+	if peerPort != upstreamPort {
+		return fmt.Errorf("swap peer port must match the upstream port")
+	}
+	if !swapPathRe.MatchString(r.Swap.Path) || strings.Contains(r.Swap.Path, "..") {
+		return fmt.Errorf("swap readiness path is not safe")
+	}
+	if !swapClassRe.MatchString(r.Swap.StatusClass) {
+		return fmt.Errorf("swap status class must be 1xx-5xx")
+	}
+	return nil
 }
 
 // StatusPageProtocol is the poll capability an agent must announce before
@@ -587,6 +644,9 @@ func (c *Caddy) ApplyDeploymentRoutes(ctx context.Context, deploymentID string, 
 					return fmt.Errorf("route %s: %w", r.Hostname+r.OnionAddr, err)
 				}
 			}
+			if err := validateSwap(deploymentID, r); err != nil {
+				return fmt.Errorf("route %s: %w", r.Hostname+r.OnionAddr, err)
+			}
 		}
 		body := renderFragment(deploymentID, routes)
 		if err := writeSwitchFile(fragPath, []byte(body)); err != nil {
@@ -1038,7 +1098,7 @@ func renderFragment(deploymentID string, routes []Route) string {
 				fmt.Fprintf(&sb, "  header Onion-Location \"http://%s/\"\n", r.OnionAddr)
 			}
 			writePlatformRoutes(&sb, r.PlatformRoutes)
-			fmt.Fprintf(&sb, "  reverse_proxy %s\n", r.Upstream)
+			writeReverseProxy(&sb, r)
 			fmt.Fprintf(&sb, "}\n")
 		}
 
@@ -1054,11 +1114,49 @@ func renderFragment(deploymentID string, routes []Route) string {
 			writeShieldDirectives(&sb, deploymentID, r.Shield, false, true)
 			writeProxyMetrics(&sb, deploymentID)
 			writePlatformRoutes(&sb, r.PlatformRoutes)
-			fmt.Fprintf(&sb, "  reverse_proxy %s\n", r.Upstream)
+			writeReverseProxy(&sb, r)
 			fmt.Fprintf(&sb, "}\n")
 		}
 	}
 	return sb.String()
+}
+
+// writeReverseProxy emits the route's upstream line — the single form,
+// or the standby pair: both slots in the pool, `lb_policy first`
+// (the app slot is preferred while it passes the health check) and an
+// active check on the readiness path so Caddy itself keeps traffic off
+// an unready upstream. The pair is what lets a ready swap flip traffic
+// by starting/stopping containers with the Caddyfile byte-identical.
+func writeReverseProxy(sb *strings.Builder, r Route) {
+	if r.Swap == nil {
+		fmt.Fprintf(sb, "  reverse_proxy %s\n", r.Upstream)
+		return
+	}
+	for _, line := range standbyPairLines(r.Upstream, *r.Swap) {
+		sb.WriteString(line)
+		sb.WriteString("\n")
+	}
+}
+
+// standbyPairLines renders the standby-pair reverse_proxy block. Shared by the
+// fragment renderer and EnableSwapPeer's surgical upgrade so both emit
+// byte-identical blocks.
+func standbyPairLines(upstream string, spec SwapSpec) []string {
+	return []string{
+		"  reverse_proxy " + upstream + " " + spec.Peer + " {",
+		"    lb_policy first",
+		// A stopped slot is benched by the health check within its interval;
+		// until then, dials to it are refused and MUST be retried on the
+		// peer inside the same request — without this window Caddy answers
+		// 502 for the requests that land in that gap.
+		"    lb_try_duration 3s",
+		"    lb_try_interval 250ms",
+		"    health_uri " + spec.Path,
+		"    health_status " + spec.StatusClass,
+		"    health_interval 500ms",
+		"    health_timeout 2s",
+		"  }",
+	}
 }
 
 // writeBasicAuth emits the gate for a protected route. Validated upstream

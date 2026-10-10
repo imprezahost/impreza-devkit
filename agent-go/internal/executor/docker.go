@@ -1899,6 +1899,10 @@ func (d *Docker) updateRoutes(ctx context.Context, cmd *sdkclient.PollCommand) s
 			cancelRun()
 		}
 
+		// A route update rewrites the fragment without a swap policy
+		// in the payload; carry the existing standby pair over so the
+		// rewrite does not downgrade the deployment to the reload form.
+		carried, _ := d.Proxy.SwapSpecOf(p.DeploymentID)
 		routes := make([]proxy.Route, 0, len(p.Routes))
 		for _, r := range p.Routes {
 			upstream := r.Upstream
@@ -1929,6 +1933,7 @@ func (d *Docker) updateRoutes(ctx context.Context, cmd *sdkclient.PollCommand) s
 				BasicAuth:      basicAuthFromPayload(r.BasicAuth),
 				Shield:         shieldFromPayload(r.Shield),
 				PlatformRoutes: platformRoutesFromPayload(r.PlatformRoutes),
+				Swap:           swapSpecCarried(carried, p.DeploymentID, upstream),
 			})
 		}
 		applyCtx, cancelApply := context.WithTimeout(ctx, composeQueryTimeout)
@@ -2841,22 +2846,46 @@ func gitCloneIntoBuildContext(
 	if err := checkoutGitCommit(cloneCtx, destDir, g.CommitSHA, env, preArgs); err != nil {
 		return err
 	}
-	// Everything succeeded — swap the staged clone into place. The
-	// rename never crosses filesystems (both live in the deployment dir);
-	// a leftover previous context is removed only now, after the new one
-	// is complete on disk.
-	if err := os.Rename(destDir, stagingFinal); err != nil {
-		// Windows and some filesystems can refuse a rename over an
-		// existing directory: fall back to remove-then-rename, the window
-		// is one syscall and only runs on the success path.
-		if rmErr := os.RemoveAll(stagingFinal); rmErr != nil {
-			return fmt.Errorf("replace previous build context: %v (remove: %v)", err, rmErr)
-		}
-		if err := os.Rename(destDir, stagingFinal); err != nil {
-			return fmt.Errorf("install staged build context: %w", err)
+	return swapStagedBuildContext(log, destDir, stagingFinal)
+}
+
+// swapStagedBuildContext moves the staged clone into place over a possible
+// previous context. A rename over an existing non-empty directory
+// is refused by POSIX (ENOTEMPTY) and by Windows, so on every REDEPLOY the
+// plain rename fails. The old remove-then-rename fallback paid the whole
+// RemoveAll of the previous tree as the window with no context on disk.
+// The .old dance keeps that window to two metadata renames: the previous
+// context moves aside, the staged one takes its place, and only then is
+// the .old copy deleted — a failure between the renames restores it.
+// A leftover .old that cannot be deleted is logged and left behind, never
+// a deploy failure: the NEW context is already serving at that point.
+func swapStagedBuildContext(log *slog.Logger, staged, final string) error {
+	renameErr := os.Rename(staged, final)
+	if renameErr == nil {
+		return nil
+	}
+	aside := final + ".old"
+	if err := os.RemoveAll(aside); err != nil {
+		return fmt.Errorf("replace previous build context: %w (clearing the aside copy failed: %v)", renameErr, err)
+	}
+	if _, err := os.Stat(final); err == nil {
+		if err := os.Rename(final, aside); err != nil {
+			return fmt.Errorf("replace previous build context (move aside: %v): %w", err, renameErr)
 		}
 	}
-
+	if err := os.Rename(staged, final); err != nil {
+		// Put the previous context back; it is complete on disk in .old.
+		if _, statErr := os.Stat(aside); statErr == nil {
+			_ = os.Rename(aside, final)
+		}
+		return fmt.Errorf("install staged build context: %w", err)
+	}
+	if err := os.RemoveAll(aside); err != nil {
+		if log != nil {
+			log.Warn("git build context: the replaced copy could not be removed; it stays as .old until the next redeploy", "path", aside, "err", err)
+		}
+		return nil
+	}
 	return nil
 }
 

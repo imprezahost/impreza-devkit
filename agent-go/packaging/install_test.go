@@ -74,3 +74,41 @@ func TestInstallVerifierMatchesUpdater(t *testing.T) {
 		t.Errorf("install.sh's manifest verifier diverges from update.sh's (%d vs %d bytes) — the verifier must stay the exact same block", len(installBlock), len(updateBlock))
 	}
 }
+
+// The binary (and the checksum sidecar) ride fetch_status — https-only
+// for network origins, plain copy for distributor-local trees. A bare curl
+// for the binary is the regression this pins.
+func TestInstallBinaryRidesFetchStatus(t *testing.T) {
+	if !bytes.Contains(InstallScript, []byte(`if [ "$(fetch_status "$BINARY_URL" "$TMP/impreza-agent" 180)" != "200" ]; then`)) {
+		t.Error("the binary no longer rides fetch_status with the 180 s ceiling (the local-tree mode, the https-only guarantee or the slow-link window is gone)")
+	}
+	// The ceiling is a parameter; the small files keep the 60 s default.
+	if !bytes.Contains(InstallScript, []byte(`--max-time "${3:-60}"`)) {
+		t.Error("fetch_status lost its per-call ceiling")
+	}
+	if bytes.Contains(InstallScript, []byte(`curl -fsSL -A "$IMPREZA_UA" -o "$TMP/impreza-agent"`)) {
+		t.Error("a bare curl downloads the binary again")
+	}
+}
+
+// A fresh install carries the ingress boot unit from birth.
+func TestInstallCarriesTheIngressBootUnit(t *testing.T) {
+	for _, needle := range []string{
+		"cat >/etc/systemd/system/impreza-agent-ingress.service <<'UNIT'",
+		"ExecStart=/usr/local/bin/impreza-agent ingress restore",
+		"ConditionPathExists=/var/lib/impreza-agent/ingress.json",
+		"systemctl enable impreza-agent-ingress.service",
+	} {
+		if !bytes.Contains(InstallScript, []byte(needle)) {
+			t.Errorf("the ingress boot unit lost %q", needle)
+		}
+	}
+	// The enable once ran twice after the unit landed — the second copy
+	// swallowed the warning path. One guarded enable, no bare duplicate.
+	if n := bytes.Count(InstallScript, []byte("! systemctl enable impreza-agent-ingress.service >/dev/null 2>&1")); n != 1 {
+		t.Errorf("the guarded ingress enable appears %d times, want 1", n)
+	}
+	if bytes.Contains(InstallScript, []byte("systemctl enable impreza-agent-ingress.service >/dev/null 2>&1 || true")) {
+		t.Error("a bare duplicate of the ingress enable is back")
+	}
+}

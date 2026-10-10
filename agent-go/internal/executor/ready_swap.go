@@ -79,6 +79,11 @@ type readySwapRecord struct {
 	Port         string                    `json:"port"`
 	Host         string                    `json:"host"`
 	Policy       sdkclient.ReadySwapPolicy `json:"policy"`
+	// Pair: the routing fragment carries both upstreams, so the
+	// flip is container lifecycle (stop the serving one) and recovery
+	// republishes by starting/proving the target and stopping its peer —
+	// never by rewriting the fragment.
+	Pair bool `json:"pair"`
 }
 
 // swapContainer is what the readiness proof reads about one container.
@@ -93,27 +98,62 @@ type swapContainer struct {
 
 // swapRouter is the part of the proxy a swap uses; tests replace it.
 type swapRouter interface {
-	UpstreamHost(deploymentID string) (string, string, error)
+	UpstreamHost(deploymentID string) (string, string, bool, error)
 	RetargetUpstream(ctx context.Context, deploymentID, to string) error
-	// LiveUpstream is what the running proxy serves, which the fragment on
+	// EnableSwapPeer upgrades a legacy fragment to the standby
+	// pair — the one transitional reload; every later flip is container
+	// lifecycle with the Caddyfile byte-identical.
+	EnableSwapPeer(ctx context.Context, deploymentID string, spec proxy.SwapSpec) error
+	// LiveUpstream is what the running proxy prefers, which the fragment on
 	// disk can be ahead of (an agent stopped between the write and the
-	// reload).
+	// reload). On the pair form it is the preferred (app) slot.
 	LiveUpstream(ctx context.Context, deploymentID string) (string, error)
 }
 
-// republishRoute is the recovery's route move: it always rewrites and
-// reloads (the fragment on disk is not proof of what the proxy serves), and
-// then checks the running proxy really routes to `to`.
-func republishRoute(ctx context.Context, router swapRouter, deploymentID, to string) error {
-	if err := router.RetargetUpstream(ctx, deploymentID, to); err != nil {
+// republishRoute is the recovery's route move. Legacy form: rewrite and
+// reload, then confirm the running proxy really routes to `to`. Pair form
+// (standby pair): traffic follows liveness — prove `to` and stop its peer; the
+// fragment never changes and no reload runs.
+func (d *Docker) republishRoute(ctx context.Context, router swapRouter, appDir, deploymentID, to string, rec readySwapRecord) error {
+	if !rec.Pair {
+		if err := router.RetargetUpstream(ctx, deploymentID, to); err != nil {
+			return err
+		}
+		live, err := router.LiveUpstream(ctx, deploymentID)
+		if err != nil {
+			return err
+		}
+		if live != to {
+			return fmt.Errorf("the running proxy still routes to %s", strings.TrimPrefix(live, deploymentID+"-"))
+		}
+		return nil
+	}
+	id := rec.DeploymentID
+	if to == id+"-app" {
+		// Only bring `app` up when it is not running: `up -d` would recreate
+		// a healthy previous version out of the swap file (which may carry
+		// the NEW model) and turn a recovered_previous into a version swap.
+		if c, err := d.swapInspect(ctx, id+"-app"); err != nil || !c.Exists || c.Status != "running" {
+			upCtx, cancel := context.WithTimeout(ctx, composeUpTimeout)
+			out, err := d.swapCompose(upCtx, appDir, readySwapComposeName, "up", "-d", "--no-build", "--pull", "never", "--no-deps", "app")
+			cancel()
+			if err != nil {
+				return errors.New("the app container did not come back: " + tail(out, 256))
+			}
+		}
+		if err := d.awaitSwapReady(ctx, id+"-app", rec.Port, rec.Host, rec.Policy); err != nil {
+			return err
+		}
+		if out, err := d.swapCompose(ctx, appDir, readySwapComposeName, "stop", "app-next"); err != nil {
+			return errors.New("the previous copy could not be stopped: " + tail(out, 256))
+		}
+		return nil
+	}
+	if err := d.awaitSwapReady(ctx, id+"-app-next", rec.Port, rec.Host, rec.Policy); err != nil {
 		return err
 	}
-	live, err := router.LiveUpstream(ctx, deploymentID)
-	if err != nil {
-		return err
-	}
-	if live != to {
-		return fmt.Errorf("the running proxy still routes to %s", strings.TrimPrefix(live, deploymentID+"-"))
+	if out, err := d.swapCompose(ctx, appDir, readySwapComposeName, "stop", "app"); err != nil {
+		return errors.New("the app container could not be stopped: " + tail(out, 256))
 	}
 	return nil
 }
@@ -312,6 +352,46 @@ func (d *Docker) awaitSwapReady(ctx context.Context, name, port, host string, po
 	return fmt.Errorf("not ready within %d seconds: %s", policy.TimeoutSeconds, last)
 }
 
+// statusClassOf maps the policy's minimum accepted status to the class
+// Caddy's health_status gate understands (one class only; the swap's own
+// readiness proof keeps the policy's full range).
+func statusClassOf(min int) string {
+	return fmt.Sprintf("%dxx", min/100)
+}
+
+// swapSpecFor attaches the standby pair to a route when the payload
+// asks for ready swaps and the route's upstream is the deployment's app
+// container — the only shape a swap flips. Other upstreams render exactly
+// as before.
+func swapSpecFor(p sdkclient.DeployPayload, upstream string) *proxy.SwapSpec {
+	if p.ReadySwap == nil || validateReadySwapPolicy(p.ReadySwap) != nil {
+		return nil
+	}
+	host, port, ok := strings.Cut(upstream, ":")
+	if !ok || host != p.DeploymentID+"-app" {
+		return nil
+	}
+	return &proxy.SwapSpec{
+		Peer:        p.DeploymentID + "-app-next:" + port,
+		Path:        p.ReadySwap.Path,
+		StatusClass: statusClassOf(p.ReadySwap.StatusMin),
+	}
+}
+
+// swapSpecCarried re-attaches a pair read off the existing fragment, but
+// only to the app container's own route — any other upstream keeps the
+// single form.
+func swapSpecCarried(spec *proxy.SwapSpec, deploymentID, upstream string) *proxy.SwapSpec {
+	if spec == nil {
+		return nil
+	}
+	host, _, ok := strings.Cut(upstream, ":")
+	if !ok || host != deploymentID+"-app" {
+		return nil
+	}
+	return spec
+}
+
 func healthSuffix(h string) string {
 	if h == "" {
 		return ""
@@ -497,12 +577,29 @@ func (d *Docker) readySwap(ctx context.Context, cmd *sdkclient.PollCommand, p sd
 	if err := readySwapEligibility(p, resolved); err != nil {
 		return refuse(err.Error())
 	}
-	host, port, err := router.UpstreamHost(p.DeploymentID)
+	host, port, pair, err := router.UpstreamHost(p.DeploymentID)
 	if err != nil || host != p.DeploymentID+"-app" {
 		return refuse("the current route does not point at the app container")
 	}
 	if live, err := router.LiveUpstream(ctx, p.DeploymentID); err != nil || live != p.DeploymentID+"-app" {
 		return refuse("the running proxy does not route to the app container")
+	}
+	if !pair {
+		// The legacy single-upstream fragment cannot flip without a
+		// reload (the reload is the request-killing server swap). Upgrade
+		// it to the standby pair first — the one transitional reload — so
+		// this and every later swap run reload-free. Nothing container-side
+		// has been touched yet; a refusal here leaves the previous version
+		// serving exactly as before.
+		spec := proxy.SwapSpec{
+			Peer:        p.DeploymentID + "-app-next:" + port,
+			Path:        p.ReadySwap.Path,
+			StatusClass: statusClassOf(p.ReadySwap.StatusMin),
+		}
+		if err := router.EnableSwapPeer(ctx, p.DeploymentID, spec); err != nil {
+			return refuse("the routing fragment could not carry the standby slot: " + err.Error())
+		}
+		pair = true
 	}
 	model, err := readySwapModel(resolved, p.DeploymentID)
 	if err != nil {
@@ -511,7 +608,7 @@ func (d *Docker) readySwap(ctx context.Context, cmd *sdkclient.PollCommand, p sd
 	if err := writeAtomic(filepath.Join(appDir, readySwapComposeName), model, 0600); err != nil {
 		return refuse("the swap file could not be written")
 	}
-	rec := readySwapRecord{Version: 1, DeploymentID: p.DeploymentID, CommandID: cmd.ID, WorkID: workID, ReleaseID: previous.Metadata.ID, Port: port, Host: swapProbeHost(p), Policy: *p.ReadySwap}
+	rec := readySwapRecord{Version: 1, DeploymentID: p.DeploymentID, CommandID: cmd.ID, WorkID: workID, ReleaseID: previous.Metadata.ID, Port: port, Host: swapProbeHost(p), Policy: *p.ReadySwap, Pair: pair}
 	r, rep := d.runReadySwap(ctx, cmd, appDir, rec, previous)
 	return r, rep, true
 }
@@ -570,12 +667,23 @@ func (d *Docker) runReadySwap(ctx context.Context, cmd *sdkclient.PollCommand, a
 		return fail(swapStartingNext, err.Error())
 	}
 
-	// 2. The route moves to it; the old container drains.
+	// 2. The traffic flip. Pair form: stop the serving container —
+	// Caddy's active check benches it within its interval and dials retry
+	// on the standby; the in-flight requests drain on the container's own
+	// stop grace. Legacy form: the route moves by rewrite + reload (the
+	// known one-request loss, kept for fragments not yet upgraded).
 	if err := d.swapPhase(appDir, &rec, swapRoutedNext); err != nil {
 		return fail(swapStartingNext, "the swap journal could not be written")
 	}
 	d.deploymentProgress(ctx, cmd, "routing")
-	if err := router.RetargetUpstream(ctx, id, id+"-app-next"); err != nil {
+	if rec.Pair {
+		stopCtx, cancelStop := context.WithTimeout(ctx, composeUpTimeout)
+		out, err := d.swapCompose(stopCtx, appDir, readySwapComposeName, "stop", "app")
+		cancelStop()
+		if err != nil {
+			return fail(swapRoutedNext, "the serving container could not be stopped: "+tail(out, 256))
+		}
+	} else if err := router.RetargetUpstream(ctx, id, id+"-app-next"); err != nil {
 		// RetargetUpstream restores the previous fragment on a rejected reload.
 		return fail(swapRoutedNext, "the proxy did not accept the new route")
 	}
@@ -610,8 +718,17 @@ func (d *Docker) finishReadySwap(ctx context.Context, cmd *sdkclient.PollCommand
 		return d.settleReadySwap(context.WithoutCancel(ctx), cmd, appDir, rec, previous, "the swap journal could not be written")
 	}
 	d.deploymentProgress(ctx, cmd, "routing")
-	if err := router.RetargetUpstream(ctx, id, id+"-app"); err != nil {
-		return d.settleReadySwap(context.WithoutCancel(ctx), cmd, appDir, rec, previous, "the proxy did not accept the route back to the app container")
+	if !rec.Pair {
+		if err := router.RetargetUpstream(ctx, id, id+"-app"); err != nil {
+			return d.settleReadySwap(context.WithoutCancel(ctx), cmd, appDir, rec, previous, "the proxy did not accept the route back to the app container")
+		}
+	} else {
+		// Standby pair: the app slot takes traffic back by its own health —
+		// awaitSwapReady proved it; one interval of headroom lets Caddy's
+		// active check converge before the standby is removed.
+		if !d.swapSleep(ctx, time.Second) {
+			return d.settleReadySwap(context.WithoutCancel(ctx), cmd, appDir, rec, previous, "the readiness check cancelled")
+		}
 	}
 	return d.completeReadySwap(ctx, cmd, appDir, rec, recovered)
 }
@@ -679,7 +796,7 @@ func (d *Docker) settleReadySwap(ctx context.Context, cmd *sdkclient.PollCommand
 		err = d.awaitSwapReady(ctx, id+"-app", rec.Port, rec.Host, rec.Policy)
 	}
 	if err == nil {
-		err = republishRoute(ctx, router, id, id+"-app")
+		err = d.republishRoute(ctx, router, appDir, id, id+"-app", rec)
 	}
 	if err != nil {
 		r.Error += "\nThe previous version could not be brought back: " + err.Error()
@@ -702,7 +819,7 @@ func (d *Docker) settleReadySwap(ctx context.Context, cmd *sdkclient.PollCommand
 func (d *Docker) serveNext(ctx context.Context, appDir string, rec readySwapRecord, r *sdkclient.DeployResult, reason string) (sdkclient.DeployResult, *sdkclient.ReadySwapReport) {
 	id := rec.DeploymentID
 	router := d.swapRouter()
-	if err := republishRoute(ctx, router, id, id+"-app-next"); err != nil {
+	if err := d.republishRoute(ctx, router, appDir, id, id+"-app-next", rec); err != nil {
 		r.Error += "\nThe route could not be confirmed on the new copy: " + err.Error()
 	}
 	_, _ = d.swapCompose(ctx, appDir, readySwapComposeName, "stop", "app")
@@ -767,7 +884,7 @@ func (d *Docker) RecoverReadySwap(ctx context.Context, deploymentID string) *sdk
 		// the route once proven; the new copy goes.
 		err := d.awaitSwapReady(ctx, deploymentID+"-app", rec.Port, rec.Host, rec.Policy)
 		if err == nil {
-			err = republishRoute(ctx, router, deploymentID, deploymentID+"-app")
+			err = d.republishRoute(ctx, router, appDir, deploymentID, deploymentID+"-app", *rec)
 		}
 		if err != nil {
 			// The previous version is not answering: prefer the new copy if it is.
@@ -808,7 +925,7 @@ func (d *Docker) RecoverReadySwap(ctx context.Context, deploymentID string) *sdk
 			result, _ = d.settleReadySwap(ctx, cmd, appDir, *rec, previous, "the app container did not answer after the interruption: "+err.Error())
 			break
 		}
-		if err := republishRoute(ctx, router, deploymentID, deploymentID+"-app"); err != nil {
+		if err := d.republishRoute(ctx, router, appDir, deploymentID, deploymentID+"-app", *rec); err != nil {
 			result, _ = d.settleReadySwap(ctx, cmd, appDir, *rec, previous, "the route back to the app container was not confirmed: "+err.Error())
 			break
 		}

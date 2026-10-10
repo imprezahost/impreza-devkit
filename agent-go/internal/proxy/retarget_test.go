@@ -42,7 +42,7 @@ func TestRetargetMovesOnlyTheUpstreamHost(t *testing.T) {
 	if string(got) != want || reloads != 1 {
 		t.Fatalf("fragment=%q reloads=%d", got, reloads)
 	}
-	if host, port, err := c.UpstreamHost(id); err != nil || host != id+"-app-next" || port != "8080" {
+	if host, port, pair, err := c.UpstreamHost(id); err != nil || host != id+"-app-next" || port != "8080" || pair {
 		t.Fatalf("upstream %s:%s %v", host, port, err)
 	}
 	gotOther, _ := os.ReadFile(filepath.Join(c.StateDir, "deployments", other+".caddy"))
@@ -139,12 +139,14 @@ func TestLiveUpstreamReadsTheLoadedConfiguration(t *testing.T) {
 		want string
 		bad  string
 	}{
-		"on app":          {raw: config(route("dpl_aaaaaaaaaaaaaaaa-app:8080"), other), want: "dpl_aaaaaaaaaaaaaaaa-app"},
-		"on next":         {raw: config(route("dpl_aaaaaaaaaaaaaaaa-app-next:8080"), other), want: "dpl_aaaaaaaaaaaaaaaa-app-next"},
-		"routes disagree": {raw: config(route("dpl_aaaaaaaaaaaaaaaa-app:8080"), route("dpl_aaaaaaaaaaaaaaaa-app-next:8080")), bad: "not a single-container"},
-		"no route":        {raw: config(other), bad: "no route to this deployment"},
-		"unreadable":      {err: errors.New("exit status 1"), bad: "could not be read"},
-		"not json":        {raw: "<html>", bad: "not JSON"},
+		"on app":  {raw: config(route("dpl_aaaaaaaaaaaaaaaa-app:8080"), other), want: "dpl_aaaaaaaaaaaaaaaa-app"},
+		"on next": {raw: config(route("dpl_aaaaaaaaaaaaaaaa-app-next:8080"), other), want: "dpl_aaaaaaaaaaaaaaaa-app-next"},
+		// Both dials is the standby-pair form, not a disagreement —
+		// the preferred (app) slot is what "live" means there.
+		"both slots (the pair form)": {raw: config(route("dpl_aaaaaaaaaaaaaaaa-app:8080"), route("dpl_aaaaaaaaaaaaaaaa-app-next:8080")), want: "dpl_aaaaaaaaaaaaaaaa-app"},
+		"no route":                   {raw: config(other), bad: "no route to this deployment"},
+		"unreadable":                 {err: errors.New("exit status 1"), bad: "could not be read"},
+		"not json":                   {raw: "<html>", bad: "not JSON"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := &Caddy{liveConfig: func(context.Context) ([]byte, error) { return []byte(tc.raw), tc.err }}

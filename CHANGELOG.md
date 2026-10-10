@@ -18,6 +18,30 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
   `PlatformPrepareFailback`, `PlatformRunFailoverDrill` and the matching reads). Every apply takes
   the exact review digest and an explicit confirmation.
 
+## Agent 0.6.30 — 2026-10-10
+
+- Zero-downtime redeploys no longer reload the proxy: a deployment's
+  routing fragment now carries both the serving container and the standby
+  slot with an active health check, and the traffic flip is container
+  lifecycle — the new version is made and proven before the old one
+  stops. No line of the proxy configuration changes during a swap, which
+  removes the request-per-reload that the reload's server swap killed.
+  The active health check polls each upstream's readiness path twice a
+  second; apps will see that traffic in their access logs.
+- A git redeploy replaces the build context through two directory
+  renames instead of deleting the old tree first: the window with no
+  context on disk shrinks to metadata operations, and a failure between
+  the renames restores the previous context.
+- The installer downloads the agent binary through the same verified
+  fetch as the manifest: network origins stay https-only (a redirect
+  cannot downgrade the transfer), distributor-local trees work as plain
+  file copies, and slow links get the same 180-second ceiling as the
+  updater. A fresh install also carries the ingress boot unit from the
+  start, enabled.
+- The agent serializes egress firewall applies across processes: the
+  daemon and an operator's CLI invocation on the same host now take turns
+  through a lock file in the agent's state directory.
+
 ## Agent 0.6.29 — 2026-10-09
 
 - The installer works again on a box without Docker: sourcing the OS

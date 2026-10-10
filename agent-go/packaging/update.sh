@@ -549,13 +549,13 @@ UNIT
     systemctl start impreza-agent.service
     PID=$(systemctl show impreza-agent.service -p MainPID --value)
     [ "$PID" -gt 0 ] || exit 1
-    # X435: the old 10 s window watched MainPID only. A candidate that
-    # first dies AFTER the window (the R probe: 15 s) exited 0, recorded
-    # the new version in the update state and left the agent in a
-    # crash-loop with no rollback. The health watch now runs 30 s AND
-    # fails on any restart, not only on a dead unit: NRestarts growing
-    # means the process died and systemd brought a new one up — a healthy
-    # first boot never restarts, so any growth is the crash-loop starting.
+    # The post-update health watch runs 30 s AND fails on any restart of
+    # the service, not only on a dead unit. Watching MainPID alone for a
+    # short window let a candidate that first dies after the window exit
+    # 0, record the new version in the update state and leave the agent
+    # crash-looping with no rollback. NRestarts growing means the process
+    # died and systemd brought a new one up — a healthy first boot never
+    # restarts, so any growth is the crash-loop starting.
     RESTARTS=$(systemctl show impreza-agent.service -p NRestarts --value)
     count=0
     while [ "$count" -lt 30 ]; do

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/proxy"
 	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 )
 
@@ -41,20 +42,24 @@ type swapWorld struct {
 	// the fragment); empty means the two agree.
 	liveUpstream string
 	// liveStuck keeps the running proxy where it is across reloads.
-	liveStuck  bool
-	answers    map[string]int // version -> HTTP status
-	crashes    map[string]bool
-	resolved   string
-	failRoute  map[string]bool
-	ops        []string
-	opTimes    []time.Time
-	crashAt    int
-	crashAfter bool
-	now        time.Time
-	violations []string
-	lenient    bool
-	nextIP     int
-	previous   *runtimeRelease
+	liveStuck bool
+	answers   map[string]int // version -> HTTP status
+	crashes   map[string]bool
+	resolved  string
+	failRoute map[string]bool
+	// pair: the fragment already carries the standby pair; failEnablePair
+	// injects an EnableSwapPeer rejection for the transitional upgrade.
+	pair           bool
+	failEnablePair bool
+	ops            []string
+	opTimes        []time.Time
+	crashAt        int
+	crashAfter     bool
+	now            time.Time
+	violations     []string
+	lenient        bool
+	nextIP         int
+	previous       *runtimeRelease
 }
 
 const swapPrevImage = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -113,12 +118,26 @@ func (w *swapWorld) done() {
 	}
 }
 
-// serving: a request through the route right now succeeds.
+// serving: a request through the route right now succeeds. On the pair
+// form either live slot serves — the flip is container lifecycle.
 func (w *swapWorld) check(after string) {
-	c := w.ctrs[w.upstream]
-	ok := c != nil && c.status == "running" && !w.crashes[c.version] && w.answers[c.version] >= 200 && w.answers[c.version] < 400
+	ok := false
+	who := w.upstream
+	if w.pair {
+		for _, name := range []string{w.id + "-app", w.id + "-app-next"} {
+			c := w.ctrs[name]
+			if c != nil && c.status == "running" && !w.crashes[c.version] && w.answers[c.version] >= 200 && w.answers[c.version] < 400 {
+				ok = true
+				who = name
+				break
+			}
+		}
+	} else {
+		c := w.ctrs[w.upstream]
+		ok = c != nil && c.status == "running" && !w.crashes[c.version] && w.answers[c.version] >= 200 && w.answers[c.version] < 400
+	}
 	if !ok && !w.lenient {
-		w.violations = append(w.violations, fmt.Sprintf("after %s the route (%s) does not serve", after, w.upstream))
+		w.violations = append(w.violations, fmt.Sprintf("after %s the route (%s) does not serve", after, who))
 	}
 }
 
@@ -174,6 +193,10 @@ func (w *swapWorld) compose(_ context.Context, _ string, file string, args ...st
 		if c := w.ctrs[w.id+"-app"]; c != nil {
 			c.status = "exited"
 		}
+	case args[0] == "stop" && args[len(args)-1] == "app-next":
+		if c := w.ctrs[w.id+"-app-next"]; c != nil {
+			c.status = "exited"
+		}
 	default:
 		w.t.Fatalf("unexpected compose %s", op)
 	}
@@ -205,7 +228,20 @@ func (w *swapWorld) probe(_ context.Context, url, host string) (int, error) {
 	return 0, errors.New("no route to host")
 }
 
-func (w *swapWorld) UpstreamHost(string) (string, string, error) { return w.upstream, "8080", nil }
+func (w *swapWorld) UpstreamHost(string) (string, string, bool, error) {
+	return w.upstream, "8080", w.pair, nil
+}
+
+// EnableSwapPeer fakes the pair upgrade: the fragment becomes the pair.
+func (w *swapWorld) EnableSwapPeer(_ context.Context, _ string, _ proxy.SwapSpec) error {
+	w.tick("enable pair")
+	if w.failEnablePair {
+		return errors.New("injected upgrade rejection")
+	}
+	w.pair = true
+	w.done()
+	return nil
+}
 
 // In the fake host the fragment and the running proxy agree unless a test
 // splits them (liveUpstream).
@@ -271,37 +307,48 @@ func TestReadySwapSwitchesOnlyAfterTheNewVersionIsReady(t *testing.T) {
 		t.Fatalf("end state: upstream %s, ctrs %v", w.upstream, w.ctrs)
 	}
 	want := []string{
+		"enable pair",
 		"compose up -d --no-build --pull never --no-deps app-next",
-		"route -app-next",
+		"compose stop app",
 		"compose up -d --no-build --pull never --no-deps app",
-		"route -app",
 		"compose rm -s -f app-next",
 	}
 	if !slices.Equal(w.ops, want) {
 		t.Fatalf("ops %v", w.ops)
 	}
-	// The container that just lost the route keeps serving in-flight
-	// requests for the drain time before it is replaced or removed.
-	if w.opTimes[2].Sub(w.opTimes[1]) < 5*time.Second || w.opTimes[4].Sub(w.opTimes[3]) < 5*time.Second {
+	// The flip is container lifecycle — no route rewrite, no reload.
+	for _, op := range w.ops {
+		if strings.HasPrefix(op, "route ") {
+			t.Fatalf("the pair form still rewrites the route: %v", w.ops)
+		}
+	}
+	// The stopped container keeps serving its in-flight requests for the
+	// drain time before it is replaced; the standby drains before removal.
+	if w.opTimes[3].Sub(w.opTimes[2]) < 5*time.Second || w.opTimes[4].Sub(w.opTimes[3]) < 5*time.Second {
 		t.Fatalf("no drain: %v", w.opTimes)
 	}
 }
 
 func TestReadySwapKeepsThePreviousVersionWhenTheNewOneIsNotReady(t *testing.T) {
 	for name, tc := range map[string]struct {
-		setup  func(*swapWorld)
-		reason string
+		setup   func(*swapWorld)
+		reason  string
+		outcome string
 	}{
-		"wrong status":  {func(w *swapWorld) { w.answers["new"] = 500 }, "HTTP 500"},
-		"crash":         {func(w *swapWorld) { w.crashes["new"] = true }, "stopped"},
-		"route refused": {func(w *swapWorld) { w.failRoute[w.id+"-app-next"] = true }, "proxy did not accept"},
+		"wrong status": {func(w *swapWorld) { w.answers["new"] = 500 }, "HTTP 500", ""},
+		"crash":        {func(w *swapWorld) { w.crashes["new"] = true }, "stopped", ""},
+		"pair refused": {func(w *swapWorld) { w.failEnablePair = true }, "standby slot", "refused"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := newSwapWorld(t)
 			tc.setup(w)
 			start := w.now
 			r, rep, handled := w.run()
-			if !handled || r.Status != "failed" || rep.Outcome != "kept_previous" || !strings.Contains(rep.Reason, tc.reason) {
+			wantOutcome := tc.outcome
+			if wantOutcome == "" {
+				wantOutcome = "kept_previous"
+			}
+			if !handled || r.Status != "failed" || rep.Outcome != wantOutcome || !strings.Contains(rep.Reason, tc.reason) {
 				t.Fatalf("report %+v error %s", rep, r.Error)
 			}
 			w.noViolations()
@@ -437,12 +484,15 @@ func TestReadySwapInterruptedAtEveryStepSettlesOnOneVersion(t *testing.T) {
 	full := newSwapWorld(t)
 	full.run()
 	steps := len(full.ops)
-	// By design: until the new `app` is being created, the previous version
-	// keeps (or gets back) the route; from then on the new one is finished.
+	// By design (standby-pair order): op 1 only upgrades the fragment (no journal
+	// yet — a crash there leaves the previous version serving untouched);
+	// until the serving container stops (op 3) the previous version keeps
+	// (or gets back) traffic by liveness; once it stopped, the new one is
+	// finished.
 	expect := map[string]string{
-		"before 1": "recovered_previous", "after 1": "recovered_previous",
+		"before 1": "", "after 1": "",
 		"before 2": "recovered_previous", "after 2": "recovered_previous",
-		"before 3": "recovered_new", "after 3": "recovered_new",
+		"before 3": "recovered_previous", "after 3": "recovered_new",
 		"before 4": "recovered_new", "after 4": "recovered_new",
 		"before 5": "recovered_new", "after 5": "recovered_new",
 	}
@@ -468,10 +518,14 @@ func TestReadySwapInterruptedAtEveryStepSettlesOnOneVersion(t *testing.T) {
 			w.install(d)
 			r := d.RecoverReadySwap(context.Background(), w.id)
 			if _, err := os.Stat(filepath.Join(w.appDir, readySwapJournalName)); os.IsNotExist(err) && r == nil {
-				// The crash hit after the swap cleaned up: nothing to settle.
-				if w.ctrs[w.id+"-app"].version != "new" {
-					t.Fatal("clean state without the new version")
+				// Nothing to settle: the crash hit before the swap started (the
+				// fragment upgrade alone — the previous version still serves) or
+				// after it cleaned up (the new version serves).
+				app := w.ctrs[w.id+"-app"]
+				if app == nil || app.status != "running" || w.ctrs[w.id+"-app-next"] != nil {
+					t.Fatalf("not one serving version: %v", w.ctrs)
 				}
+				w.noViolations()
 				return
 			}
 			if r == nil || r.ReadySwap == nil {
@@ -495,7 +549,7 @@ func TestReadySwapInterruptedAtEveryStepSettlesOnOneVersion(t *testing.T) {
 			default:
 				t.Fatalf("outcome %s", r.ReadySwap.Outcome)
 			}
-			if want := expect[fmt.Sprintf("%s %d", map[bool]string{false: "before", true: "after"}[after], k)]; r.ReadySwap.Outcome != want {
+			if want := expect[fmt.Sprintf("%s %d", map[bool]string{false: "before", true: "after"}[after], k)]; want != "" && r.ReadySwap.Outcome != want {
 				t.Fatalf("outcome %s, the design settles this point on %s", r.ReadySwap.Outcome, want)
 			}
 			if r.CommandID != "cmd_swap" {
@@ -507,23 +561,48 @@ func TestReadySwapInterruptedAtEveryStepSettlesOnOneVersion(t *testing.T) {
 
 func TestReadySwapRecoveryPrefersTheNewCopyWhenThePreviousIsGone(t *testing.T) {
 	w := newSwapWorld(t)
-	w.crashAt = 2 // after next started, while the route moves
+	w.crashAt, w.crashAfter = 2, true // after next started, before the serving container stops
 	func() {
 		defer func() { _ = recover() }()
 		w.run()
 	}()
 	w.crashAt = 0
 	w.ctrs[w.id+"-app"].status = "exited" // the previous version died meanwhile
-	w.lenient = true                      // the route is already broken before recovery
-	w.upstream = w.id + "-app-next"
-	w.lenient = false
 	d := &Docker{StateDir: w.d.StateDir, Log: w.d.Log}
 	w.install(d)
 	r := d.RecoverReadySwap(context.Background(), w.id)
-	if r == nil || r.ReadySwap.Outcome != "recovered_new" || w.ctrs[w.id+"-app"].version != "new" || w.upstream != w.id+"-app" {
+	// On the pair form the fragment never moves: recovery settles on the
+	// new version in `app` with the standby removed.
+	if r == nil || r.ReadySwap.Outcome != "recovered_new" || w.ctrs[w.id+"-app"].version != "new" {
 		t.Fatalf("result %+v ctrs %v", r, w.ctrs)
 	}
 	w.noViolations()
+}
+
+// The pair attaches only when the payload asks for ready swaps and
+// the route is the deployment's app container; the Caddy gate is the class
+// of the policy's minimum accepted status.
+func TestSwapSpecFor(t *testing.T) {
+	id := "dpl_ssssssssssssssss"
+	policy := sdkclient.ReadySwapPolicy{Path: "/healthz", StatusMin: 200, StatusMax: 399, TimeoutSeconds: 60, DrainSeconds: 5}
+	spec := swapSpecFor(sdkclient.DeployPayload{DeploymentID: id, ReadySwap: &policy}, id+"-app:8080")
+	if spec == nil || spec.Peer != id+"-app-next:8080" || spec.Path != "/healthz" || spec.StatusClass != "2xx" {
+		t.Fatalf("spec %+v", spec)
+	}
+	policy.StatusMin = 300
+	if spec := swapSpecFor(sdkclient.DeployPayload{DeploymentID: id, ReadySwap: &policy}, id+"-app:8080"); spec == nil || spec.StatusClass != "3xx" {
+		t.Fatalf("3xx spec %+v", spec)
+	}
+	if spec := swapSpecFor(sdkclient.DeployPayload{DeploymentID: id}, id+"-app:8080"); spec != nil {
+		t.Fatal("spec without a policy")
+	}
+	if spec := swapSpecFor(sdkclient.DeployPayload{DeploymentID: id, ReadySwap: &policy}, id+"-web:8080"); spec != nil {
+		t.Fatal("spec on a non-app upstream")
+	}
+	policy.Path = "relative"
+	if spec := swapSpecFor(sdkclient.DeployPayload{DeploymentID: id, ReadySwap: &policy}, id+"-app:8080"); spec != nil {
+		t.Fatal("spec with an invalid policy")
+	}
 }
 
 func TestReadySwapPolicyBounds(t *testing.T) {
