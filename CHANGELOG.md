@@ -18,6 +18,16 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
   `PlatformPrepareFailback`, `PlatformRunFailoverDrill` and the matching reads). Every apply takes
   the exact review digest and an explicit confirmation.
 
+## Agent 0.6.31 — 2026-10-11
+
+- A domain change now waits long enough for the certificate authority
+  to retry before giving up: the new domain's HTTPS check runs for up to
+  three minutes (one retry delay, the issuance time and a margin)
+  instead of failing on a first attempt made while the new DNS record
+  was still propagating. If the certificate still is not ready, the
+  previous domain keeps serving and the error now says why: the new
+  domain's certificate did not become ready in time.
+
 ## Agent 0.6.30 — 2026-10-10
 
 - Zero-downtime redeploys no longer reload the proxy: a deployment's

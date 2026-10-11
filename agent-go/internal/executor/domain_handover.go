@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"net"
@@ -102,7 +103,11 @@ func (d *Docker) domainHandover(ctx context.Context, cmd *sdkclient.PollCommand,
 		return result
 	}
 	if err := d.probeHandoverTLS(ctx, h.After); err != nil {
-		return rollback("The new HTTPS endpoint could not be verified.")
+		// Say WHY in terms a customer reads — the certificate
+		// issuance, not "verification", is what usually needs the time
+		// (the ACME dns-01 challenge can need a retry while the new TXT
+		// record propagates). No hostname or address is added here.
+		return rollback("The new domain's certificate did not become ready in time (the certificate authority can need a retry while the new DNS record propagates); the previous domain keeps serving.")
 	}
 	env, err := renderEnv(p.Vars)
 	if err != nil {
@@ -126,10 +131,32 @@ func (d *Docker) domainHandover(ctx context.Context, cmd *sdkclient.PollCommand,
 	return result
 }
 
+// The verification window must cover a full ACME retry cycle. A real
+// handover showed the failure: the first dns-01 challenge answer
+// came back NXDOMAIN while the new TXT record propagated, Caddy schedules
+// its next attempt handoverACMERetryDelay later, and the issuance after a
+// good answer takes tens of seconds — the old flat 90 s ceiling expired
+// mid-flight and rolled back a handover that was about to succeed. The
+// budget is one retry + issuance + slack; a certificate that does not
+// come out within it still rolls the handover back, exactly as before.
+const (
+	handoverACMERetryDelay = 60 * time.Second
+	handoverACMEIssuance   = 30 * time.Second
+	handoverTLSSlack       = 90 * time.Second
+	handoverTLSBudget      = handoverACMERetryDelay + handoverACMEIssuance + handoverTLSSlack
+)
+
+// Test seams: shrunk by the unit tests so a full retry cycle fits in
+// milliseconds; production uses the constants above.
+var (
+	handoverTLSBudgetNow = handoverTLSBudget
+	handoverTLSRetry     = 2 * time.Second
+)
+
 // Pin the connection to the inspected host proxy; validate SNI and its public
 // certificate, never follow redirects or use proxy environment variables.
 func (d *Docker) probeHandoverTLS(ctx context.Context, hostname string) error {
-	probe, cancel := context.WithTimeout(ctx, 90*time.Second)
+	probe, cancel := context.WithTimeout(ctx, handoverTLSBudgetNow)
 	defer cancel()
 	raw, err := limitedRuntimeOutput(d.dockerCmd(probe, "inspect", proxy.ContainerName), 1024*1024)
 	var containers []struct {
@@ -144,9 +171,19 @@ func (d *Docker) probeHandoverTLS(ctx context.Context, hostname string) error {
 	if ip == nil || ip.IsUnspecified() || ip.IsMulticast() {
 		return errors.New("proxy network identity unavailable")
 	}
-	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: hostname},
+	return awaitVerifiedHTTPS(probe, net.JoinHostPort(ip.String(), "443"), hostname, nil)
+}
+
+// awaitVerifiedHTTPS polls https://<hostname>/ pinned to dialAddr (the
+// proxy's address) until the handshake validates SNI against rootCAs
+// (nil = the system roots, the production path) and the app answers a
+// normal status. The caller owns the deadline: reaching it is the
+// failure, an HTTP 421 or a 5xx just means the route or the certificate
+// is not serving yet.
+func awaitVerifiedHTTPS(probe context.Context, dialAddr, hostname string, rootCAs *x509.CertPool) error {
+	tr := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: hostname, RootCAs: rootCAs},
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(ip.String(), "443"))
+			return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", dialAddr)
 		}}
 	defer tr.CloseIdleConnections()
 	client := &http.Client{Transport: tr, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -165,7 +202,7 @@ func (d *Docker) probeHandoverTLS(ctx context.Context, hostname string) error {
 		select {
 		case <-probe.Done():
 			return errors.New("verified HTTPS route did not become ready")
-		case <-time.After(2 * time.Second):
+		case <-time.After(handoverTLSRetry):
 		}
 	}
 }
