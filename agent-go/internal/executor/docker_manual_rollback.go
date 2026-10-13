@@ -101,6 +101,9 @@ func (d *Docker) rollbackRelease(ctx context.Context, cmd *sdkclient.PollCommand
 	if err != nil {
 		return failResult(cmd.ID, err.Error()+"; containers were not changed")
 	}
+	if target.RetiredBindingCredential {
+		return failResult(cmd.ID, retiredReleaseBindingMessage)
+	}
 	checkCtx, cancel := context.WithTimeout(ctx, composeQueryTimeout)
 	defer cancel()
 	raw, err := d.compose(checkCtx, dir, "config", "--format", "json")

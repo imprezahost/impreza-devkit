@@ -172,11 +172,17 @@ func NewDocker(stateDir string, log *slog.Logger) *Docker {
 
 // Execute dispatches a poll command to the right per-kind handler.
 func (d *Docker) Execute(ctx context.Context, cmd *sdkclient.PollCommand) (result sdkclient.DeployResult) {
+
 	var identity struct {
 		DeploymentID      string   `json:"deployment_id"`
 		FenceDependencies []string `json:"fence_dependencies"`
 	}
 	_ = cmd.As(&identity)
+	defer func() {
+		if cmd.Kind == sdkclient.CommandDeploy && backupJobPattern.MatchString(identity.DeploymentID) {
+			result.DeploymentID = identity.DeploymentID
+		}
+	}()
 	redactions, redactionErr := d.runtimeServiceBindingRedactions(identity.DeploymentID)
 	d = d.withServiceBindingLogRedaction(redactions)
 	defer func() {
@@ -446,6 +452,17 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	// instead of forcing every app's compose to use `user: root`.
 	// Defaults stay at 0700/root when the field is absent.
 	if dd := p.Manifest.Runtime.DataDir; dd != nil {
+		// The bind sources under ./data exist before the ownership
+		// pass, so Docker does not create them root:root afterwards.
+		if dd.Owner != "" {
+			sources, err := dataBindSources(appDir, composeYAML)
+			if err != nil {
+				return failResult(cmd.ID, "apply data_dir config: "+err.Error())
+			}
+			if err := prepareDataBinds(dataDir, sources); err != nil {
+				return failResult(cmd.ID, "apply data_dir config: "+err.Error())
+			}
+		}
 		if err := applyDataDirConfig(dataDir, dd); err != nil {
 			return failResult(cmd.ID, "apply data_dir config: "+err.Error())
 		}
@@ -517,7 +534,8 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 	if backupSpec := p.Manifest.Runtime.BackupDatabase; backupSpec != nil {
 		// The backup database stage: JIT credential, then the scratch database
 		// the verified restore runs against. The scratch is dropped on every
-		// path; the verify stage drops it first on success.
+		// path through the verified provider administrator channel; the temporary
+		// verification login cannot drop it. Cleanup failure overrides success.
 		secrets, credential, err := d.prepareBackupDatabase(ctx, cmd, &p, backupSpec)
 		if err != nil {
 			return failResult(cmd.ID, err.Error())
@@ -2341,6 +2359,13 @@ func applyDataDirConfig(dataDir string, dd *sdkclient.DataDirConfig) error {
 	if dd == nil {
 		return nil
 	}
+	// The data directory itself must be a real directory; a link
+	// here would point the chmod and the chown at another tree.
+	if fi, err := os.Lstat(dataDir); err != nil {
+		return fmt.Errorf("inspect %s: %w", dataDir, err)
+	} else if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("%s is not a plain directory; refusing to change its mode or owner", dataDir)
+	}
 	if dd.Mode != "" {
 		mode, err := strconv.ParseUint(dd.Mode, 8, 32)
 		if err != nil {
@@ -2355,13 +2380,9 @@ func applyDataDirConfig(dataDir string, dd *sdkclient.DataDirConfig) error {
 		if err != nil {
 			return fmt.Errorf("invalid data_dir.owner %q (expected uid or uid:gid): %w", dd.Owner, err)
 		}
-		walkErr := filepath.WalkDir(dataDir, func(path string, _ os.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			return os.Chown(path, uid, gid)
-		})
-		if walkErr != nil {
+		// Never follow a link, at any depth — the running containers
+		// write this tree (see chownTree).
+		if walkErr := chownTree(dataDir, uid, gid); walkErr != nil {
 			return fmt.Errorf("chown -R %s to %d:%d: %w", dataDir, uid, gid, walkErr)
 		}
 	}

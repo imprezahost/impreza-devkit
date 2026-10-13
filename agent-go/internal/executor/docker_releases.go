@@ -21,12 +21,13 @@ const retainedReleases = 5
 // Snapshots contain resolved environment values. Never return their contents
 // to the control plane; persist them only in the root-owned agent state dir.
 type runtimeRelease struct {
-	Startup   *sdkclient.ManifestStartup  `json:"startup,omitempty"`
-	Metadata  sdkclient.DeploymentRelease `json:"metadata"`
-	Compose   json.RawMessage             `json:"compose"`
-	Env       []byte                      `json:"env"`
-	EnvExists bool                        `json:"env_exists"`
-	Tags      []string                    `json:"tags"`
+	RetiredBindingCredential bool                        `json:"retired_binding_credential,omitempty"`
+	Startup                  *sdkclient.ManifestStartup  `json:"startup,omitempty"`
+	Metadata                 sdkclient.DeploymentRelease `json:"metadata"`
+	Compose                  json.RawMessage             `json:"compose"`
+	Env                      []byte                      `json:"env"`
+	EnvExists                bool                        `json:"env_exists"`
+	Tags                     []string                    `json:"tags"`
 }
 
 func pinReleaseCompose(raw []byte, images map[string]string) ([]byte, error) {

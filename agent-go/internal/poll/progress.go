@@ -278,6 +278,9 @@ func (p *Poller) sendSavedResult(ctx context.Context) error {
 					}
 				}
 			}
+			if err := p.cleanupAcknowledgedResult(ctx, p.active.Kind, *p.active.Result); err != nil {
+				return err
+			}
 			p.forgetPreparationWork()
 			p.forgetReplacementWork()
 			p.forgetRestoreQuiesce()
@@ -300,6 +303,9 @@ func (p *Poller) sendSavedResult(ctx context.Context) error {
 			if p.active.ProgressProtocol == sdkclient.DeploymentProgressProtocol {
 				if response, progressErr := p.reportProgress(ctx, "resending_result"); progressErr == nil && response.Terminal {
 					p.log.Warn("saved result rejected but the command is terminal; releasing", "command_id", p.active.CommandID)
+					if err := p.cleanupAcknowledgedResult(ctx, p.active.Kind, *p.active.Result); err != nil {
+						return err
+					}
 					p.forgetPreparationWork()
 					p.forgetReplacementWork()
 					p.forgetRestoreQuiesce()
@@ -455,4 +461,15 @@ func (p *Poller) ActiveCommandID() string {
 		return ""
 	}
 	return p.active.CommandID
+}
+
+func (p *Poller) cleanupAcknowledgedResult(ctx context.Context, kind sdkclient.CommandKind, result sdkclient.DeployResult) error {
+	if cleaner, ok := p.exec.(interface {
+		CleanupAcknowledgedResult(context.Context, sdkclient.CommandKind, sdkclient.DeployResult) error
+	}); ok {
+		if err := cleaner.CleanupAcknowledgedResult(ctx, kind, result); err != nil {
+			return fmt.Errorf("acknowledged backup cleanup remains pending: %w", err)
+		}
+	}
+	return nil
 }

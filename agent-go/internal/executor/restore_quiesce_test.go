@@ -255,6 +255,9 @@ func writeReplacedTree(t *testing.T, d *Docker, stamp string) string {
 }
 
 func TestQuiescePayloadRefusals(t *testing.T) {
+	// A refusal that regresses must fail by assertion, not by the
+	// go test timeout of the 2 h READY wait.
+	quiesceShortDeadlines(t)
 	cases := []struct {
 		name     string
 		payload  json.RawMessage

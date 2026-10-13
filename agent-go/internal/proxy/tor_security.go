@@ -30,6 +30,11 @@ func validOnionClientKey(value string) bool {
 	return err == nil
 }
 
+// torRename replaces a Tor state file. It is os.Rename everywhere the agent
+// runs; only the Windows tests swap it (tor_rename_windows_test.go), because
+// there an antivirus scanning the file just written can deny the replace.
+var torRename = os.Rename
+
 func torPrivateWrite(path string, data []byte) error {
 	if st, err := os.Lstat(path); err == nil && !st.Mode().IsRegular() {
 		return fmt.Errorf("refusing non-regular Tor state")
@@ -55,7 +60,7 @@ func torPrivateWrite(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := torRename(tmp, path); err != nil {
 		return err
 	}
 	return syncRoutingDir(filepath.Dir(path))

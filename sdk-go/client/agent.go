@@ -710,6 +710,19 @@ type AgentReport struct {
 	Load               *AgentLoad          `json:"load,omitempty"`
 	RunningDeployments []RunningDeployment `json:"running_deployments,omitempty"`
 	Ingress            *IngressReport      `json:"ingress,omitempty"`
+	// RestoreQuarantine lists the applications a restore journal the agent
+	// cannot verify keeps quarantined (stopped, with data-changing commands
+	// refused) until support reconciles it. Absent when there is none.
+	RestoreQuarantine []RestoreQuarantineReport `json:"restore_quarantine,omitempty"`
+}
+
+// RestoreQuarantineReport is one quarantined restore target. Scope "all"
+// (with no deployment_id) means the journal names no readable application,
+// so every data-changing command on the host is refused.
+type RestoreQuarantineReport struct {
+	DeploymentID string `json:"deployment_id,omitempty"`
+	Scope        string `json:"scope"` // application | all
+	Reason       string `json:"reason"`
 }
 
 // AgentReport sends a heartbeat + status report to the control plane.

@@ -60,15 +60,21 @@ func TestCaptureReleaseUsesTheDeployedStartupProtocol(t *testing.T) {
 
 // bumpRestarts rewrites the double's state adding one restart to the
 // deployment's containers, the way a flapping service looks to Docker.
+// bumpRestarts may run in a goroutine (the flapping watchers), so it reports
+// with t.Error and returns — t.Fatal is only valid on the test's goroutine —
+// and it reads and replaces the state with the double's Windows retry: the
+// agent's own docker calls hold the file open for a moment.
 func bumpRestarts(t *testing.T, statePath, project string) {
 	t.Helper()
-	raw, err := os.ReadFile(statePath)
+	raw, err := dockertest.ReadStateFile(statePath)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 	var state dockertest.State
 	if err := json.Unmarshal(raw, &state); err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 	for i := range state.Containers {
 		if state.Containers[i].Config.Labels["com.docker.compose.project"] == project {
@@ -77,14 +83,16 @@ func bumpRestarts(t *testing.T, statePath, project string) {
 	}
 	out, err := json.Marshal(state)
 	if err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 	tmp := statePath + ".flap"
 	if err := os.WriteFile(tmp, out, 0o600); err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
-	if err := os.Rename(tmp, statePath); err != nil {
-		t.Fatal(err)
+	if err := dockertest.ReplaceStateFile(tmp, statePath); err != nil {
+		t.Error(err)
 	}
 }
 
@@ -126,12 +134,15 @@ func TestStartupV2WindowResetsOnRestart(t *testing.T) {
 		t.Fatalf("a service that restarts inside every stability window was called healthy: %s", why)
 	}
 
-	// The same stack, left alone, settles through the window — and the
-	// window it settles through is the one re-armed by the LAST restart:
-	// answering healthy before a full window has passed since that restart
-	// is exactly the "window never re-arms" bug (this test's control; the
-	// crash-loop counter must not be the thing that catches it — one bump
-	// after the settle's own baseline stays far below that threshold).
+	// The same stack, left alone, settles through the window, and not before
+	// a full window has passed since this settle began. That is the timing
+	// contract of a stable stack; the restart bumped here lands BEFORE the
+	// settle takes its baseline, so this half does not exercise a re-arm.
+	// It is NOT the control for a window that never re-arms:
+	// with that mutation this test still passes. The re-arm is held by
+	// TestV2WindowSingleRestartThenStable, TestV2WindowSlowCrasherNeverReady
+	// and TestStartupV2MixedStackSmoke, and on the real daemon by
+	// TestStartupV2SingleRestartReal.
 	bumpRestarts(t, double.StatePath(), id)
 	settleStart := time.Now()
 	verdict, why = d.awaitStackSettledPolicy(context.Background(), id, policy)

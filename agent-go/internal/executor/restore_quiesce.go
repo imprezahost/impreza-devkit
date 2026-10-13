@@ -177,6 +177,15 @@ type restoreQuiesceRecord struct {
 	BaselineReplaced []string `json:"baseline_replaced,omitempty"`
 	JobExitCode      int      `json:"job_exit_code,omitempty"`
 	StartedUTC       string   `json:"started_utc,omitempty"`
+	// ReadyDeadlineUTC and ExitDeadlineUTC pin the two ceilings to the
+	// moment each wait first began: an agent restart resumes the
+	// remaining time instead of granting a fresh ceiling, so a restore holds
+	// the command queue for at most the two ceilings in total.
+	ReadyDeadlineUTC string `json:"ready_deadline_utc,omitempty"`
+	ExitDeadlineUTC  string `json:"exit_deadline_utc,omitempty"`
+	// JobVanished records that the job container disappeared after GO
+	// without leaving an exit code, which is not a stalled exchange.
+	JobVanished bool `json:"job_vanished,omitempty"`
 }
 
 type restoreQuiesceContainerPolicy struct {
@@ -215,7 +224,29 @@ func (r *restoreQuiesceRecord) validate() error {
 			return errors.New("invalid restore quiesce baseline")
 		}
 	}
+	for _, stamp := range []string{r.ReadyDeadlineUTC, r.ExitDeadlineUTC} {
+		if stamp == "" {
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339, stamp); err != nil {
+			return errors.New("invalid restore quiesce deadline")
+		}
+	}
 	return nil
+}
+
+// quiesceDeadline returns the deadline a journal pinned, or pins one now
+// (now + ceiling) when the wait has none yet. The caller saves the record
+// before it waits, so a restart finds the same deadline.
+func quiesceDeadline(stamp *string, ceiling time.Duration) time.Time {
+	if *stamp != "" {
+		if at, err := time.Parse(time.RFC3339, *stamp); err == nil {
+			return at
+		}
+	}
+	at := time.Now().UTC().Add(ceiling).Truncate(time.Second)
+	*stamp = at.Format(time.RFC3339)
+	return at
 }
 
 func (d *Docker) quiesceDir(jobID string) (string, error) {
@@ -405,7 +436,14 @@ func (d *Docker) runQuiesceRestore(ctx context.Context, cmd *sdkclient.PollComma
 // windows of the live run and the recovery after an agent restart the
 // same code path. Every terminal outcome is durably recorded before it
 // is returned.
-func (d *Docker) quiesceDrive(ctx context.Context, cmd *sdkclient.PollCommand, jobID string) sdkclient.DeployResult {
+func (d *Docker) quiesceDrive(ctx context.Context, cmd *sdkclient.PollCommand, jobID string) (result sdkclient.DeployResult) {
+	defer func() {
+		if result.Status != PreparationPendingStatus {
+			if err := d.cleanupFinishedBackupJob(ctx, jobID); err != nil {
+				d.Log.Warn("backup job cleanup pending", "deployment_id", jobID, "reason", err.Error())
+			}
+		}
+	}()
 	record, err := d.loadQuiesceRecord(jobID)
 	if err != nil || record == nil {
 		return failResult(cmd.ID, "restore quiesce journal is unreadable; the operation is not repeated")
@@ -437,7 +475,11 @@ func (d *Docker) quiesceDrive(ctx context.Context, cmd *sdkclient.PollCommand, j
 				return terminal("failed", fmt.Sprintf("the restore job could not be started again: %v\n%s", upErr, tail(out, 1536)))
 			}
 		}
-		ready, exitCode := d.quiesceAwaitReady(ctx, jobID, plan)
+		readyDeadline := quiesceDeadline(&record.ReadyDeadlineUTC, quiesceReadyCeiling)
+		if err := d.saveQuiesceRecord(*record); err != nil {
+			return terminal("failed", "restore quiesce journal could not be updated: "+err.Error())
+		}
+		ready, exitCode := d.quiesceAwaitReady(ctx, jobID, plan, readyDeadline)
 		if ctx.Err() != nil {
 			return quiescePending(cmd, jobID)
 		}
@@ -476,7 +518,7 @@ func (d *Docker) quiesceDrive(ctx context.Context, cmd *sdkclient.PollCommand, j
 			d.quiesceSignalAbort(ctx, plan)
 			d.quiesceRestorePolicies(ctx, policies)
 			startErr := d.quiesceStartTarget(ctx, plan.Target)
-			d.quiesceAwaitJobExit(ctx, jobID, quiesceAbortWait)
+			d.quiesceAwaitJobExit(ctx, jobID, time.Now().Add(quiesceAbortWait))
 			msg := "the application could not be stopped for the restore (" + stopErr.Error() + "); nothing was changed"
 			if startErr != nil {
 				msg += ", but bringing it back up failed: " + startErr.Error()
@@ -498,26 +540,39 @@ func (d *Docker) quiesceDrive(ctx context.Context, cmd *sdkclient.PollCommand, j
 	}
 
 	if record.Phase == "stopped" {
+		// Pin the exchange deadline before releasing the job: a restart
+		// resumes the time left, never a fresh ceiling.
+		exitDeadline := quiesceDeadline(&record.ExitDeadlineUTC, quiesceExitCeiling)
+		if err := d.saveQuiesceRecord(*record); err != nil {
+			d.Log.Warn("restore quiesce: exchange deadline could not be journaled; this run still honours it", "err", err)
+		}
 		if err := d.quiesceSignalGo(ctx, plan); err != nil {
 			// The script's own wait ceiling then ends the job unchanged;
 			// the displaced-tree check still interprets the leftovers.
 			d.Log.Warn("restore quiesce: GO marker could not be written; the job will time out unchanged", "err", err)
 		}
 		d.deploymentProgress(ctx, cmd, "swapping")
-		exitCode := d.quiesceAwaitJobExit(ctx, jobID, quiesceExitCeiling)
-		if exitCode < 0 && ctx.Err() == nil {
-			exchangeStalled = true
-		}
+		exitCode, vanished := d.quiesceAwaitJobExit(ctx, jobID, exitDeadline)
 		if ctx.Err() != nil {
 			return quiescePending(cmd, jobID)
 		}
-		if exchangeStalled {
-			// The exchange never finished inside the ceiling: the job
-			// container is stuck mid-copy with the application stopped.
-			// Tear it down FIRST and verify nothing of the job project is
-			// still running — a live job keeps writing into data/ while
-			// the rollback moves trees, mixing the two generations.
-			d.Log.Error("restore quiesce: the data exchange did not finish within the ceiling; tearing the job down", "job", jobID, "ceiling", quiesceExitCeiling.String())
+		// A job that could not be observed any more is not an exchange that
+		// ran past the ceiling: it is reported for what it is, and judged by
+		// the displaced tree it did or did not leave.
+		exchangeStalled = exitCode < 0 && !vanished
+		record.JobVanished = exitCode < 0 && vanished
+		if exitCode < 0 {
+			// The exchange never finished inside the ceiling, or the job
+			// could not be observed: either way it may still be alive with
+			// the application stopped. Tear it down FIRST and verify
+			// nothing of the job project is still running — a live job
+			// keeps writing into data/ while the rollback moves trees,
+			// mixing the two generations.
+			if exchangeStalled {
+				d.Log.Error("restore quiesce: the data exchange did not finish within the ceiling; tearing the job down", "job", jobID, "ceiling", quiesceExitCeiling.String())
+			} else {
+				d.Log.Error("restore quiesce: the restore job could not be observed after the exchange was released; tearing it down", "job", jobID)
+			}
 			d.quiesceTearDown(ctx, jobDir)
 			if running := d.quiesceJobStillRunning(ctx, jobID); running {
 				// The job would not die. Nothing may be undone and the
@@ -533,9 +588,13 @@ func (d *Docker) quiesceDrive(ctx context.Context, cmd *sdkclient.PollCommand, j
 				if err := d.saveQuiesceRecord(*record); err != nil {
 					d.Log.Error("restore quiesce: journal write failed", "err", err)
 				}
+				why := fmt.Sprintf("the data exchange did not finish within %s", quiesceExitCeiling)
+				if record.JobVanished {
+					why = "the restore job could not be observed after the data exchange was released"
+				}
 				result := sdkclient.DeployResult{CommandID: cmd.ID, Status: "failed", DeploymentID: jobID,
 					RestoreQuiesce: proof,
-					Error:          fmt.Sprintf("the data exchange did not finish within %s and the job could not be stopped; nothing was undone and the application remains stopped. The restore journal is quarantined (quiesce_orphan) until support confirms the job is dead. Contact support before restarting it.", quiesceExitCeiling)}
+					Error:          why + " and the job could not be stopped; nothing was undone and the application remains stopped. The restore journal is quarantined (quiesce_orphan) until support confirms the job is dead. Contact support before restarting it."}
 				d.quiesceWriteResult(jobID, result)
 				return result
 			}
@@ -549,8 +608,10 @@ func (d *Docker) quiesceDrive(ctx context.Context, cmd *sdkclient.PollCommand, j
 		}
 		// Phase 4 — interpret the outcome; undo a failed exchange before
 		// the application can read a half-restored tree. The undo only
-		// runs with the job confirmed dead (the stall path above tears
-		// down first; the normal exit paths have the container finished).
+		// runs with the job confirmed dead (the stall and vanished paths
+		// above tear down first; the normal exit paths have the container
+		// finished). A vanished job with no displaced tree never swapped:
+		// nothing to undo, the application comes back on its own data.
 		switch {
 		case exitCode == 0:
 			record.Outcome = "succeed"
@@ -606,16 +667,25 @@ func (d *Docker) quiesceDrive(ctx context.Context, cmd *sdkclient.PollCommand, j
 		return result
 	case "fail_undone":
 		if record.Undone {
+			if record.JobVanished {
+				return terminal("failed", "the restore job disappeared after the data exchange started; the exchange was undone and the previous data put back. "+note+"\n"+logs)
+			}
 			if exchangeStalled {
 				return terminal("failed", fmt.Sprintf("the data exchange did not finish within %s and was rolled back; the previous data is back in place. %s\n%s", quiesceExitCeiling, note, logs))
 			}
 			return terminal("failed", "the restore job failed after the data exchange started; the exchange was undone and the previous data put back. "+note+"\n"+logs)
+		}
+		if record.JobVanished {
+			return terminal("failed", "the restore job disappeared after the data exchange started and the rollback did not complete; contact support before restarting the application. "+note+"\n"+logs)
 		}
 		if exchangeStalled {
 			return terminal("failed", fmt.Sprintf("the data exchange did not finish within %s and the rollback did not complete; contact support before restarting the application. %s\n%s", quiesceExitCeiling, note, logs))
 		}
 		return terminal("failed", "the restore job failed after the data exchange started and the rollback did not complete; contact support before restarting the application. "+note+"\n"+logs)
 	default:
+		if record.JobVanished {
+			return terminal("failed", "the restore job disappeared before reporting a result and no data had been exchanged; the application was started again on its previous data. "+note+"\n"+logs)
+		}
 		if record.JobExitCode >= 0 {
 			return terminal("failed", fmt.Sprintf("the restore failed (job exit %d) without changing any data. %s\n%s", record.JobExitCode, note, logs))
 		}
@@ -636,11 +706,11 @@ func (d *Docker) quiesceTerminalLogged(ctx context.Context, cmd *sdkclient.PollC
 }
 
 // quiesceAwaitReady waits for the script's READY marker while the
-// application keeps running. Returns ready=false with the job's exit code
-// when the job container finished first, or -1 when staging ran out.
-func (d *Docker) quiesceAwaitReady(ctx context.Context, jobID string, plan quiescePlan) (bool, int) {
+// application keeps running, up to the deadline the journal pinned.
+// Returns ready=false with the job's exit code when the job container
+// finished first, or -1 when staging ran out.
+func (d *Docker) quiesceAwaitReady(ctx context.Context, jobID string, plan quiescePlan, deadline time.Time) (bool, int) {
 	readyPath := filepath.Join(d.appDir(plan.Target), ".restore-"+plan.BackupID, "READY")
-	deadline := time.Now().Add(quiesceReadyCeiling)
 	if end, ok := ctx.Deadline(); ok && end.Before(deadline) {
 		deadline = end
 	}
@@ -682,37 +752,35 @@ func (d *Docker) quiesceAwaitReady(ctx context.Context, jobID string, plan quies
 }
 
 // quiesceAwaitJobExit blocks until every job container has terminated and
-// returns the job service's exit code, or -1 when the container vanished
-// before a code could be read. A zero ceiling waits without a bound: once
-// the exchange is released the agent must not abandon a moving tree.
-func (d *Docker) quiesceAwaitJobExit(ctx context.Context, jobID string, ceiling time.Duration) int {
-	deadline := time.Time{}
-	if ceiling > 0 {
-		deadline = time.Now().Add(ceiling)
-	}
+// returns the job service's exit code. A code of -1 comes with vanished=true
+// when the container could not be observed any more (gone, or the runtime
+// stopped answering) — not the same thing as an exchange still running at
+// the deadline (vanished=false), and the caller must not report one as the
+// other. A zero deadline waits without a bound.
+func (d *Docker) quiesceAwaitJobExit(ctx context.Context, jobID string, deadline time.Time) (code int, vanished bool) {
 	misses := 0
 	for {
 		if ctx.Err() != nil {
-			return -1
+			return -1, false
 		}
 		states, err := d.inspectProjectContainers(ctx, jobID)
 		if err != nil || len(states) == 0 {
 			misses++
 			if misses > 30 {
-				return -1
+				return -1, true
 			}
 		} else {
 			misses = 0
 			if quiesceAllExited(states) {
-				return quiesceJobExit(states)
+				return quiesceJobExit(states), false
 			}
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {
-			return -1
+			return -1, false
 		}
 		select {
 		case <-ctx.Done():
-			return -1
+			return -1, false
 		case <-time.After(quiescePollInterval):
 		}
 	}

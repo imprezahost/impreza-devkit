@@ -320,6 +320,9 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 
 		for cmd.ControlToken != "" && ctx.Err() == nil {
 			if err := p.client.AgentDeployResult(ctx, result); err == nil {
+				if err := p.cleanupAcknowledgedResult(ctx, cmd.Kind, result); err != nil {
+					p.log.Warn("acknowledged backup cleanup pending", "command_id", cmd.ID, "err", err)
+				}
 				break
 			} else {
 				p.log.Warn("controlled deployment result awaiting acknowledgement", "command_id", cmd.ID, "err", err)
@@ -336,6 +339,9 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 			// tolerate a redelivery. Log and continue.
 			p.log.Error("poll: report deploy-result failed", "command_id", cmd.ID, "err", err)
 			continue
+		}
+		if err := p.cleanupAcknowledgedResult(ctx, cmd.Kind, result); err != nil {
+			p.log.Warn("acknowledged backup cleanup pending", "command_id", cmd.ID, "err", err)
 		}
 		p.log.Info("poll: reported result", "command_id", cmd.ID, "status", result.Status)
 	}
@@ -436,6 +442,14 @@ func (p *Poller) sendHeartbeat(ctx context.Context) {
 		CollectIngress() *sdkclient.IngressReport
 	}); ok {
 		report.Ingress = collector.CollectIngress()
+	}
+
+	// A quarantined restore must reach the control plane on its own,
+	// not only inside the result of an operation it refused.
+	if collector, ok := p.exec.(interface {
+		CollectRestoreQuarantine() []sdkclient.RestoreQuarantineReport
+	}); ok {
+		report.RestoreQuarantine = collector.CollectRestoreQuarantine()
 	}
 
 	demand, err := p.client.AgentHeartbeat(ctx, report)

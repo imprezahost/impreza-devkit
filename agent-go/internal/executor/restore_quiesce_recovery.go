@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -55,7 +56,8 @@ func (d *Docker) quiesceReadResult(jobID, commandID string) (sdkclient.DeployRes
 		return sdkclient.DeployResult{}, false
 	}
 	var file restoreQuiesceResultFile
-	if json.Unmarshal(raw, &file) != nil || file.Version != 1 || file.CommandID != commandID {
+	if json.Unmarshal(raw, &file) != nil || file.Version != 1 || file.CommandID != commandID ||
+		file.Result.CommandID != commandID || file.Result.DeploymentID != jobID {
 		return sdkclient.DeployResult{}, false
 	}
 	return file.Result, true
@@ -207,7 +209,7 @@ func (d *Docker) ReconcileRestoreQuiesce(ctx context.Context, activeCommandID st
 			d.Log.Error("restore quiesce: unowned journal has a live job; refusing to start the application", "job", jobID)
 			continue
 		}
-		bounded, cancel := context.WithTimeout(ctx, 45*time.Minute)
+		bounded, cancel := context.WithTimeout(ctx, quiesceReconcileBudget())
 		result := d.quiesceDrive(bounded, &sdkclient.PollCommand{ID: record.CommandID}, jobID)
 		cancel()
 		if result.Status == PreparationPendingStatus {
@@ -221,6 +223,16 @@ func (d *Docker) ReconcileRestoreQuiesce(ctx context.Context, activeCommandID st
 		}
 	}
 	return nil
+}
+
+// quiesceReconcileBudget bounds the startup drive of an unowned journal.
+// The drive honours the deadlines the journal pinned, so it ends by
+// itself within the two ceilings plus the abort wait; the budget only
+// guards against a hang and must never be shorter than that, or the
+// startup fails, the agent restarts and drives the same journal again —
+// the 45 min the ceilings of 2 h used to outlast.
+func quiesceReconcileBudget() time.Duration {
+	return quiesceReadyCeiling + quiesceExitCeiling + quiesceAbortWait + 15*time.Minute
 }
 
 // poisonQuiesce quarantines what an unverifiable journal puts at risk.
@@ -263,6 +275,12 @@ func (d *Docker) quiescePoisonTarget(jobID string) (string, bool) {
 	if json.Unmarshal(raw, &file) != nil || file.Version != 1 || file.Result.RestoreQuiesce == nil {
 		return "", false
 	}
+	// The receipt must be THIS journal's: a result.json another job left
+	// (copied or moved in) named another application, poisoned it, and
+	// left the real target — mid-exchange — free to be touched.
+	if file.Result.DeploymentID != jobID || file.CommandID == "" || file.Result.CommandID != file.CommandID {
+		return "", false
+	}
 	target := file.Result.RestoreQuiesce.Target
 	if !failoverDeploymentID.MatchString(target) {
 		return "", false
@@ -270,22 +288,68 @@ func (d *Docker) quiescePoisonTarget(jobID string) (string, bool) {
 	return target, true
 }
 
+// quarantineScope says which deployment of a command a quarantined
+// (poisoned) restore journal must protect.
+type quarantineScope int
+
+const (
+	// quarantineAllowed: the command cannot change the application's data
+	// or bring anything back onto it, so support keeps it while the journal
+	// is reconciled. health_check and logs_tail read; host_failover_fence
+	// only stops the containers, removes the routes and withdraws the onion
+	// (it moves risk away); host_failover_release lifts a fence but keeps
+	// the containers stopped; onion_key_export seals the current identity
+	// for a standby, the way out of a quarantined host; routes, ingress and
+	// the onion profile/auth only shape access to an application that stays
+	// stopped.
+	quarantineAllowed quarantineScope = iota
+	// quarantineBoth: refused when the deployment itself or the target it
+	// names is quarantined. These change the application's data or
+	// containers (deploy, rollback, uninstall, restart), or irreversibly
+	// change the identity support is reconciling (onion_rotate parks the
+	// live key and publishes a new address; onion_purge destroys parked
+	// recovery copies), or make the quarantined application the receiver of
+	// a failover (onion_transfer_recipient), which would put visitors on
+	// data nobody verified.
+	quarantineBoth
+	// quarantineTarget: traffic_switch moves a hostname FROM the deployment
+	// TO a target. Moving visitors onto a quarantined target is refused;
+	// moving them off a quarantined source is how a customer gets back
+	// online, so the source alone does not refuse it.
+	quarantineTarget
+)
+
+func quarantineScopeOf(kind sdkclient.CommandKind) quarantineScope {
+	switch kind {
+	case sdkclient.CommandDeploy, sdkclient.CommandRollback, sdkclient.CommandUninstall,
+		sdkclient.CommandRestart, sdkclient.CommandOnionRotate, sdkclient.CommandOnionPurge,
+		sdkclient.CommandOnionTransferRecipient:
+		return quarantineBoth
+	case sdkclient.CommandTrafficSwitch:
+		return quarantineTarget
+	default:
+		return quarantineAllowed
+	}
+}
+
 // quiesceRefusal reports why a command may not touch the deployment, when
-// a poisoned journal says it may not.
+// a poisoned journal says it may not. An unknown target ("") refuses every
+// command that is not quarantineAllowed.
 func (d *Docker) quiesceRefusal(kind sdkclient.CommandKind, deploymentID, target string) string {
 	if d.quiescePoisoned == nil {
 		return ""
 	}
-	touchesData := kind == sdkclient.CommandDeploy || kind == sdkclient.CommandRollback ||
-		kind == sdkclient.CommandUninstall || kind == sdkclient.CommandRestart
-	if !touchesData {
+	scope := quarantineScopeOf(kind)
+	if scope == quarantineAllowed {
 		return ""
 	}
 	if reason, poisoned := d.quiescePoisoned[""]; poisoned {
 		return reason
 	}
-	if reason, poisoned := d.quiescePoisoned[deploymentID]; poisoned && deploymentID != "" {
-		return reason
+	if scope == quarantineBoth {
+		if reason, poisoned := d.quiescePoisoned[deploymentID]; poisoned && deploymentID != "" {
+			return reason
+		}
 	}
 	if reason, poisoned := d.quiescePoisoned[target]; poisoned && target != "" {
 		return reason
@@ -293,19 +357,65 @@ func (d *Docker) quiesceRefusal(kind sdkclient.CommandKind, deploymentID, target
 	return ""
 }
 
-// quiesceExecuteRefusal is the Execute-level arm of the poison: for the
-// kinds that touch an application's data, it reads the target a deploy
-// command names (a restore job's IMPREZA_TARGET) and refuses when the
-// poisoned journal is the application's.
+// quiesceExecuteRefusal is the Execute-level arm of the poison: it reads
+// the target a command names (a restore job's IMPREZA_TARGET, a traffic
+// switch's target_deployment_id) and refuses when the poisoned journal is
+// the application's.
 func (d *Docker) quiesceExecuteRefusal(cmd *sdkclient.PollCommand, deploymentID string) string {
 	target := ""
-	if cmd.Kind == sdkclient.CommandDeploy {
+	switch cmd.Kind {
+	case sdkclient.CommandDeploy:
 		var payload struct {
 			Vars map[string]any `json:"vars"`
 		}
 		if cmd.As(&payload) == nil {
 			target, _ = payload.Vars["IMPREZA_TARGET"].(string)
 		}
+	case sdkclient.CommandTrafficSwitch:
+		var payload struct {
+			TargetDeploymentID string `json:"target_deployment_id"`
+		}
+		if cmd.As(&payload) == nil {
+			target = payload.TargetDeploymentID
+		}
 	}
 	return d.quiesceRefusal(cmd.Kind, deploymentID, target)
+}
+
+// maxQuarantineReports bounds the heartbeat field: one entry per poisoned
+// journal target, never more than an agent can plausibly hold.
+const maxQuarantineReports = 32
+
+// CollectRestoreQuarantine is the heartbeat's view of the poison:
+// without it the control plane only learned of a quarantined application
+// from the result of a refused operation, and an application stopped by a
+// restore could sit down with nobody told. The map is written only by the
+// startup reconciliation, before the heartbeat loop starts, so reading it
+// here races with nothing. Ordered and bounded; the reason is the same text
+// a refused result already carries (the restore job id and why the journal
+// is held), never a secret.
+func (d *Docker) CollectRestoreQuarantine() []sdkclient.RestoreQuarantineReport {
+	if len(d.quiescePoisoned) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(d.quiescePoisoned))
+	for k := range d.quiescePoisoned {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]sdkclient.RestoreQuarantineReport, 0, len(keys))
+	for _, k := range keys {
+		if len(out) == maxQuarantineReports {
+			break
+		}
+		r := sdkclient.RestoreQuarantineReport{DeploymentID: k, Scope: "application", Reason: d.quiescePoisoned[k]}
+		if k == "" {
+			r.Scope = "all"
+		}
+		if len(r.Reason) > 512 {
+			r.Reason = strings.ToValidUTF8(r.Reason[:512], "")
+		}
+		out = append(out, r)
+	}
+	return out
 }

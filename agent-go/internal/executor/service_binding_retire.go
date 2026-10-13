@@ -105,7 +105,7 @@ func (d *Docker) finishServiceBindingRetirements(ctx context.Context, p sdkclien
 	for _, c := range p.ServiceBindingRetirementAuthorizations {
 		out := sdkclient.ServiceBindingRetirementResult{ServiceBindingRef: c.ServiceBindingRef, Status: "pending", DataRetained: true}
 		check, cancel := context.WithTimeout(ctx, 60*time.Second)
-		if verified && d.verifyConsumerDisconnected(check, p.DeploymentID, c.ProviderDeploymentID) == nil {
+		if verified && d.verifyConsumerDisconnected(check, p.DeploymentID, c.ProviderDeploymentID) == nil && d.redactRetainedBindingCredentials(check, p.DeploymentID, c) == nil {
 			var err error
 			switch p.Manifest.Runtime.ServiceBindingRetirementProtocol {
 			case sdkclient.ServiceBindingGenerationRetirementProtocol:

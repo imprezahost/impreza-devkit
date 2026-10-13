@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"text/template"
 	"time"
@@ -60,6 +62,11 @@ type State struct {
 	// hold, or a restart policy brought it straight back. The quiesce must
 	// re-inspect and refuse to release the exchange.
 	LyingStops []string
+	// LyingUpdates names containers whose `docker update --restart=...`
+	// SUCCEEDS while the restart policy stays as it was — a daemon that
+	// acknowledged the change without applying it. The quiesce must re-inspect
+	// the policy and refuse to release the exchange.
+	LyingUpdates []string
 	// DownSurvivors names containers `compose down` cannot remove — the
 	// quiesce rollback must verify the job project is actually gone before
 	// undoing a stalled exchange.
@@ -757,7 +764,9 @@ func (s *State) update(args []string) int {
 			code = 1
 			continue
 		}
-		c.HostConfig.RestartPolicy.Name = restart
+		if !slices.Contains(s.LyingUpdates, c.ID) {
+			c.HostConfig.RestartPolicy.Name = restart
+		}
 		fmt.Println(ref)
 	}
 	return code
@@ -1147,11 +1156,38 @@ func normalizeProject(s string) string {
 
 func load(path string) (State, error) {
 	var s State
-	raw, err := os.ReadFile(path)
+	raw, err := ReadStateFile(path)
 	if err != nil {
 		return s, err
 	}
 	return s, json.Unmarshal(raw, &s)
+}
+
+// ReadStateFile reads the double's state. Windows refuses the open while
+// another shim (or a scripted watcher) is replacing the file — a sharing
+// violation that is gone milliseconds later — so it retries briefly there,
+// as save does for the rename.
+func ReadStateFile(path string) ([]byte, error) {
+	for attempt := 0; ; attempt++ {
+		raw, err := os.ReadFile(path)
+		if err == nil || attempt >= 40 || runtime.GOOS != "windows" || os.IsNotExist(err) {
+			return raw, err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// ReplaceStateFile renames tmp over the state file with the same Windows
+// retry save uses.
+func ReplaceStateFile(tmp, path string) error {
+	for attempt := 0; ; attempt++ {
+		if err := os.Rename(tmp, path); err == nil {
+			return nil
+		} else if attempt >= 40 || runtime.GOOS != "windows" {
+			return err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 func save(path string, s State) error {
@@ -1163,17 +1199,36 @@ func save(path string, s State) error {
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	// Windows denies the rename while another shim (or a scripted watcher)
-	// holds the state open; a short retry keeps concurrent writers from
-	// turning into flaky failures.
-	for attempt := 0; ; attempt++ {
-		if err := os.Rename(tmp, path); err == nil {
-			return nil
-		} else if attempt >= 20 || runtime.GOOS != "windows" {
+	return RetryingRename(tmp, path)
+}
+
+// renameBudget bounds RetryingRename. Half a second (the retry this
+// replaces) was not enough: a metrics test still failed now and then
+// on Windows with a docker call that could not save its state.
+const renameBudget = 10 * time.Second
+
+// RetryingRename is os.Rename, retried on Windows while another process
+// holds the target open: Windows denies replacing a file that is open
+// without delete sharing (an antivirus or indexer scanning a file just
+// written, another shim, a scripted watcher), where Linux never does. Only
+// that denial is retried, and only on Windows; any other error, and every
+// error elsewhere, returns at once. Tests use it where the code under test
+// replaces a file by rename (proxy: torRename).
+func RetryingRename(from, to string) error {
+	deadline := time.Now().Add(renameBudget)
+	for {
+		err := os.Rename(from, to)
+		if err == nil || runtime.GOOS != "windows" || !renameDenied(err) || time.Now().After(deadline) {
 			return err
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+// renameDenied is ERROR_ACCESS_DENIED (5) or ERROR_SHARING_VIOLATION (32).
+func renameDenied(err error) bool {
+	var errno syscall.Errno
+	return errors.As(err, &errno) && (errno == 5 || errno == 32)
 }
 
 func newID() string {

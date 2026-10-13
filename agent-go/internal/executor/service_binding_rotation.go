@@ -136,6 +136,9 @@ func (d *Docker) finishServiceBindingRotation(ctx context.Context, p sdkclient.D
 	}
 	check, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
+	if d.redactRetainedBindingCredentials(check, p.DeploymentID, p.ServiceBindingRetirementAuthorizations[0]) != nil {
+		return out
+	}
 	retire := d.retirePostgresGeneration
 	if p.Manifest.Runtime.ServiceBindingRotationProtocol == sdkclient.MysqlServiceBindingRotationProtocol {
 		retire = d.retireMysqlGeneration
