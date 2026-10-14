@@ -68,6 +68,43 @@ func TestQuiesceAbortsWhenTheStopLies(t *testing.T) {
 	}
 }
 
+// `docker stop` answering success while the container is left
+// restarting (not Running, but on its way back) must abort the quiesce the
+// same way: the check after the stop reads State.Restarting too.
+func TestQuiesceAbortsWhenTheContainerIsRestartingAfterTheStop(t *testing.T) {
+	quiesceShortDeadlines(t)
+	d := quiesceFixture(t)
+	double := quiesceContainers(t, d, "running", "running", 0)
+	statePath := double.StatePath()
+	writeReady(t, d)
+	state := double.State()
+	state.RestartingStops = []string{state.Containers[0].ID}
+	double.Save(state)
+	watch := quiesceWatch(func() bool {
+		return exists(filepath.Join(quiesceStagingDir(d), "ABORT"))
+	}, func() { quiesceExitJob(t, statePath, 1) }, func() bool { return quiesceJobSettled(statePath) })
+	defer func() { <-watch }()
+
+	cmd := &sdkclient.PollCommand{ID: "cmd_quiesce_restarting", Kind: sdkclient.CommandDeploy,
+		Payload: quiescePayload(quiesceTestTarget, nil)}
+	result := d.Execute(context.Background(), cmd)
+	if result.Status != "failed" || !strings.Contains(result.Error, "could not be stopped") {
+		t.Fatalf("a container left restarting did not abort the restore: %+v", result)
+	}
+	if proof := result.RestoreQuiesce; proof == nil || proof.Stopped {
+		t.Fatalf("the proof must show the stop never completed: %+v", proof)
+	}
+	if _, err := os.Stat(filepath.Join(quiesceStagingDir(d), "GO")); !os.IsNotExist(err) {
+		t.Fatal("the exchange was released while a container was restarting")
+	}
+	if _, err := os.Stat(filepath.Join(d.appDir(quiesceTestTarget), "data", "current.txt")); err != nil {
+		t.Fatal("application data was touched while a container was restarting")
+	}
+	if c, _ := double.Container("dpl_aaaaaaaaaaaaaaaa-app-1"); c.HostConfig.RestartPolicy.Name != "always" {
+		t.Fatalf("restart policy not restored after the abort: %+v", c.HostConfig)
+	}
+}
+
 // G5: the undo is inferred from the displaced tree alone — the job exits
 // with a generic failure code, not the swapped-failure contract.
 func TestQuiesceUndoInferredFromDisplacedTreeWithoutSwappedExitCode(t *testing.T) {

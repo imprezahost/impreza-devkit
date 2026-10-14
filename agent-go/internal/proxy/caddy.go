@@ -366,14 +366,14 @@ func (c *Caddy) EnsureRunning(ctx context.Context) error {
 				return err
 			}
 		} else if existing.Status == "running" {
-			return c.reconcileTorEgressNetworks(ctx)
+			return c.reconcileReadyProxy(ctx)
 		} else {
 			// Exists, same shape, but not running — start it.
 			c.Log.Info("proxy: starting existing caddy container", "state", existing.Status)
 			if out, err := exec.CommandContext(ctx, "docker", "start", ContainerName).CombinedOutput(); err != nil {
 				return fmt.Errorf("docker start %s: %v: %s", ContainerName, err, strings.TrimSpace(string(out)))
 			}
-			return c.reconcileTorEgressNetworks(ctx)
+			return c.reconcileReadyProxy(ctx)
 		}
 	}
 
@@ -385,7 +385,31 @@ func (c *Caddy) EnsureRunning(ctx context.Context) error {
 	if out, err := exec.CommandContext(ctx, "docker", run...).CombinedOutput(); err != nil {
 		return fmt.Errorf("docker run caddy: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	return c.reconcileTorEgressNetworks(ctx)
+	return c.reconcileReadyProxy(ctx)
+}
+
+// reconcileReadyProxy treats detached Docker startup as a process start, not
+// proof that Caddy's local admin endpoint can accept the first route reload.
+// Probe only the endpoint used by reload, without exposing its configuration.
+func (c *Caddy) reconcileReadyProxy(ctx context.Context) error {
+	if err := c.reconcileTorEgressNetworks(ctx); err != nil {
+		return err
+	}
+	ready, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	for {
+		err := exec.CommandContext(ready, "docker", "exec", ContainerName, "wget", "-q", "-T", "1", "-O", "/dev/null", "http://127.0.0.1:2019/config/").Run()
+		if err == nil && ready.Err() == nil {
+			return nil
+		}
+		timer := time.NewTimer(200 * time.Millisecond)
+		select {
+		case <-ready.Done():
+			timer.Stop()
+			return fmt.Errorf("proxy admin endpoint did not become ready: %w", ready.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 // runArgs is the proxy container's `docker run`, image last, without the
@@ -461,10 +485,15 @@ func readProxyEnvFile(path string) ([]string, error) {
 }
 
 // proxyImageDefaultEnv resolves, from the image the agent pins, the
-// environment entries the image itself provides. Everything else in the
-// container must come from the env-file: a variable that left the file is
-// a leftover the recreation must pick up. Fetched lazily and only
-// cached on success, so an image change is picked up on the next deploy.
+// environment entries the image itself provides, each as NAME=value: a
+// variable the env-file set over an image default with another value (a
+// PATH, say) and then dropped is a leftover too, and only the image's own
+// value may remain. Everything else in the container must come from the
+// env-file: a variable that left the file is a leftover the recreation
+// must pick up. HOSTNAME is the one entry allowed by name alone (an
+// entry without "="): the daemon sets it to the container's own name.
+// Fetched lazily and only cached on success, so an image change is picked
+// up on the next deploy.
 func (c *Caddy) proxyImageDefaultEnv(ctx context.Context) []string {
 	if c.imageEnv != nil {
 		return c.imageEnv
@@ -477,21 +506,21 @@ func (c *Caddy) proxyImageDefaultEnv(ctx context.Context) []string {
 	if json.Unmarshal(out, &entries) != nil {
 		return nil
 	}
-	names := make([]string, 0, len(entries))
+	allowed := make([]string, 0, len(entries)+1)
 	for _, entry := range entries {
-		if key, _, found := strings.Cut(entry, "="); found {
-			names = append(names, key)
+		if strings.Contains(entry, "=") {
+			allowed = append(allowed, entry)
 		}
 	}
-	names = append(names, "HOSTNAME") // injected by the daemon, not the image
-	c.imageEnv = names
-	return names
+	allowed = append(allowed, "HOSTNAME") // set by the daemon, any value: by name only
+	c.imageEnv = allowed
+	return allowed
 }
 
 // proxyEnvMatches reports whether a container environment carries exactly
-// the env-file's entries (the last one wins for a repeated name): each with
-// the same value, and none of the agent's credential names left over from
-// an earlier file.
+// the env-file's entries (the last one wins for a repeated name), each with
+// the same value, and nothing else but what allowed lets remain: an entry
+// NAME=value matches that exact pair, a bare NAME any value of it.
 func proxyEnvMatches(want, have, allowed []string) bool {
 	values := func(entries []string) map[string]string {
 		m := make(map[string]string, len(entries))
@@ -513,11 +542,11 @@ func proxyEnvMatches(want, have, allowed []string) bool {
 	// as file entries, so a stale credential from an earlier file forces
 	// the recreation like any other removal. The container environment is
 	// exposed to the internet; a removed value must not linger there.
-	for key := range current {
+	for key, value := range current {
 		if _, ok := wanted[key]; ok {
 			continue
 		}
-		if !slices.Contains(allowed, key) {
+		if !slices.Contains(allowed, key+"="+value) && !slices.Contains(allowed, key) {
 			return false
 		}
 	}

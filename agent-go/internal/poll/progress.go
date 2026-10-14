@@ -259,6 +259,10 @@ func (p *Poller) answerRefusedClaim(ctx context.Context) error {
 	return p.sendSavedResult(ctx)
 }
 
+// savedResultRetry is how long the agent waits before sending an
+// unacknowledged result again. Only tests change it.
+var savedResultRetry = 5 * time.Second
+
 func (p *Poller) sendSavedResult(ctx context.Context) error {
 	for ctx.Err() == nil {
 		if err := p.client.AgentDeployResult(ctx, *p.active.Result); err == nil {
@@ -278,8 +282,11 @@ func (p *Poller) sendSavedResult(ctx context.Context) error {
 					}
 				}
 			}
-			if err := p.cleanupAcknowledgedResult(ctx, p.active.Kind, *p.active.Result); err != nil {
-				return err
+			if err := p.queueAcknowledgedBackup(p.active.Kind, *p.active.Result); err != nil {
+				if !errors.Is(err, errBackupCleanupInventoryFull) {
+					return err
+				}
+				p.log.Warn("acknowledged backup cleanup not queued", "command_id", p.active.CommandID, "err", err)
 			}
 			p.forgetPreparationWork()
 			p.forgetReplacementWork()
@@ -303,8 +310,11 @@ func (p *Poller) sendSavedResult(ctx context.Context) error {
 			if p.active.ProgressProtocol == sdkclient.DeploymentProgressProtocol {
 				if response, progressErr := p.reportProgress(ctx, "resending_result"); progressErr == nil && response.Terminal {
 					p.log.Warn("saved result rejected but the command is terminal; releasing", "command_id", p.active.CommandID)
-					if err := p.cleanupAcknowledgedResult(ctx, p.active.Kind, *p.active.Result); err != nil {
-						return err
+					if err := p.queueAcknowledgedBackup(p.active.Kind, *p.active.Result); err != nil {
+						if !errors.Is(err, errBackupCleanupInventoryFull) {
+							return err
+						}
+						p.log.Warn("acknowledged backup cleanup not queued", "command_id", p.active.CommandID, "err", err)
 					}
 					p.forgetPreparationWork()
 					p.forgetReplacementWork()
@@ -317,7 +327,7 @@ func (p *Poller) sendSavedResult(ctx context.Context) error {
 				}
 			}
 		}
-		if !sleepCtx(ctx, 5*time.Second) {
+		if !sleepCtx(ctx, savedResultRetry) {
 			break
 		}
 	}

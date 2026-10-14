@@ -64,9 +64,12 @@ func TestProxyEnvMatches(t *testing.T) {
 		{"a repeated name, the last one wins", []string{"IMPREZA_AGENT_ID=old", "IMPREZA_AGENT_ID=agt_1", "IMPREZA_AGENT_SECRET=s1", "IMPREZA_API_URL="}, creds, true},
 		{"variable removed from the env-file, stale copy in the container", creds, append(append(append([]string{}, image...), creds...), "STALE_EXTRA=1"), false},
 		{"all credentials removed, only image defaults may remain", nil, image, true},
+		{"an image default left with another value", nil, []string{"PATH=/opt/stale/bin", "CADDY_VERSION=v2"}, false},
+		{"an image default set by the file, same value, then dropped", nil, image, true},
+		{"the daemon HOSTNAME, any value", creds, append(append(append([]string{}, image...), creds...), "HOSTNAME=daemon-host"), true},
 	}
 	for _, c := range cases {
-		if got := proxyEnvMatches(c.want, c.have, []string{"PATH", "CADDY_VERSION"}); got != c.ok {
+		if got := proxyEnvMatches(c.want, c.have, append(append([]string{}, image...), "HOSTNAME")); got != c.ok {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.ok)
 		}
 	}

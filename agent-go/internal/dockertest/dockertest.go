@@ -62,6 +62,10 @@ type State struct {
 	// hold, or a restart policy brought it straight back. The quiesce must
 	// re-inspect and refuse to release the exchange.
 	LyingStops []string
+	// RestartingStops names containers whose `docker stop` SUCCEEDS and
+	// leaves them restarting: not Running, but the daemon is bringing them
+	// back. The quiesce must refuse that as it refuses Running.
+	RestartingStops []string
 	// LyingUpdates names containers whose `docker update --restart=...`
 	// SUCCEEDS while the restart policy stays as it was — a daemon that
 	// acknowledged the change without applying it. The quiesce must re-inspect
@@ -71,10 +75,18 @@ type State struct {
 	// quiesce rollback must verify the job project is actually gone before
 	// undoing a stalled exchange.
 	DownSurvivors []string
+	// Unremovable injects a daemon removal failure while preserving the container.
+	Unremovable []string
 	// ImageEnv answers `docker image inspect --format {{json .Config.Env}}`
 	// for these image references: the pinned caddy image's defaults.
 	ImageEnv map[string][]string
-	Calls    []Call
+	// Proxy readiness models the period between docker run -d and Caddy's
+	// loopback admin listener. Zero keeps the ordinary double ready.
+	ProxyReadyAfter      int
+	ProxyNeverReady      bool
+	ProxyReadinessProbes int
+	ProxyRejectReload    bool
+	Calls                []Call
 }
 
 // Volume is one named volume: its labels for `volume ls --filter` and the
@@ -299,6 +311,21 @@ func (s *State) dispatch(dir string, args []string) int {
 				return s.inspect(args[2:])
 			}
 		}
+	case "exec":
+		if len(args) > 2 && args[1] == "impreza_caddy" {
+			if args[2] == "wget" {
+				s.ProxyReadinessProbes++
+				if s.ProxyNeverReady || s.ProxyReadinessProbes <= s.ProxyReadyAfter {
+					return 1
+				}
+			}
+			if args[2] == "caddy" && len(args) > 3 && args[3] == "reload" {
+				if s.ProxyRejectReload || s.ProxyNeverReady || s.ProxyReadinessProbes < s.ProxyReadyAfter {
+					return 1
+				}
+			}
+		}
+		return 0
 	case "run":
 		return s.runContainer(args[1:])
 	case "rm":
@@ -685,6 +712,11 @@ func (s *State) rm(args []string) int {
 				code = 1
 				continue
 			}
+			if slices.Contains(s.Unremovable, c.ID) || slices.Contains(s.Unremovable, c.Name) {
+				fmt.Fprintln(os.Stderr, "injected daemon removal failure")
+				code = 1
+				continue
+			}
 			s.remove(a)
 			fmt.Println(a)
 		}
@@ -711,6 +743,13 @@ func (s *State) setStatus(args []string, status string) int {
 		}
 		if status == "exited" && slices.Contains(s.LyingStops, c.ID) {
 			// The daemon answered success; nothing actually stopped.
+			fmt.Println(a)
+			continue
+		}
+		if status == "exited" && slices.Contains(s.RestartingStops, c.ID) {
+			// The daemon answered success and is already restarting it.
+			c.State.Status, c.State.ExitCode = "restarting", 0
+			c.State.Running, c.State.Restarting = false, true
 			fmt.Println(a)
 			continue
 		}

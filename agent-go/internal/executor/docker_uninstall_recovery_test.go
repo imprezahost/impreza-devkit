@@ -10,12 +10,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/imprezahost/impreza-devkit/agent-go/internal/dockertest"
 	sdkclient "github.com/imprezahost/impreza-devkit/sdk-go/client"
 )
 
 func TestUninstallMissingAppStillRequiresOnionRecovery(t *testing.T) {
 	// No external daemon is contacted by this regression.
-	t.Setenv("PATH", t.TempDir())
+	dockertest.Install(t, dockertest.State{})
 	d := NewDocker(t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	d.Proxy = nil
 	if err := os.MkdirAll(d.Tor.StateDir, 0700); err != nil {
@@ -38,7 +39,7 @@ func TestUninstallMissingAppStillRequiresOnionRecovery(t *testing.T) {
 }
 
 func TestInternalJobCleanupDoesNotTouchOnionIdentity(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
+	dockertest.Install(t, dockertest.State{})
 	d := NewDocker(t.TempDir(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	d.Proxy = nil
 	if err := os.MkdirAll(d.Tor.StateDir, 0700); err != nil {

@@ -17,13 +17,47 @@ import (
 // In particular, never follow a redirect carrying agent credentials or allow a
 // new poll before an actual acknowledgement. No executor/helper mock certifies
 // Docker recovery; the leased VPS matrix covers that separate boundary.
+// Round one keeps running for a grace after the fault was answered; a poll or
+// a second post inside it is a defect. Two layers resend a result:
+//   - the SDK's transport retries a 5xx or a lost connection by itself, after
+//     about 1 s (0.8 s at the earliest, with its jitter), inside the same send;
+//   - the agent's own loop resends a refused result after savedResultRetry.
+//
+// So the grace follows the fault: under the SDK's first retry for the faults it
+// retries (ackSDKGrace), and under the injected agent interval for the ones it
+// does not (ackAgentGrace: a fixed 500 ms missed an agent retry of 1 s).
+// ackBackstop only bounds a hung round.
+const (
+	ackRetry      = 2 * time.Second
+	ackAgentGrace = ackRetry - 500*time.Millisecond
+	ackSDKGrace   = 500 * time.Millisecond
+	ackBackstop   = 60 * time.Second
+)
+
+// The production interval stays 5 s; the matrix injects its own.
+func TestSavedResultRetryIsFiveSeconds(t *testing.T) {
+	if savedResultRetry != 5*time.Second {
+		t.Fatalf("savedResultRetry is %v, want 5s", savedResultRetry)
+	}
+}
+
 func TestResultACKFaultMatrix(t *testing.T) {
+	saved := savedResultRetry
+	savedResultRetry = ackRetry
+	t.Cleanup(func() { savedResultRetry = saved })
 	for _, status := range []string{"success", "failed", "cancelled", "timeout", "partial"} {
 		for _, fault := range []string{"unavailable", "unauthorized", "redirect", "lost"} {
 			t.Run(status+"/"+fault, func(t *testing.T) {
 				var accepted atomic.Bool
 				var posts, polls, sinks atomic.Int32
 				var received []sdkclient.DeployResult
+				// The rounds end on events, not on short wall-clock budgets.
+				// The first round ends once the fault was answered (plus a grace in
+				// which an agent wrongly polling past an unacknowledged result would
+				// still be seen); the second round ends at its first poll. On a busy
+				// Windows host the old 250 ms and 2 s budgets ran out first: no post
+				// yet in round one, or no poll yet in round two.
+				answered := make(chan struct{}, 8)
 				done, stop := context.WithCancel(context.Background())
 				defer stop()
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +91,7 @@ func TestResultACKFaultMatrix(t *testing.T) {
 							w.WriteHeader(204)
 							return
 						}
+						defer func() { answered <- struct{}{} }()
 						switch fault {
 						case "unavailable":
 							w.WriteHeader(503)
@@ -93,7 +128,19 @@ func TestResultACKFaultMatrix(t *testing.T) {
 					t.Fatal(err)
 				}
 				lock.Close()
-				ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+				ctx, cancel := context.WithTimeout(context.Background(), ackBackstop)
+				go func() {
+					select {
+					case <-answered:
+						grace := ackAgentGrace
+						if fault == "unavailable" || fault == "lost" {
+							grace = ackSDKGrace
+						}
+						time.Sleep(grace)
+					case <-ctx.Done():
+					}
+					cancel()
+				}()
 				if err = p.Run(ctx); err != nil {
 					cancel()
 					t.Fatal(err)
@@ -105,14 +152,14 @@ func TestResultACKFaultMatrix(t *testing.T) {
 				}
 				accepted.Store(true)
 				p2 := testPoller(t, server.URL, dir, e)
-				ctx2, cancel2 := context.WithTimeout(done, 2*time.Second)
+				ctx2, cancel2 := context.WithTimeout(done, ackBackstop)
 				defer cancel2()
 				if err = p2.Run(ctx2); err != nil {
 					t.Fatal(err)
 				}
 				saved, err = p2.journal.load()
 				if err != nil || saved != nil || posts.Load() != 2 || polls.Load() != 1 || sinks.Load() != 0 || e.calls.Load() != 0 || len(received) != 2 || !reflect.DeepEqual(received[0], received[1]) {
-					t.Fatal("ACK replay/cleanup mismatch", err)
+					t.Fatalf("ACK replay/cleanup mismatch: err=%v saved=%v posts=%d polls=%d sinks=%d calls=%d received=%d", err, saved != nil, posts.Load(), polls.Load(), sinks.Load(), e.calls.Load(), len(received))
 				}
 			})
 		}

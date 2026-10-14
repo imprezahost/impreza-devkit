@@ -44,7 +44,7 @@ func (d *Docker) cleanupFinishedBackupJob(ctx context.Context, id string) error 
 	if record != nil && record.Phase == "quiesce_orphan" {
 		return nil
 	}
-	work, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	work, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	label := "com.docker.compose.project=" + id
 	out, err := d.dockerCmd(work, "ps", "-aq", "--filter", "label="+label).Output()

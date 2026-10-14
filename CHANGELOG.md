@@ -18,6 +18,19 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
   `PlatformPrepareFailback`, `PlatformRunFailoverDrill` and the matching reads). Every apply takes
   the exact review digest and an explicit confirmation.
 
+## Agent 0.6.33 — 2026-10-14
+
+- Uninstall no longer reports success until the agent has confirmed that
+  the application's containers are gone, including those of a legacy
+  Compose project name. If a container survives, the uninstall fails and
+  keeps the application's configuration so it can be retried.
+- The first proxy reload after the agent starts waits until the local
+  proxy admin is ready, instead of failing while that admin is still
+  starting.
+- A full queue of accepted backup cleanups no longer holds the next
+  command. The agent warns only after the control plane has accepted the
+  result.
+
 ## Agent 0.6.32 — 2026-10-13
 
 - Bind mounts under an application's `./data` are created by the agent,

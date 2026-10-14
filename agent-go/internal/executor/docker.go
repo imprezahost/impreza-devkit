@@ -1016,7 +1016,9 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 		// on disk to point at them. Sweep by compose label, then report
 		// idempotent success.
 		d.Log.Info("docker uninstall: no state dir, sweeping by label", "deployment_id", p.DeploymentID)
-		d.forceRemoveProjectContainers(ctx, p.DeploymentID)
+		if err := d.forceRemoveProjectContainers(ctx, p.DeploymentID); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
 		if err := d.removeDeploymentExposure(ctx, p.DeploymentID); err != nil {
 			return failResult(cmd.ID, err.Error())
 		}
@@ -1064,7 +1066,9 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 		// sweep would do the work anyway. Sweep directly and keep the
 		// success clean, without the misleading error tail.
 		d.Log.Info("docker uninstall: no compose.yaml; sweeping by label", "deployment_id", p.DeploymentID)
-		d.forceRemoveProjectContainers(ctx, p.DeploymentID)
+		if err := d.forceRemoveProjectContainers(ctx, p.DeploymentID); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
 	} else {
 		out, downErr = d.compose(downCtx, appDir, args...)
 	}
@@ -1076,11 +1080,19 @@ func (d *Docker) uninstall(ctx context.Context, cmd *sdkclient.PollCommand) sdkc
 		// removal and continue to the on-disk cleanup below.
 		d.Log.Warn("docker compose down failed, falling back to label sweep",
 			"deployment_id", p.DeploymentID, "err", downErr, "out", tail(out, 512))
-		d.forceRemoveProjectContainers(ctx, p.DeploymentID)
+		if err := d.forceRemoveProjectContainers(ctx, p.DeploymentID); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
 	}
 
 	if err := proxy.RemoveTorEgressNetwork(ctx, p.DeploymentID); err != nil {
 		return failResult(cmd.ID, err.Error())
+	}
+
+	if err := d.verifyProjectContainersRemoved(ctx, p.DeploymentID); err != nil {
+		if err := d.forceRemoveProjectContainers(ctx, p.DeploymentID); err != nil {
+			return failResult(cmd.ID, err.Error())
+		}
 	}
 
 	// Release archives also contain secrets, and their private image tags
@@ -1227,36 +1239,57 @@ func (d *Docker) removeDeploymentExposure(ctx context.Context, deploymentID stri
 // Scoped strictly by the compose project label, which the deploy path
 // derives from the appDir name (the deployment_id). It can never touch
 // another deployment's containers, impreza_caddy, or anything the
-// customer runs by hand.
-func (d *Docker) forceRemoveProjectContainers(ctx context.Context, deploymentID string) {
+// customer runs by hand. A literal legacy project name is removed too,
+// but an environment name or another managed application is not.
+func (d *Docker) uninstallProjects(deploymentID string) []string {
+	own := normalizeComposeProject(deploymentID)
+	projects := []string{own}
+	if actual, err := composeProject(d.appDir(deploymentID)); err == nil && actual != own {
+		projects = append(projects, actual)
+	}
+	return projects
+}
+
+func (d *Docker) verifyProjectContainersRemoved(ctx context.Context, deploymentID string) error {
 	if deploymentID == "" {
-		return
+		return errors.New("uninstall deployment identity is missing")
 	}
-	lsCtx, cancelLs := context.WithTimeout(ctx, composeQueryTimeout)
-	defer cancelLs()
-	label := "com.docker.compose.project=" + strings.ToLower(deploymentID)
-	ids, err := d.dockerCmd(lsCtx, "ps", "-aq", "--filter", "label="+label).Output()
-	if err != nil {
-		d.Log.Warn("uninstall fallback: docker ps failed", "deployment_id", deploymentID, "err", err)
-		return
+	query, cancel := context.WithTimeout(ctx, composeQueryTimeout)
+	defer cancel()
+	for _, project := range d.uninstallProjects(deploymentID) {
+		ids, err := d.dockerCmd(query, "ps", "-aq", "--filter", "label=com.docker.compose.project="+project).Output()
+		if err != nil {
+			return errors.New("uninstall cannot verify container removal; retry with the application configuration retained")
+		}
+		if len(strings.Fields(string(ids))) != 0 {
+			return errors.New("uninstall containers are still present; retry with the application configuration retained")
+		}
 	}
-	fields := strings.Fields(string(ids))
-	if len(fields) == 0 {
-		return
+	return nil
+}
+
+func (d *Docker) forceRemoveProjectContainers(ctx context.Context, deploymentID string) error {
+	if deploymentID == "" {
+		return errors.New("uninstall deployment identity is missing")
 	}
-	rmCtx, cancelRm := context.WithTimeout(ctx, composeDownTimeout)
-	defer cancelRm()
-	// -v drops anonymous volumes attached to the container, which is
-	// where images with a bare `VOLUME` directive (postgres:18 among
-	// them) silently accumulate gigabytes.
-	rmArgs := append([]string{"rm", "-f", "-v"}, fields...)
-	if out, err := d.dockerCmd(rmCtx, rmArgs...).CombinedOutput(); err != nil {
-		d.Log.Warn("uninstall fallback: docker rm failed",
-			"deployment_id", deploymentID, "err", err, "out", tail(out, 512))
-		return
+	for _, project := range d.uninstallProjects(deploymentID) {
+		lsCtx, cancelLs := context.WithTimeout(ctx, composeQueryTimeout)
+		ids, err := d.dockerCmd(lsCtx, "ps", "-aq", "--filter", "label=com.docker.compose.project="+project).Output()
+		cancelLs()
+		if err != nil {
+			return errors.New("uninstall cannot list application containers; configuration retained for retry")
+		}
+		fields := strings.Fields(string(ids))
+		if len(fields) != 0 {
+			rmCtx, cancelRm := context.WithTimeout(ctx, composeDownTimeout)
+			_, err := d.dockerCmd(rmCtx, append([]string{"rm", "-f", "-v"}, fields...)...).CombinedOutput()
+			cancelRm()
+			if err != nil {
+				return errors.New("uninstall could not remove application containers; configuration retained for retry")
+			}
+		}
 	}
-	d.Log.Info("uninstall fallback: force-removed containers",
-		"deployment_id", deploymentID, "count", len(fields))
+	return d.verifyProjectContainersRemoved(ctx, deploymentID)
 }
 
 // containerState is one container's state as of a single sample.

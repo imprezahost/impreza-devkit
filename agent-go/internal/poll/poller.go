@@ -34,11 +34,12 @@ type Poller struct {
 	log            *slog.Logger
 
 	// Static metadata included in every heartbeat. Set at construction.
-	inventoryDemand chan sdkclient.InventoryRequest
-	agentVersion    string
-	journal         *commandJournal
-	active          *commandRecord
-	journalErr      error
+	inventoryDemand   chan sdkclient.InventoryRequest
+	agentVersion      string
+	journal           *commandJournal
+	active            *commandRecord
+	journalErr        error
+	nextBackupCleanup time.Time
 
 	// The vantage prober, set by vantageLoop once the control
 	// plane confirms the mark. nil on a customer agent — the capability
@@ -188,6 +189,8 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 			return nil
 		}
 
+		p.reconcileAcknowledgedBackups(ctx)
+
 		// Image installation can finish after the poller starts; negotiate on the next poll.
 		if !slices.Contains(capabilities, "shield-v2") && proxy.ShieldV2Available() {
 			capabilities = append(capabilities, "shield-v2")
@@ -320,7 +323,7 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 
 		for cmd.ControlToken != "" && ctx.Err() == nil {
 			if err := p.client.AgentDeployResult(ctx, result); err == nil {
-				if err := p.cleanupAcknowledgedResult(ctx, cmd.Kind, result); err != nil {
+				if err := p.queueAcknowledgedBackup(cmd.Kind, result); err != nil {
 					p.log.Warn("acknowledged backup cleanup pending", "command_id", cmd.ID, "err", err)
 				}
 				break
@@ -340,7 +343,7 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 			p.log.Error("poll: report deploy-result failed", "command_id", cmd.ID, "err", err)
 			continue
 		}
-		if err := p.cleanupAcknowledgedResult(ctx, cmd.Kind, result); err != nil {
+		if err := p.queueAcknowledgedBackup(cmd.Kind, result); err != nil {
 			p.log.Warn("acknowledged backup cleanup pending", "command_id", cmd.ID, "err", err)
 		}
 		p.log.Info("poll: reported result", "command_id", cmd.ID, "status", result.Status)
