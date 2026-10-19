@@ -18,6 +18,17 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
   `PlatformPrepareFailback`, `PlatformRunFailoverDrill` and the matching reads). Every apply takes
   the exact review digest and an explicit confirmation.
 
+## Agent 0.6.34 — 2026-10-19
+
+- On IPv6, a forwarded connection rewritten to a unique-local address
+  outside the host is dropped, as the metadata range already is on IPv4.
+  A rewritten connection onto a container address on one of Docker's own
+  bridges is unchanged, and DNS to a unique-local resolver still works.
+- While the control plane marks this agent for uptime checks, it does not
+  poll for commands or send heartbeats and application metrics. The uptime
+  target exchange continues. When the mark is removed, polling and
+  reporting resume.
+
 ## Agent 0.6.33 — 2026-10-14
 
 - Uninstall no longer reports success until the agent has confirmed that

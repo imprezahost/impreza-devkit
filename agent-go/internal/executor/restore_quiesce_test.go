@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -115,28 +116,54 @@ func quiesceStagingDir(d *Docker) string {
 	return filepath.Join(d.appDir(quiesceTestTarget), ".restore-"+quiesceTestBackup)
 }
 
+// quiesceStateReadHook runs after a scripted rewrite has read the state
+// and before it writes. Tests use it to save a newer state in that window.
+var quiesceStateReadHook func(path string)
+
 // quiesceSwapState rewrites the double's state atomically through the
-// mutation, the way the shim itself persists a Docker action.
+// mutation, the way the shim itself persists a Docker action. A save that
+// lands after the read is not overwritten: the rewrite starts over from
+// the bytes now on disk, so a restart policy the shim just restored stays.
 func quiesceSwapState(t *testing.T, path string, mutate func(*dockertest.State)) {
 	t.Helper()
-	raw, err := os.ReadFile(path)
-	if err != nil {
+	hooked := false
+	for attempt := 0; attempt < 8; attempt++ {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return
+		}
+		if !hooked && quiesceStateReadHook != nil {
+			hooked = true
+			quiesceStateReadHook(path)
+		}
+		current, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(current, raw) {
+			continue
+		}
+		var state dockertest.State
+		if json.Unmarshal(current, &state) != nil {
+			return
+		}
+		mutate(&state)
+		out, err := json.Marshal(state)
+		if err != nil {
+			return
+		}
+		tmp := path + ".script"
+		if err := os.WriteFile(tmp, out, 0o600); err != nil {
+			return
+		}
+		again, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(again, current) {
+			_ = os.Remove(tmp)
+			continue
+		}
+		if err := dockertest.RetryingRename(tmp, path); err != nil {
+			_ = os.Remove(tmp)
+			continue
+		}
 		return
 	}
-	var state dockertest.State
-	if json.Unmarshal(raw, &state) != nil {
-		return
-	}
-	mutate(&state)
-	out, err := json.Marshal(state)
-	if err != nil {
-		return
-	}
-	tmp := path + ".script"
-	if err := os.WriteFile(tmp, out, 0o600); err != nil {
-		return
-	}
-	_ = os.Rename(tmp, path)
 }
 
 // quiesceExitJob flips the job's container to an exited state with the

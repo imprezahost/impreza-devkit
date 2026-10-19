@@ -85,8 +85,10 @@ type State struct {
 	ProxyReadyAfter      int
 	ProxyNeverReady      bool
 	ProxyReadinessProbes int
-	ProxyRejectReload    bool
-	Calls                []Call
+	// Unix nanoseconds of the first admin probe, excluding detached startup work.
+	ProxyProbeStartedAt int64
+	ProxyRejectReload   bool
+	Calls               []Call
 }
 
 // Volume is one named volume: its labels for `volume ls --filter` and the
@@ -314,6 +316,9 @@ func (s *State) dispatch(dir string, args []string) int {
 	case "exec":
 		if len(args) > 2 && args[1] == "impreza_caddy" {
 			if args[2] == "wget" {
+				if s.ProxyProbeStartedAt == 0 {
+					s.ProxyProbeStartedAt = time.Now().UnixNano()
+				}
 				s.ProxyReadinessProbes++
 				if s.ProxyNeverReady || s.ProxyReadinessProbes <= s.ProxyReadyAfter {
 					return 1

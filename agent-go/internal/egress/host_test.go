@@ -405,24 +405,117 @@ func TestHost6JumpLastWithICMPv6AndExceptions(t *testing.T) {
 }
 
 // The FORWARD hairpin: a DNATed flow (a published port reached through the
-// host address) returns after the metadata drop and before every private
-// destination drop, in both families.
+// host address) returns after the metadata drop. On v4 the RFC1918 drops
+// stay after that return. On v6 the link-local, the ULA and the mapped
+// metadata range are dropped before the DNAT return, so a DNATed flow to an
+// off-host ULA is refused. The one exception is a DNAT whose output is one
+// of Docker's own bridges: that is the cross-bridge hairpin onto a
+// container address inside fc00::/7. DNS to a ULA resolver stays before
+// the ULA drop.
 func TestForwardReturnsDNATBeforePrivateDrops(t *testing.T) {
-	for name, rules := range map[string][][]string{"v4": Rules([]string{"10.0.0.2"}, []string{"docker0"}), "v6": Rules6(nil, []string{"docker0"})} {
-		dnat, meta, firstDrop := -1, -1, -1
-		for i, r := range rules {
-			line := strings.Join(r, " ")
-			switch {
-			case line == "-m conntrack --ctstate DNAT -j RETURN":
-				dnat = i
-			case line == "-d 169.254.0.0/16 -j DROP":
-				meta = i
-			case strings.HasSuffix(line, "-j DROP") && firstDrop < 0 && line != "-d 169.254.0.0/16 -j DROP":
-				firstDrop = i
-			}
+	v4 := Rules([]string{"10.0.0.2"}, []string{"docker0"})
+	dnat, meta, firstDrop := -1, -1, -1
+	for i, r := range v4 {
+		line := strings.Join(r, " ")
+		switch {
+		case line == "-m conntrack --ctstate DNAT -j RETURN":
+			dnat = i
+		case line == "-d 169.254.0.0/16 -j DROP":
+			meta = i
+		case strings.HasSuffix(line, "-j DROP") && firstDrop < 0 && line != "-d 169.254.0.0/16 -j DROP":
+			firstDrop = i
 		}
-		if dnat < 0 || firstDrop < 0 || dnat > firstDrop || (name == "v4" && (meta < 0 || meta > dnat)) {
-			t.Fatalf("%s: dnat=%d metadata=%d first private drop=%d", name, dnat, meta, firstDrop)
+	}
+	if dnat < 0 || firstDrop < 0 || meta < 0 || meta > dnat || dnat > firstDrop {
+		t.Fatalf("v4: dnat=%d metadata=%d first private drop=%d", dnat, meta, firstDrop)
+	}
+	v6 := Rules6([]string{"fd00::53"}, []string{"docker0"})
+	at := map[string]int{}
+	for i, r := range v6 {
+		at[strings.Join(r, " ")] = i
+	}
+	must := func(line string) int {
+		t.Helper()
+		i, ok := at[line]
+		if !ok {
+			t.Fatalf("v6 rules missing %q", line)
 		}
+		return i
+	}
+	dns := must("-p udp -d fd00::53/128 -m udp --dport 53 -j RETURN")
+	hairpin := must("-o docker0 -d fc00::/7 -m conntrack --ctstate DNAT -j RETURN")
+	dnat6 := must("-m conntrack --ctstate DNAT -j RETURN")
+	for _, drop := range []string{"-d fe80::/10 -j DROP", "-d fc00::/7 -j DROP", "-d ::ffff:169.254.0.0/112 -j DROP"} {
+		if dns > hairpin || hairpin > must(drop) || must(drop) > dnat6 {
+			t.Fatalf("v6 %q is not between the bridge hairpin and the DNAT return: dns=%d hairpin=%d drop=%d dnat=%d", drop, dns, hairpin, must(drop), dnat6)
+		}
+	}
+}
+
+// A port published on one public address, and a port published only on ::,
+// both return. Loopback stays out. This is the behavior the 0644/link
+// mutations do not cover; those two are below.
+func TestPublishedPortsOnSpecificIPAndIPv6Any(t *testing.T) {
+	f := newHostFake()
+	d := &dockerFake{ports: []string{
+		`{"9443/tcp":[{"HostIp":"203.0.113.10","HostPort":"9443"}]}`,
+		`{"5353/udp":[{"HostIp":"::","HostPort":"5353"}]}`,
+		`{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"5432"}]}`,
+	}}
+	if err := applyHost4(t, f, d, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"-i docker0 -p tcp -m tcp --dport 9443 -j RETURN",
+		"-i docker0 -p udp -m udp --dport 5353 -j RETURN",
+	} {
+		if !has(f.chains[HostChain], want) {
+			t.Fatalf("missing %s\n%v", want, f.chains[HostChain])
+		}
+	}
+	if has(f.chains[HostChain], "-i docker0 -p tcp -m tcp --dport 5432 -j RETURN") {
+		t.Fatal("loopback publish returned")
+	}
+}
+
+// A policy bigger than the reader limit is refused. os.ReadFile would accept
+// this document (the extra field is ignored); the bounded reader must not.
+func TestLoadHostPolicyRejectsOversizedFile(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte(`{"version":1,"allow":[],"pad":"` + strings.Repeat("x", 20000) + `"}` + "\n")
+	if err := os.WriteFile(filepath.Join(dir, hostPolicyFile), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadHostPolicy(dir); err == nil {
+		t.Fatal("an oversized policy was accepted")
+	}
+}
+
+// A symlink at the policy path is refused. Creating the link needs a
+// privilege this Windows session does not have; the Linux run does.
+func TestLoadHostPolicyRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.json")
+	if err := os.WriteFile(real, []byte("{\"version\":1,\"allow\":[\"tcp/9\"]}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(dir, hostPolicyFile)); err != nil {
+		t.Skip("symlink not permitted here")
+	}
+	if _, err := LoadHostPolicy(dir); err == nil {
+		t.Fatal("a symlink policy was accepted")
+	}
+}
+
+// Reconciling the host chain must not move the ingress jump. An edit that
+// deletes IMPREZA-INGRESS-HOST and appends it again puts it next to our jump.
+func TestHostReconcileLeavesIngressJumpInPlace(t *testing.T) {
+	f := newHostFake("-j IMPREZA-INGRESS-HOST", "-j ufw-before-input")
+	if err := applyHost4(t, f, &dockerFake{}, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	in := f.input()
+	if len(in) != 3 || in[0] != "-j IMPREZA-INGRESS-HOST" || in[1] != "-j ufw-before-input" || in[len(in)-1] != "-j "+HostChain {
+		t.Fatalf("ingress jump moved: %q", in)
 	}
 }

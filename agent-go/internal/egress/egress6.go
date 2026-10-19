@@ -37,11 +37,6 @@ func Rules6(resolvers6 []string, bridges []string) [][]string {
 		{"-m", "physdev", "!", "--physdev-in", "+", "-j", "RETURN"},
 		{"-m", "physdev", "--physdev-is-bridged", "-j", "RETURN"},
 		{"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "RETURN"},
-		// A flow Docker DNATed (a container reaching a port the host
-		// publishes, through the host's own address) gets what the internet
-		// gets. Without this the RFC1918/ULA drops below cut the hairpin
-		// (the WordPress loopback and WP-Cron behind the proxy).
-		{"-m", "conntrack", "--ctstate", "DNAT", "-j", "RETURN"},
 	}
 	for _, r := range resolvers6 {
 		rules = append(rules,
@@ -49,12 +44,22 @@ func Rules6(resolvers6 []string, bridges []string) [][]string {
 			[]string{"-p", "tcp", "-d", r + "/128", "-m", "tcp", "--dport", "53", "-j", "RETURN"},
 		)
 	}
+	// Metadata and off-host ULA are refused before the DNAT return, matching
+	// the v4 metadata drop. A DNATed flow whose new destination is a ULA on
+	// one of Docker's own bridges still returns: that is the cross-bridge
+	// hairpin (a published port). DNS to a ULA resolver is already excepted.
+	for _, iface := range bridges {
+		rules = append(rules, []string{"-o", iface, "-d", "fc00::/7", "-m", "conntrack", "--ctstate", "DNAT", "-j", "RETURN"})
+	}
+	rules = append(rules,
+		[]string{"-d", "fe80::/10", "-j", "DROP"},
+		[]string{"-d", "fc00::/7", "-j", "DROP"},
+		[]string{"-d", "::ffff:169.254.0.0/112", "-j", "DROP"},
+		[]string{"-m", "conntrack", "--ctstate", "DNAT", "-j", "RETURN"},
+	)
 	blocked := [][]string{
-		{"-d", "fe80::/10", "-j", "DROP"},
-		{"-d", "fc00::/7", "-j", "DROP"},
-		{"-d", "::ffff:169.254.0.0/112", "-j", "DROP"},
-		{"-p", "tcp", "-m", "conntrack", "--ctstate", "NEW", "-m", "multiport", "--dports", "25,465,587", "-j", "DROP"},
-		{"-m", "conntrack", "--ctstate", "NEW", "-m", "hashlimit", "--hashlimit-above", rateLimit, "--hashlimit-burst", rateBurst, "--hashlimit-mode", "srcip", "--hashlimit-name", limitTable, "-j", "DROP"},
+		[]string{"-p", "tcp", "-m", "conntrack", "--ctstate", "NEW", "-m", "multiport", "--dports", "25,465,587", "-j", "DROP"},
+		[]string{"-m", "conntrack", "--ctstate", "NEW", "-m", "hashlimit", "--hashlimit-above", rateLimit, "--hashlimit-burst", rateBurst, "--hashlimit-mode", "srcip", "--hashlimit-name", limitTable, "-j", "DROP"},
 	}
 	rules = append(rules, blocked...)
 	return append(rules, []string{"-j", "RETURN"})

@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/imprezahost/impreza-devkit/agent-go/internal/config"
@@ -45,6 +46,10 @@ type Poller struct {
 	// plane confirms the mark. nil on a customer agent — the capability
 	// is never announced and no probe runs.
 	vantageProbe *uptimeprobe.Prober
+	// vantageOnly is set while this credential is a marked vantage.
+	// Poll and the customer report stay quiet; the probe loop is the
+	// only control-plane conversation. Clearing it resumes both.
+	vantageOnly atomic.Bool
 }
 
 // New constructs a Poller for the given config + executor. The SDK
@@ -123,6 +128,15 @@ func (p *Poller) Run(ctx context.Context) error {
 		}
 	}
 	p.inventoryDemand = make(chan sdkclient.InventoryRequest, 1)
+	// The prober is built here, BEFORE the goroutines start, so
+	// the poll loop's capability announcement never races a field write.
+	// vantageLoop only asks the control plane whether to start it.
+	p.vantageProbe = uptimeprobe.New(p.client, uptimeprobe.DefaultSocks, p.log)
+	// Know the mark before the first poll or heartbeat. A marked vantage
+	// must not open those routes at all.
+	if p.client != nil && p.vantageProbe.IsVantage(ctx) {
+		p.vantageOnly.Store(true)
+	}
 	hbDone := make(chan struct{})
 	go func() {
 		defer close(hbDone)
@@ -135,10 +149,6 @@ func (p *Poller) Run(ctx context.Context) error {
 		defer close(metricsDone)
 		p.metricsLoop(ctx)
 	}()
-	// The prober is built here, BEFORE the goroutines start, so
-	// the poll loop's capability announcement never races a field write.
-	// vantageLoop only asks the control plane whether to start it.
-	p.vantageProbe = uptimeprobe.New(p.client, uptimeprobe.DefaultSocks, p.log)
 	probeDone := make(chan struct{})
 	go func() {
 		defer close(probeDone)
@@ -187,6 +197,12 @@ func (p *Poller) pollLoop(ctx context.Context) error {
 		if ctx.Err() != nil {
 			p.log.Info("poll loop: context cancelled, exiting")
 			return nil
+		}
+		if p.vantageOnly.Load() {
+			if !sleepCtx(ctx, time.Second) {
+				return nil
+			}
+			continue
 		}
 
 		p.reconcileAcknowledgedBackups(ctx)
@@ -360,8 +376,11 @@ func (p *Poller) heartbeatLoop(ctx context.Context) {
 	}
 
 	// Send one immediately so the agent appears online on startup
-	// without waiting for the first tick.
-	p.sendHeartbeat(ctx)
+	// without waiting for the first tick. A marked vantage does not
+	// report; the next tick sends once the mark is gone.
+	if !p.vantageOnly.Load() {
+		p.sendHeartbeat(ctx)
+	}
 
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -370,7 +389,9 @@ func (p *Poller) heartbeatLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			p.sendHeartbeat(ctx)
+			if !p.vantageOnly.Load() {
+				p.sendHeartbeat(ctx)
+			}
 		}
 	}
 }
@@ -397,6 +418,9 @@ func (p *Poller) metricsLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			if p.vantageOnly.Load() {
+				continue
+			}
 			report := collector.CollectAppMetrics(ctx)
 			if report == nil || len(report.Apps) == 0 {
 				continue
@@ -507,8 +531,10 @@ func (p *Poller) vantageLoop(ctx context.Context) {
 			return
 		}
 		if p.vantageProbe.IsVantage(ctx) {
+			p.vantageOnly.Store(true)
 			p.log.Info("uptime probe: this agent is a marked vantage; starting the probe loop")
 			p.vantageProbe.Run(ctx)
+			p.vantageOnly.Store(false)
 			if ctx.Err() != nil {
 				return
 			}
