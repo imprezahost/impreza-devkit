@@ -15,8 +15,9 @@
 #   - ghcr.io/imprezahost/tor:latest
 # Release agents must use the verified multiarchitecture manifest digest.
 #
-# Tor package patches do NOT need a new image: the entrypoint apt-upgrades
-# tor from deb.torproject.org on every container start.
+# every tor package update IS a new image. The exact Debian package version
+# lives in agent-go/packaging/tor/TOR_VERSION; bump it, cut tag tor-vX.Y.Z, then
+# pin the new manifest digest in the agent. The container never runs apt at start.
 
 name: Build + push impreza/tor image
 
@@ -27,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Image version (e.g. 1.1.0). Bump for base/entrypoint changes, not for tor patches.'
+        description: 'Image version (e.g. 1.1.0). Bump for base/entrypoint changes AND for every tor package update (TOR_VERSION).'
         required: true
 
 permissions:
@@ -59,6 +60,16 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Resolved tor image version: $VERSION"
 
+      - name: Resolve the pinned tor package version
+        id: tor
+        run: |
+          TOR_VERSION="$(tr -d '[:space:]' < agent-go/packaging/tor/TOR_VERSION)"
+          if ! [[ "$TOR_VERSION" =~ ^[0-9][A-Za-z0-9.+~:-]*$ ]]; then
+            echo "FATAL: agent-go/packaging/tor/TOR_VERSION must hold the exact Debian tor package version"; exit 1
+          fi
+          echo "tor_version=$TOR_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Pinned tor package: $TOR_VERSION"
+
       - name: Set up QEMU (arm64 emulation for cross-build)
         uses: docker/setup-qemu-action@v3
 
@@ -78,6 +89,8 @@ jobs:
           context: .
           file: agent-go/packaging/tor/Dockerfile
           platforms: linux/amd64,linux/arm64
+          build-args: |
+            TOR_VERSION=${{ steps.tor.outputs.tor_version }}
           push: true
           tags: |
             ghcr.io/imprezahost/tor:${{ steps.ver.outputs.version }}
@@ -85,6 +98,6 @@ jobs:
             ghcr.io/imprezahost/tor:latest
           labels: |
             org.opencontainers.image.source=https://github.com/imprezahost/impreza-devkit
-            org.opencontainers.image.description=Tor hidden-service daemon for impreza-agent (Debian + deb.torproject.org, self-updating entrypoint)
+            org.opencontainers.image.description=Tor hidden-service daemon for impreza-agent (Debian + deb.torproject.org, tor ${{ steps.tor.outputs.tor_version }} fixed at build)
             org.opencontainers.image.licenses=BSD-3-Clause
             org.opencontainers.image.revision=${{ github.sha }}
