@@ -18,6 +18,19 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
   `PlatformPrepareFailback`, `PlatformRunFailoverDrill` and the matching reads). Every apply takes
   the exact review digest and an explicit confirmation.
 
+## Agent 0.6.35 — 2026-10-21
+
+- Artifact admission now validates downgrade, size, digest and embedded version
+  before repairing the installed ingress unit. A refused artifact leaves that
+  unit unchanged.
+- Deployment notes distinguish a confirmed public HTTPS probe from a deployed
+  application whose address remains unverified; route-application failure is
+  advisory and does not claim a working public address.
+- Optional deployment-result observations separate installation from the first
+  public-route check. They do not represent ongoing health or imply API/UI
+  availability.
+
+
 ## Agent 0.6.34 — 2026-10-19
 
 - On IPv6, a forwarded connection rewritten to a unique-local address

@@ -473,6 +473,23 @@ PYMANIFEST
     CURRENT=$(timeout 10 "$BIN" --version | sed -n 's/^impreza-agent version v\{0,1\}\([0-9][0-9.]*\)$/\1/p')
     echo "Installed: ${CURRENT:-unknown}; available: $VERSION (channel $CHANNEL)"
     [ "$MODE" = --apply ] || exit 0
+    if [ -n "$CURRENT" ] && [ "$CURRENT" != "$VERSION" ] && [ "$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | head -1)" = "$VERSION" ]; then echo 'Downgrade refused.' >&2; exit 1; fi
+    NAME=impreza-agent-linux-$ARCH
+    if [ "$MANIFEST_MODE" = 1 ]; then
+        fetch "$ROOT/$VERSION/$NAME" "$TMP/candidate"
+        SIZE=$(wc -c < "$TMP/candidate" | tr -d ' ')
+        [ "$SIZE" = "$MANIFEST_SIZE" ] || { echo 'Release size differs from the signed manifest; installed agent was not changed.' >&2; exit 1; }
+        printf '%s  %s\n' "$MANIFEST_SHA256" "$TMP/candidate" | sha256sum -c - >/dev/null || { echo 'Checksum differs from the signed manifest; installed agent was not changed.' >&2; exit 1; }
+    else
+        fetch "$ROOT/$VERSION/$NAME.sha256" "$TMP/checksum"
+        HASH=$(read_metadata "$TMP/checksum" checksum) || { echo 'Invalid release checksum.' >&2; exit 1; }
+        fetch "$ROOT/$VERSION/$NAME" "$TMP/candidate"
+        printf '%s  %s\n' "$HASH" "$TMP/candidate" | sha256sum -c - >/dev/null || { echo 'Checksum mismatch; installed agent was not changed.' >&2; exit 1; }
+    fi
+    chmod 0755 "$TMP/candidate"
+    [ "$(timeout 10 "$TMP/candidate" --version)" = "impreza-agent version $VERSION" ] || { echo 'Release version mismatch.' >&2; exit 1; }
+    # Validate the complete candidate before repairing any installed unit.
+    # A refused artifact must leave the existing boot contract untouched.
     # ─── Ingress boot unit ────────────────────────────────────────────
     # install.sh and the packages ship it; an update repairs it too. The
     # unit is inert until the platform stores a restricted allowlist, but
@@ -519,21 +536,6 @@ UNIT
         echo "WARNING: the agent is updated, but the ingress boot unit could not be enabled; the allowlists stay unprotected in the boot window until it is. Repair: systemctl enable impreza-agent-ingress.service" >&2
         UNIT_ENABLE_STATUS=3
     fi
-    if [ -n "$CURRENT" ] && [ "$CURRENT" != "$VERSION" ] && [ "$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | head -1)" = "$VERSION" ]; then echo 'Downgrade refused.' >&2; exit 1; fi
-    NAME=impreza-agent-linux-$ARCH
-    if [ "$MANIFEST_MODE" = 1 ]; then
-        fetch "$ROOT/$VERSION/$NAME" "$TMP/candidate"
-        SIZE=$(wc -c < "$TMP/candidate" | tr -d ' ')
-        [ "$SIZE" = "$MANIFEST_SIZE" ] || { echo 'Release size differs from the signed manifest; installed agent was not changed.' >&2; exit 1; }
-        printf '%s  %s\n' "$MANIFEST_SHA256" "$TMP/candidate" | sha256sum -c - >/dev/null || { echo 'Checksum differs from the signed manifest; installed agent was not changed.' >&2; exit 1; }
-    else
-        fetch "$ROOT/$VERSION/$NAME.sha256" "$TMP/checksum"
-        HASH=$(read_metadata "$TMP/checksum" checksum) || { echo 'Invalid release checksum.' >&2; exit 1; }
-        fetch "$ROOT/$VERSION/$NAME" "$TMP/candidate"
-        printf '%s  %s\n' "$HASH" "$TMP/candidate" | sha256sum -c - >/dev/null || { echo 'Checksum mismatch; installed agent was not changed.' >&2; exit 1; }
-    fi
-    chmod 0755 "$TMP/candidate"
-    [ "$(timeout 10 "$TMP/candidate" --version)" = "impreza-agent version $VERSION" ] || { echo 'Release version mismatch.' >&2; exit 1; }
     if [ "$(sha256sum "$TMP/candidate" | cut -d ' ' -f 1)" = "$(sha256sum "$BIN" | cut -d ' ' -f 1)" ]; then
         if [ "$MANIFEST_MODE" = 1 ]; then record_state; fi
         echo 'Agent is already current.'

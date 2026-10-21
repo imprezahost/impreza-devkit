@@ -12,6 +12,18 @@ import (
 // finishReplacement executes the already-authorized runtime phase once. Both
 // synchronous deployments and detached workers share exactly this sequence.
 func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollCommand, p sdkclient.DeployPayload, previousRelease *runtimeRelease, isRedeploy bool, primaryOnion string) (result sdkclient.DeployResult) {
+	// observes only this command; old payloads remain compatible via omitempty.
+	observation := deployReadinessObservation{}
+	clearnet, onion := false, primaryOnion != ""
+	for _, route := range p.Routes {
+		clearnet = clearnet || route.Hostname != ""
+		onion = onion || (route.Onion != nil && route.Onion.Enabled)
+	}
+	observation.onionOnly = onion && !clearnet
+	defer func() {
+		observation.cancelled = ctx.Err() != nil
+		result.Readiness = observation.result(result.Status)
+	}()
 	if err := validateResolvedRetirements(p); err != nil {
 		return failResult(cmd.ID, err.Error())
 	}
@@ -240,9 +252,16 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 		}
 		applyCtx, cancelApply := context.WithTimeout(ctx, composeQueryTimeout)
 		if err := d.Proxy.ApplyDeploymentRoutes(applyCtx, p.DeploymentID, routes); err != nil {
+			observation.routeFailed = true
 			cancelApply()
 			d.Log.Warn("docker deploy: caddy route apply failed (deploy itself succeeded)",
 				"deployment_id", p.DeploymentID, "err", err)
+			// a failed route apply is a competing hypothesis with no
+			// proven cause in the observed cells; record it in the same
+			// advisory channel so the report never reads as if the public
+			// route were applied and its TLS verified.
+			settleNote += "\npublic route apply failed (advisory): the app was deployed, but applying its" +
+				" public route failed; the public address may not answer"
 		}
 		cancelApply()
 
@@ -254,6 +273,9 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 		// fresh-LE-cert + container-warmup path. Onion-only deploys
 		// have no clearnet host to probe — ProbeHTTPS returns false
 		// immediately for empty host, which is fine (no probe needed).
+		// the probe's OUTCOME is no longer discarded — success still
+		// stands (advisory policy unchanged), but the settle note says
+		// whether the public HTTPS handshake was actually confirmed.
 		var probeHost string
 		for _, r := range routes {
 			if r.Hostname != "" {
@@ -264,10 +286,10 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 		if probeHost != "" {
 			d.Log.Info("docker deploy: probing https before reporting running",
 				"deployment_id", p.DeploymentID, "host", probeHost)
-			probeCtx, cancelProbe := context.WithTimeout(ctx, probeBudget+5*time.Second)
-			_ = ProbeHTTPS(probeCtx, probeHost, d.Log)
-			cancelProbe()
 		}
+		note, confirmed, checked := probeAndObserve(ctx, probeHost, d.Log)
+		observation.checked, observation.confirmed = checked, confirmed
+		settleNote += note
 	}
 
 	// 3.5 Manifest-declared readiness probe (manifest.lifecycle.health).

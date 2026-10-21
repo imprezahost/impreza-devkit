@@ -742,6 +742,7 @@ type DeploymentStartupCheck struct {
 // any command (deploy, update, rollback, uninstall, restart, etc.).
 // Idempotent on CommandID — re-posting the same result is a no-op.
 type DeployResult struct {
+	Readiness                 *DeploymentReadiness             `json:"readiness,omitempty"`
 	DomainHandover            *DomainHandoverResult            `json:"domain_handover,omitempty"`
 	ServiceBindingRetirements []ServiceBindingRetirementResult `json:"service_binding_retirements,omitempty"`
 	ServiceBindingRotation    *ServiceBindingRotationResult    `json:"service_binding_rotation,omitempty"`

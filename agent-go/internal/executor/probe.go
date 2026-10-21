@@ -179,3 +179,35 @@ func probeStatusPasses(code int) bool {
 	// waiting.
 	return false
 }
+
+// probeHTTPS is the seam tests use to pin ProbeHTTPS's outcome without any
+// network ().
+var probeHTTPS = ProbeHTTPS
+
+// probeAndAnnotate runs the public HTTPS probe for one clearnet host and
+// returns the settle-note line that carries its outcome (). The deploy
+// still succeeds either way — the advisory policy is unchanged — but a
+// probe that did not pass can no longer read as a verified public address:
+// the note distinguishes "public HTTPS confirmed" from "deployment
+// finished, public HTTPS not confirmed". An onion-only deploy (empty host)
+// claims nothing, exactly as before.
+func probeAndAnnotate(ctx context.Context, host string, log *slog.Logger) string {
+	note, _, _ := probeAndObserve(ctx, host, log)
+	return note
+}
+
+// exposes the same single observation without parsing its log text.
+// The compatibility wrapper above retains its original note and probe behavior.
+func probeAndObserve(ctx context.Context, host string, log *slog.Logger) (string, bool, bool) {
+	if host == "" {
+		return "", false, false
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, probeBudget+5*time.Second)
+	defer cancel()
+	if probeHTTPS(probeCtx, host, log) {
+		return "\npublic HTTPS confirmed on " + host, true, true
+	}
+	return "\npublic HTTPS not confirmed on " + host +
+		" (advisory): the deployment finished, but a verified TLS handshake to the public address" +
+		" did not succeed within the probe budget; the address may not be usable yet", false, true
+}
