@@ -18,6 +18,13 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
   `PlatformPrepareFailback`, `PlatformRunFailoverDrill` and the matching reads). Every apply takes
   the exact review digest and an explicit confirmation.
 
+## Agent 0.6.37 — 2026-10-23
+
+- Onion deployments observe descriptor upload through the owning Tor daemon
+  within a bounded wait. An unconfirmed upload remains an advisory, not a
+  reachability or application health claim. Onion addresses are omitted from
+  deployment log messages.
+
 ## Agent 0.6.36 — 2026-10-22
 
 - A domain change keeps the current domain serving while the replacement

@@ -826,8 +826,13 @@ func (t *Tor) regenerateTorrc() error {
 
 	var sb strings.Builder
 	sb.WriteString("# managed by impreza-agent — do not edit\n\n")
-	// Defaults: only hidden services, no SOCKS / control port exposed.
-	sb.WriteString("SocksPort 0\n")
+	// Observe the daemon through its existing private data mount. No client
+	// SOCKS role, TCP listener, image helper binary or published container port.
+	sb.WriteString("SocksPort 0\nControlPort 0\n")
+	sb.WriteString("ControlSocket /var/lib/tor/descriptor-control.sock\n")
+	sb.WriteString("ControlSocketsGroupWritable 0\nCookieAuthentication 1\n")
+	sb.WriteString("CookieAuthFile /var/lib/tor/control_auth_cookie\n")
+	sb.WriteString("CookieAuthFileGroupReadable 0\n")
 	sb.WriteString("RunAsDaemon 0\n")
 	// SafeLogging: never log client addresses; notices only, to stdout.
 	// MetricsPort stays on the container loopback — the agent reads it via

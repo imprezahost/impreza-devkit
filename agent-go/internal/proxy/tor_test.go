@@ -272,6 +272,12 @@ func TestTorrcBaseline(t *testing.T) {
 		"MetricsPort 127.0.0.1:9052\n",
 		"MetricsPortPolicy accept 127.0.0.1\n",
 		"SocksPort 0\n",
+		"ControlPort 0\n",
+		"ControlSocket /var/lib/tor/descriptor-control.sock\n",
+		"ControlSocketsGroupWritable 0\n",
+		"CookieAuthentication 1\n",
+		"CookieAuthFile /var/lib/tor/control_auth_cookie\n",
+		"CookieAuthFileGroupReadable 0\n",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("torrc missing %q:\n%s", want, body)
@@ -280,6 +286,9 @@ func TestTorrcBaseline(t *testing.T) {
 	// MetricsPort must never leave the container loopback.
 	if strings.Contains(body, "MetricsPort 0.0.0.0") {
 		t.Fatal("metrics exposed beyond loopback")
+	}
+	if strings.Contains(body, "SocksPort 127.0.0.1") || strings.Contains(body, "ControlPort 9051") || strings.Contains(body, "0.0.0.0") {
+		t.Fatal("unexpected SOCKS/TCP control listener")
 	}
 }
 

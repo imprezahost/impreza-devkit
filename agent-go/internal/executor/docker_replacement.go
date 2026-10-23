@@ -211,7 +211,7 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 			}
 			primaryOnion = addr
 			d.Log.Info("docker deploy: hidden service provisioned",
-				"deployment_id", p.DeploymentID, "onion", addr)
+				"deployment_id", p.DeploymentID)
 		}
 
 		routes := make([]proxy.Route, 0, len(p.Routes))
@@ -323,13 +323,15 @@ func (d *Docker) finishReplacement(ctx context.Context, cmd *sdkclient.PollComma
 		}
 	}
 
+	settleNote += d.onionPublicationNote(ctx, cmd, p.DeploymentID, primaryOnion)
+
 	// 4. Capture a short tail of logs for the result so the panel
 	//    shows something concrete on success.
 	logsCtx, cancelLogs := context.WithTimeout(ctx, composeQueryTimeout)
 	defer cancelLogs()
 	logOut, _ := d.compose(logsCtx, appDir, "logs", "--tail=20", "--no-color")
 
-	d.Log.Info("docker deploy: success", "deployment_id", p.DeploymentID, "onion", primaryOnion)
+	d.Log.Info("docker deploy: success", "deployment_id", p.DeploymentID)
 	var releaseMetadata *sdkclient.DeploymentRelease
 	if verdict == settleHealthy {
 		if release, err := d.captureRelease(ctx, appDir, p.DeploymentID); err != nil {

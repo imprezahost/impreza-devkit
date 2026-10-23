@@ -46,6 +46,9 @@ type deploymentProbeCase struct {
 	onion       string
 	failDocker  string
 	probeResult bool
+	onionWait   func(context.Context, string, string) bool
+	realTor     bool
+	timeout     time.Duration
 }
 
 type deploymentProbeOutcome struct {
@@ -91,8 +94,18 @@ func deploymentProbeRun(t *testing.T, c deploymentProbeCase) deploymentProbeOutc
 	}
 
 	state := t.TempDir()
-	d := &Docker{StateDir: state, Log: discardLogger(), Proxy: proxy.New(state, discardLogger())}
+	d := &Docker{StateDir: state, Log: discardLogger(), Proxy: proxy.New(state, discardLogger()), onionPublicationWait: c.onionWait}
 	id := "dpl_" + strings.Repeat("e", 16)
+	if c.realTor {
+		d.Tor = proxy.NewTor(state, discardLogger())
+		dir := filepath.Join(d.Tor.StateDir, "services", id)
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "hostname"), []byte(c.onion+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	dir := d.appDir(id)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -102,7 +115,11 @@ func deploymentProbeRun(t *testing.T, c deploymentProbeCase) deploymentProbeOutc
 	}
 	p := sdkclient.DeployPayload{DeploymentID: id, Vars: map[string]any{"DEPLOYMENT_ID": id}, Routes: c.routes,
 		Manifest: sdkclient.AppManifest{Runtime: sdkclient.ManifestRuntime{Type: "docker-compose", ComposeYAML: "services: {}"}}}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	budget := c.timeout
+	if budget == 0 {
+		budget = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	result := d.finishReplacement(ctx, &sdkclient.PollCommand{ID: "cmd_deploymentProbe"}, p, nil, false, c.onion)
 	logged, _ := os.ReadFile(dockerLog)

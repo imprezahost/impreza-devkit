@@ -119,7 +119,8 @@ const (
 
 // Docker is the runtime executor. Build with NewDocker.
 type Docker struct {
-	StateDir             string // absolute path; agent passes this from internal/state.
+	onionPublicationWait func(context.Context, string, string) bool // nil observes the owning Tor daemon
+	StateDir             string                                     // absolute path; agent passes this from internal/state.
 	Progress             func(context.Context, *sdkclient.PollCommand, string)
 	SavePreparation      func(*sdkclient.PollCommand, *PreparationRecovery) error
 	SaveReplacement      func(*sdkclient.PollCommand, *ReplacementWork) error
@@ -762,12 +763,12 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 		if err != nil {
 			return failResult(cmd.ID, "onion_import.public_key_b64 must be base64 of the hs_ed25519_public_key file")
 		}
-		addr, err := d.Tor.ImportOnionKeyWithProfile(p.DeploymentID, secret, pubFile, p.OnionProfile)
+		_, err = d.Tor.ImportOnionKeyWithProfile(p.DeploymentID, secret, pubFile, p.OnionProfile)
 		if err != nil {
 			return failResult(cmd.ID, "onion key import refused: "+err.Error())
 		}
 		d.Log.Info("docker deploy: imported customer onion key",
-			"deployment_id", p.DeploymentID, "onion", addr)
+			"deployment_id", p.DeploymentID)
 	}
 
 	if len(p.InitialOnionClients) > 0 {
@@ -828,7 +829,7 @@ func (d *Docker) deploy(ctx context.Context, cmd *sdkclient.PollCommand) (result
 			return failResult(cmd.ID, "rewrite .env with onion vars (onion-only): "+err.Error())
 		}
 		d.Log.Info("docker deploy: onion-only — Tor provisioned + .env back-filled",
-			"deployment_id", p.DeploymentID, "onion", addr)
+			"deployment_id", p.DeploymentID)
 	}
 
 	// 1. Validate, pull and build without replacing running containers.
@@ -1898,7 +1899,7 @@ func (d *Docker) updateRoutes(ctx context.Context, cmd *sdkclient.PollCommand) s
 		}
 		p.OnionAddr = addr
 		d.Log.Info("update_routes: provisioned onion",
-			"deployment_id", p.DeploymentID, "onion", addr)
+			"deployment_id", p.DeploymentID)
 	}
 
 	// 1. Atomic .env rewrite. Skipped when the server passes no vars
