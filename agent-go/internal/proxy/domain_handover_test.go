@@ -82,7 +82,7 @@ func TestDomainHandoverRecoveryCannotConsumeOtherSwitch(t *testing.T) {
 	if err := c.RestoreDomainHandover(t.Context(), id, "before.example.test", "wrong.example.test"); err == nil {
 		t.Fatal("wrong operation restored a journal")
 	}
-	if err := c.FinishDomainHandover("dpl_"+strings.Repeat("b", 16), "after.example.test"); err == nil {
+	if err := c.FinishDomainHandover(t.Context(), "dpl_"+strings.Repeat("b", 16), "before.example.test", "after.example.test"); err == nil {
 		t.Fatal("wrong app deleted a journal")
 	}
 	if err := c.guardRoutingSwitch(); err == nil {

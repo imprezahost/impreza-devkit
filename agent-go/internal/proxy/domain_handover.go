@@ -39,13 +39,69 @@ func (c *Caddy) domainHandoverJournal(id, after string) (*routingSwitchRecord, e
 	return &r, nil
 }
 
-func (c *Caddy) FinishDomainHandover(id, after string) error {
+func hostBlock(block, host string) bool {
+	return host != "" && (strings.HasPrefix(block, host+" {") || strings.HasPrefix(block, "http://"+host+" {"))
+}
+
+// FinishDomainHandover is the commit after a verified probe (). The live fragment still serves BOTH the
+// previous and the new hostname; this drops the previous block, reloads, then completes the journal. Idempotent
+// for crash recovery: a fragment that already serves only the new hostname is not rewritten or reloaded.
+func (c *Caddy) FinishDomainHandover(ctx context.Context, id, before, after string) error {
+	if (before != "" && !handoverHostname.MatchString(before)) || before == after {
+		return ErrRoutingRecoveryRequired
+	}
 	r, err := c.domainHandoverJournal(id, after)
 	if err != nil {
 		return err
 	}
 	if r == nil {
 		return nil
+	}
+	if before != "" {
+		path := filepath.Join(c.StateDir, "deployments", id+".caddy")
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Size() > 2*1024*1024 {
+			return ErrRoutingRecoveryRequired
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		header, blocks, err := splitFragment(string(raw))
+		if err != nil {
+			return errors.Join(ErrRoutingRecoveryRequired, err)
+		}
+		var kept []string
+		dropped, serving := 0, 0
+		for _, block := range blocks {
+			if hostBlock(block, before) {
+				dropped++
+				continue
+			}
+			if hostBlock(block, after) {
+				serving++
+			}
+			kept = append(kept, block)
+		}
+		if serving != 1 || dropped > 1 {
+			return ErrRoutingRecoveryRequired
+		}
+		if dropped == 1 {
+			if err := writeSwitchFile(path, []byte(strings.Join(append(header, kept...), "\n")+"\n")); err != nil {
+				return errors.Join(ErrRoutingRecoveryRequired, err)
+			}
+			if err := c.regenerateCaddyfile(); err != nil {
+				return errors.Join(ErrRoutingRecoveryRequired, err)
+			}
+			if err := c.reloadSwitch(ctx); err != nil {
+				// Keep disk equal to what Caddy still runs (the overlap), so a retried commit drops and reloads again.
+				restoreErr := writeSwitchFile(path, raw)
+				if restoreErr == nil {
+					restoreErr = c.regenerateCaddyfile()
+				}
+				return errors.Join(ErrRoutingRecoveryRequired, err, restoreErr)
+			}
+		}
 	}
 	return c.CompleteHostnameSwitch(after, id, id)
 }
@@ -104,12 +160,20 @@ func (c *Caddy) RestoreDomainHandover(ctx context.Context, id, before, after str
 	if err := c.reloadSwitch(ctx); err != nil {
 		return err
 	}
-	return c.FinishDomainHandover(id, after)
+	// The previous fragment is live again: only the journal is left to complete (never a commit).
+	if r == nil {
+		return nil
+	}
+	return c.CompleteHostnameSwitch(after, id, id)
 }
 
 // BeginDomainHandover keeps the previous fragment in a private durable journal.
 // The caller must probe the new route and finish the journal, or invoke undo.
 // An interrupted operation blocks every unrelated proxy mutation on restart.
+//
+// it publishes an OVERLAP fragment, the reviewed previous block plus the new one, so the current domain
+// keeps its certificate and keeps serving while the new hostname obtains its own. FinishDomainHandover drops
+// the previous block only after the caller's probe passed; undo restores the original exactly, as before.
 func (c *Caddy) BeginDomainHandover(ctx context.Context, id, before, after string, routes []Route) (func(context.Context) error, error) {
 	if !handoverDeployment.MatchString(id) || (before != "" && !handoverHostname.MatchString(before)) || !handoverHostname.MatchString(after) ||
 		len(before) > 253 || len(after) > 253 || before == after || strings.HasSuffix(before, ".onion") || strings.HasSuffix(after, ".onion") ||
@@ -136,14 +200,17 @@ func (c *Caddy) BeginDomainHandover(ctx context.Context, id, before, after strin
 			return nil, err
 		}
 	}
-	_, blocks, err := splitFragment(string(original))
+	header, blocks, err := splitFragment(string(original))
 	if err != nil {
 		return nil, err
 	}
 	found := 0
 	for _, block := range blocks {
-		if strings.HasPrefix(block, before+" {") || strings.HasPrefix(block, "http://"+before+" {") {
+		if hostBlock(block, before) {
 			found++
+		}
+		if hostBlock(block, after) {
+			return nil, errors.New("application already serves the new domain")
 		}
 	}
 	if (before != "" && found != 1) || (before == "" && found != 0) {
@@ -170,6 +237,24 @@ func (c *Caddy) BeginDomainHandover(ctx context.Context, id, before, after strin
 	if other(blocks, before) != other(next, after) {
 		return nil, errors.New("domain handover would change another endpoint")
 	}
+	// The live fragment while the new hostname is unproven: everything the app serves today, plus the new block.
+	// A first clearnet domain (before == "") has nothing to keep serving, so it publishes the candidate directly.
+	live := candidate
+	if before != "" {
+		var added []string
+		for _, b := range next {
+			if hostBlock(b, after) {
+				added = append(added, b)
+			}
+		}
+		if len(added) != 1 {
+			return nil, errors.New("domain handover candidate does not have exactly one new block")
+		}
+		live = []byte(strings.Join(append(append(append([]string{}, header...), blocks...), added...), "\n") + "\n")
+		if _, check, err := splitFragment(string(live)); err != nil || len(check) != len(blocks)+1 {
+			return nil, errors.New("domain handover overlap fragment cannot be verified")
+		}
+	}
 	if err := c.beginRoutingSwitch(routingSwitchRecord{Version: 1, Hostname: after, Source: id, Target: id, SourceBefore: original}); err != nil {
 		return nil, errors.Join(ErrRoutingRecoveryRequired, err)
 	}
@@ -188,7 +273,7 @@ func (c *Caddy) BeginDomainHandover(ctx context.Context, id, before, after strin
 		return c.CompleteHostnameSwitch(after, id, id)
 	}
 	for _, step := range []func() error{
-		func() error { return writeSwitchFile(path, candidate) }, c.regenerateCaddyfile, func() error { return c.reloadSwitch(ctx) },
+		func() error { return writeSwitchFile(path, live) }, c.regenerateCaddyfile, func() error { return c.reloadSwitch(ctx) },
 	} {
 		if err := step(); err != nil {
 			if rollbackErr := undo(ctx); rollbackErr != nil {

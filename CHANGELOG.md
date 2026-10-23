@@ -18,6 +18,15 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
   `PlatformPrepareFailback`, `PlatformRunFailoverDrill` and the matching reads). Every apply takes
   the exact review digest and an explicit confirmation.
 
+## Agent 0.6.36 — 2026-10-22
+
+- A domain change keeps the current domain serving while the replacement
+  obtains its certificate and passes its HTTPS probe. The previous route
+  is removed only at the final commit; failed commits retain the recovery
+  journal and can be retried without duplicating the transition.
+- A build worker refuses changed application inputs before running any
+  Docker command, including local daemon checks after a host restart.
+
 ## Agent 0.6.35 — 2026-10-21
 
 - Artifact admission now validates downgrade, size, digest and embedded version

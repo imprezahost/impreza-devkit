@@ -125,7 +125,8 @@ func (d *Docker) domainHandover(ctx context.Context, cmd *sdkclient.PollCommand,
 	if err := d.saveDomainHandover(recovery); err != nil {
 		return rollback("Domain completion receipt could not be saved.")
 	}
-	if err := d.Proxy.FinishDomainHandover(p.DeploymentID, h.After); err != nil {
+	// only now does the previous domain stop serving (the overlap is replaced by the new route alone).
+	if err := d.Proxy.FinishDomainHandover(ctx, p.DeploymentID, h.Before, h.After); err != nil {
 		return failed("recovery_required", "Domain handover recovery record could not be finalized.")
 	}
 	return result

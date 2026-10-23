@@ -113,7 +113,7 @@ func (d *Docker) RecoverDomainHandover(ctx context.Context, command string, iden
 			return sdkclient.DeployResult{}, errors.New("domain recovery receipt identity mismatch")
 		}
 		if r.Status == "success" && r.DomainHandover.Status == "switched" && r.Domain == "https://"+identity.After {
-			if err := d.Proxy.FinishDomainHandover(identity.DeploymentID, identity.After); err != nil {
+			if err := d.Proxy.FinishDomainHandover(ctx, identity.DeploymentID, identity.Before, identity.After); err != nil {
 				return sdkclient.DeployResult{}, err
 			}
 			return *r, nil

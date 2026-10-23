@@ -746,11 +746,6 @@ func RunPreparationWorker(stateDir, id string) error {
 	if request.BootID != "" && request.BootID != currentBootID() {
 		return errors.New("preparation worker belongs to an earlier host boot; never replay")
 	}
-	if request.LocalBootRecovery {
-		if err := localPreparationDaemon(&request); err != nil {
-			return err
-		}
-	}
 	if !filepath.IsAbs(request.Docker) || !recoveryDeploymentID.MatchString(request.DeploymentID) {
 		return errors.New("invalid preparation worker command")
 	}
@@ -769,6 +764,13 @@ func RunPreparationWorker(stateDir, id string) error {
 	// compose.yaml that cannot name its project stops before the start marker.
 	if _, err = composeProject(app); err != nil {
 		return err
+	}
+	// the local-daemon probes run docker; they come only after the inputs are proven unchanged, so a
+	// drifted or invalid request refuses before ANY docker invocation.
+	if request.LocalBootRecovery {
+		if err := localPreparationDaemon(&request); err != nil {
+			return err
+		}
 	}
 	// O_EXCL plus directory sync prevents duplicate launches, including after a
 	// worker crash. An existing started marker is never treated as a retry request.
