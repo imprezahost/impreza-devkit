@@ -43,9 +43,10 @@ func hostBlock(block, host string) bool {
 	return host != "" && (strings.HasPrefix(block, host+" {") || strings.HasPrefix(block, "http://"+host+" {"))
 }
 
-// FinishDomainHandover is the commit after a verified probe (). The live fragment still serves BOTH the
-// previous and the new hostname; this drops the previous block, reloads, then completes the journal. Idempotent
-// for crash recovery: a fragment that already serves only the new hostname is not rewritten or reloaded.
+// FinishDomainHandover is the commit after a verified probe. The live fragment still serves BOTH the
+// previous and the new hostname; this drops the previous block, reloads, then completes the journal.
+// A fragment that already serves only the new hostname is not rewritten. A pending journal still regenerates
+// and reloads before it is removed: reload is idempotent, and completing without it leaves Caddy on the overlap.
 func (c *Caddy) FinishDomainHandover(ctx context.Context, id, before, after string) error {
 	if (before != "" && !handoverHostname.MatchString(before)) || before == after {
 		return ErrRoutingRecoveryRequired
@@ -90,17 +91,22 @@ func (c *Caddy) FinishDomainHandover(ctx context.Context, id, before, after stri
 			if err := writeSwitchFile(path, []byte(strings.Join(append(header, kept...), "\n")+"\n")); err != nil {
 				return errors.Join(ErrRoutingRecoveryRequired, err)
 			}
-			if err := c.regenerateCaddyfile(); err != nil {
+		}
+		// dropped == 0 is the retry after a crash or a failed regenerate: the new fragment is already on disk
+		// and Caddy may still be serving the overlap. Reload before the journal is removed.
+		if err := c.regenerateCaddyfile(); err != nil {
+			return errors.Join(ErrRoutingRecoveryRequired, err)
+		}
+		if err := c.reloadSwitch(ctx); err != nil {
+			if dropped != 1 {
 				return errors.Join(ErrRoutingRecoveryRequired, err)
 			}
-			if err := c.reloadSwitch(ctx); err != nil {
-				// Keep disk equal to what Caddy still runs (the overlap), so a retried commit drops and reloads again.
-				restoreErr := writeSwitchFile(path, raw)
-				if restoreErr == nil {
-					restoreErr = c.regenerateCaddyfile()
-				}
-				return errors.Join(ErrRoutingRecoveryRequired, err, restoreErr)
+			// Keep disk equal to what Caddy still runs (the overlap), so a retried commit drops and reloads again.
+			restoreErr := writeSwitchFile(path, raw)
+			if restoreErr == nil {
+				restoreErr = c.regenerateCaddyfile()
 			}
+			return errors.Join(ErrRoutingRecoveryRequired, err, restoreErr)
 		}
 	}
 	return c.CompleteHostnameSwitch(after, id, id)

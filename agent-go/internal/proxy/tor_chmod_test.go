@@ -29,6 +29,10 @@ func TestProvisionHiddenServiceNeverChmodsThroughSymlink(t *testing.T) {
 	if err := os.Mkdir(target, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The umask applies to Mkdir (0077 gives 0700, the very mode a followed chmod would set); pin 0755.
+	if err := os.Chmod(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	link := filepath.Join(tor.StateDir, "services", "dpl_swap")
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("cannot create symlink: %v", err)
@@ -57,6 +61,10 @@ func TestRepairNeverChmodsThroughSymlink(t *testing.T) {
 
 	target := filepath.Join(t.TempDir(), "hostdir")
 	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The umask applies to Mkdir (0077 gives 0700, the very mode a followed chmod would set); pin 0755.
+	if err := os.Chmod(target, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// A symlink that even carries "state" behind the link: it must be

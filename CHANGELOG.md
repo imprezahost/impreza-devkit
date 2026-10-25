@@ -18,6 +18,13 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
   `PlatformPrepareFailback`, `PlatformRunFailoverDrill` and the matching reads). Every apply takes
   the exact review digest and an explicit confirmation.
 
+## Agent 0.6.39 — 2026-10-25
+
+- Build the agent with Go 1.26.10 for standard-library security fixes.
+- A retried domain handover regenerates and reloads the proxy before completing
+  its journal, even when the fragment on disk already names only the new host.
+- Pin filesystem test setup modes independently of the invoking umask.
+
 ## Agent 0.6.37 — 2026-10-23
 
 - Onion deployments observe descriptor upload through the owning Tor daemon

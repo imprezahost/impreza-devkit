@@ -3,7 +3,9 @@
 # This Makefile is for local dev. CI uses nfpm to produce .deb/.rpm
 # artifacts; see packaging/nfpm.yaml.
 
-VERSION ?= dev
+GO ?= go
+export GOTOOLCHAIN=local
+VERSION ?= 0.6.39
 LDFLAGS := -s -w -X main.version=$(VERSION)
 BIN     ?= dist/impreza-agent
 
@@ -15,23 +17,23 @@ export GOARCH=amd64
 
 .PHONY: build build-host vet test smoke clean install
 
-build:
+build: check-toolchain
 	@mkdir -p dist
-	go build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN) .
+	$(GO) build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN) .
 	@echo "→ $(BIN)"
 
 # Host-platform build for local dev (Windows / macOS / Linux).
 # Useful for running `--version` / `doctor` on a laptop.
-build-host:
+build-host: check-toolchain
 	@mkdir -p dist
-	CGO_ENABLED=0 GOOS= GOARCH= go build -trimpath -ldflags="$(LDFLAGS)" -o dist/impreza-agent-host .
+	CGO_ENABLED=0 GOOS= GOARCH= $(GO) build -trimpath -ldflags="$(LDFLAGS)" -o dist/impreza-agent-host .
 	@echo "→ dist/impreza-agent-host"
 
-vet:
-	go vet ./...
+vet: check-toolchain
+	$(GO) vet ./...
 
-test:
-	go test ./...
+test: check-toolchain
+	$(GO) test -timeout 40m ./...
 
 # Quick smoke — exercise the verbs that don't need a real control plane.
 smoke: build-host
@@ -47,3 +49,7 @@ install: build
 	install -D -m 0644 packaging/systemd/impreza-agent.service /etc/systemd/system/impreza-agent.service
 	systemctl daemon-reload
 	@echo "Installed. Configure with: impreza-agent bootstrap --token <bootstrap-token>"
+
+.PHONY: check-toolchain
+check-toolchain:
+	@test "$$($(GO) env GOVERSION)" = "go1.26.10" || { echo "Go 1.26.10 is required via GO" >&2; exit 1; }

@@ -228,11 +228,12 @@ func validateBasicAuth(b *BasicAuth) error {
 
 // Caddy owns the host's reverse-proxy state.
 type Caddy struct {
-	StateDir      string // <agent-state>/proxy
-	Log           *slog.Logger
-	switchReload  func(context.Context) error           // test seam for reload failure boundaries
-	containerList func(context.Context) ([]byte, error) // test seam for Docker availability
-	liveConfig    func(context.Context) ([]byte, error) // test seam for the loaded config
+	StateDir         string // <agent-state>/proxy
+	Log              *slog.Logger
+	switchRegenerate func() error                          // test seam for regenerate failure
+	switchReload     func(context.Context) error           // test seam for reload failure boundaries
+	containerList    func(context.Context) ([]byte, error) // test seam for Docker availability
+	liveConfig       func(context.Context) ([]byte, error) // test seam for the loaded config
 
 	// Proxy-metrics scrape state: previous exposition snapshot for
 	// per-cycle deltas. Memory only, deployment-labeled series only.
@@ -933,6 +934,9 @@ func (c *Caddy) reloadSwitch(ctx context.Context) error {
 // single Caddyfile to disk. Sorting by deployment_id keeps the output
 // deterministic so `caddy reload` is a no-op when no routes changed.
 func (c *Caddy) regenerateCaddyfile() error {
+	if c.switchRegenerate != nil {
+		return c.switchRegenerate()
+	}
 	dir := filepath.Join(c.StateDir, "deployments")
 	entries, err := os.ReadDir(dir)
 	if err != nil {

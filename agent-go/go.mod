@@ -2,7 +2,7 @@ module github.com/imprezahost/impreza-devkit/agent-go
 
 go 1.26.3
 
-toolchain go1.26.6
+toolchain go1.26.10
 
 require (
 	filippo.io/edwards25519 v1.2.0
