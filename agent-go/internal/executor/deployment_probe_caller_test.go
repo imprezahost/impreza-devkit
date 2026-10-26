@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -55,6 +56,8 @@ type deploymentProbeOutcome struct {
 	result sdkclient.DeployResult
 	calls  []string
 	docker string
+	// caller excludes fixture setup and the fake executable warm-up.
+	caller time.Duration
 }
 
 func deploymentProbeRun(t *testing.T, c deploymentProbeCase) deploymentProbeOutcome {
@@ -84,6 +87,19 @@ func deploymentProbeRun(t *testing.T, c deploymentProbeCase) deploymentProbeOutc
 	t.Setenv(deploymentProbeFakeDockerEnv, "1")
 	t.Setenv("DEPLOYMENT_PROBE_DOCKER_LOG", dockerLog)
 	t.Setenv("DEPLOYMENT_PROBE_DOCKER_FAIL", c.failDocker)
+	// A scanner may delay the first execution of a freshly written fake binary.
+	// Warm it up outside the measured caller budget and without recording a call.
+	warmEnv := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "DEPLOYMENT_PROBE_DOCKER_LOG=") {
+			warmEnv = append(warmEnv, kv)
+		}
+	}
+	warm := exec.Command(filepath.Join(bin, name), "warmup")
+	warm.Env = warmEnv
+	if err := warm.Run(); err != nil {
+		t.Fatal(err)
+	}
 
 	var calls []string
 	orig := probeHTTPS
@@ -121,9 +137,11 @@ func deploymentProbeRun(t *testing.T, c deploymentProbeCase) deploymentProbeOutc
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
+	callerStart := time.Now()
 	result := d.finishReplacement(ctx, &sdkclient.PollCommand{ID: "cmd_deploymentProbe"}, p, nil, false, c.onion)
+	callerTook := time.Since(callerStart)
 	logged, _ := os.ReadFile(dockerLog)
-	return deploymentProbeOutcome{result: result, calls: calls, docker: string(logged)}
+	return deploymentProbeOutcome{result: result, calls: calls, docker: string(logged), caller: callerTook}
 }
 
 const deploymentProbeHost = "deploymentProbe.example.invalid"
@@ -138,6 +156,9 @@ func deploymentProbeRequireCaller(t *testing.T, o deploymentProbeOutcome) {
 	t.Helper()
 	if !strings.Contains(o.docker, " up -d ") {
 		t.Fatalf("finishReplacement did not reach compose up through the fake docker; calls:\n%s", o.docker)
+	}
+	if strings.Contains(o.docker, "warmup") {
+		t.Fatalf("the fake executable warm-up was recorded as a docker call:\n%s", o.docker)
 	}
 }
 

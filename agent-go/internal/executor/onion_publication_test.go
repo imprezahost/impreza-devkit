@@ -108,18 +108,38 @@ func TestOnionPublicationCallerCallerConfirmsOnlyAfterCompose(t *testing.T) {
 // This uses the real finishReplacement -> Tor.WaitForOnionPublication path,
 // without substituting the publication observer. An old/unconfigured image has
 // no controller socket and must NOT spend the former six-minute curl budget.
+// Measure the caller itself, excluding fixture setup and fake-executable warm-up.
 func TestOnionPublicationCallerCallerMissingControllerDoesNotWaitForImageTool(t *testing.T) {
 	onion := strings.Repeat("f", 56) + ".onion"
-	start := time.Now()
 	o := deploymentProbeRun(t, deploymentProbeCase{routes: deploymentProbeClearnet(), onion: onion, probeResult: true, realTor: true, timeout: 5 * time.Second})
 	deploymentProbeRequireCaller(t, o)
-	if time.Since(start) >= 4*time.Second {
-		t.Fatal("missing controller/tool delayed the real caller")
+	if o.caller >= 4*time.Second {
+		t.Fatalf("missing controller/tool delayed the real caller (%s)", o.caller)
 	}
 	if o.result.Status != "success" || !strings.Contains(o.result.LogsTail, "descriptor upload") || !strings.Contains(o.result.LogsTail, "advisory") {
 		t.Fatal("missing controller is not an honest descriptor advisory")
 	}
 	if strings.Contains(o.docker, "curl") || strings.Contains(o.docker, onion) || strings.Count(o.docker, "exec "+proxy.ContainerName+" caddy reload") != 1 {
 		t.Fatal("external client, address disclosure or repeated route reload")
+	}
+}
+
+// The measured caller time still includes the caller's own waiting: only the
+// fixture setup and the fake-executable warm-up are excluded.
+func TestOnionPublicationCallerTimeIncludesItsOwnWait(t *testing.T) {
+	onion := strings.Repeat("e", 56) + ".onion"
+	const wait = 300 * time.Millisecond
+	o := deploymentProbeRun(t, deploymentProbeCase{
+		routes:      deploymentProbeClearnet(),
+		onion:       onion,
+		probeResult: true,
+		onionWait: func(context.Context, string, string) bool {
+			time.Sleep(wait)
+			return true
+		},
+	})
+	deploymentProbeRequireCaller(t, o)
+	if o.caller < wait {
+		t.Fatalf("caller time %s excludes the caller's own %s wait", o.caller, wait)
 	}
 }

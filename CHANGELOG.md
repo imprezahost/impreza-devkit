@@ -18,6 +18,16 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
   `PlatformPrepareFailback`, `PlatformRunFailoverDrill` and the matching reads). Every apply takes
   the exact review digest and an explicit confirmation.
 
+## Agent 0.6.40 — 2026-10-26
+
+- Update the local agent build version to 0.6.40, retaining Go 1.26.10.
+- Deployment tests measure caller latency separately from fixture setup and the
+  first execution of a newly written fake executable.
+- The published agent fixes byte-limited reads of kernel attributes in an
+  optional component that is not included in this public source tree. Building
+  this curated tree does not reproduce the published agent binary, as with the
+  previous curated release.
+
 ## Agent 0.6.39 — 2026-10-25
 
 - Build the agent with Go 1.26.10 for standard-library security fixes.
