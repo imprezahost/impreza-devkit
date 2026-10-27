@@ -18,6 +18,14 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
   `PlatformPrepareFailback`, `PlatformRunFailoverDrill` and the matching reads). Every apply takes
   the exact review digest and an explicit confirmation.
 
+## Agent 0.6.41 — 2026-10-27
+
+- Update the local agent build version to 0.6.41, retaining Go 1.26.10.
+- The published agent adds an optional, local-only setting for encrypted-root
+  reporting, off by default, in a component that is not included in this public
+  source tree. Building this curated tree does not reproduce the published agent
+  binary, as with the previous curated releases.
+
 ## Agent 0.6.40 — 2026-10-26
 
 - Update the local agent build version to 0.6.40, retaining Go 1.26.10.

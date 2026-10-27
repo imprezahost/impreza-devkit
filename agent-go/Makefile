@@ -5,7 +5,7 @@
 
 GO ?= go
 export GOTOOLCHAIN=local
-VERSION ?= 0.6.40
+VERSION ?= 0.6.41
 LDFLAGS := -s -w -X main.version=$(VERSION)
 BIN     ?= dist/impreza-agent
 
