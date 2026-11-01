@@ -18,6 +18,20 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
   `PlatformPrepareFailback`, `PlatformRunFailoverDrill` and the matching reads). Every apply takes
   the exact review digest and an explicit confirmation.
 
+## Agent 0.6.43 — 2026-10-29
+
+- Update the local agent build version to 0.6.43. The signed stable-channel
+  binaries are available for Linux amd64 and arm64. Existing servers update
+  only when their owner requests it; this release does not enable an automatic
+  fleet rollout.
+- The published agent checks public-route publication before reporting a
+  working deployment address and makes interrupted domain-change recovery
+  refuse safely instead of entering a restart loop. Updating alone does not
+  reconstruct a missing application route or authorize deleting recovery data.
+- This metadata update retains the limited scope of the curated public source
+  tree. Building it does not reproduce the published agent binary, as with
+  the previous curated release.
+
 ## Agent 0.6.41 — 2026-10-27
 
 - Update the local agent build version to 0.6.41, retaining Go 1.26.10.
