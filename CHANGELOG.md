@@ -18,6 +18,18 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
   `PlatformPrepareFailback`, `PlatformRunFailoverDrill` and the matching reads). Every apply takes
   the exact review digest and an explicit confirmation.
 
+## Agent 0.6.44 — 2026-11-01
+
+- Linux amd64 and arm64 binaries are available on the signed stable channel.
+  Updating is an explicit owner action; existing servers keep their installed
+  version, identity, configuration and applications. No automatic fleet rollout
+  is enabled by this release.
+- This version records the published agent release. It does not enable gated
+  maintenance features or replace their separate prerequisites and approvals.
+- This metadata update retains the limited scope of the curated public source
+  tree. Building it does not reproduce the published agent binary, as with
+  the previous curated release.
+
 ## Agent 0.6.43 — 2026-10-29
 
 - Update the local agent build version to 0.6.43. The signed stable-channel
