@@ -30,16 +30,20 @@ jobs:
       - name: Set up reviewed Go toolchain
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.6'
+          go-version: '1.26.11'
           cache-dependency-path: agent-go/packaging/caddy/application/go.sum
 
       - name: Audit the complete Caddy application
         working-directory: agent-go/packaging/caddy/application
         env:
-          GOTOOLCHAIN: go1.26.6
+          GOTOOLCHAIN: go1.26.11
           GOWORK: 'off'
           CGO_ENABLED: '0'
         run: |
+          # The audited Go, the build Go and the Caddy version must agree.
+          test "$(go env GOVERSION)" = "$GOTOOLCHAIN"
+          test "$(sed -n 's/^FROM golang:\([0-9.]*\)-alpine.*/\1/p' ../Dockerfile)" = "${GOTOOLCHAIN#go}"
+          test "$(go list -m -f '{{.Version}}' github.com/caddyserver/caddy/v2)" = "v$(sed -n 's/^ARG CADDY_VERSION=//p' ../Dockerfile)"
           go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
           go mod verify
           govulncheck ./...
