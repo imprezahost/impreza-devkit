@@ -18,7 +18,7 @@ func init() {
 	httpcaddyfile.RegisterHandlerDirective("proxy_metrics", parseProxyMetricsCaddyfile)
 }
 
-// ProxyMetricsMiddleware counts requests through the proxy per
+// ProxyMetricsMiddleware (F41-2c) counts requests through the proxy per
 // deployment: status class, latency histogram, transferred bytes. Privacy
 // contract: the ONLY label is the deployment id. No IP, no path, no hostname,
 // no user agent — nothing that could identify a visitor is measured, stored

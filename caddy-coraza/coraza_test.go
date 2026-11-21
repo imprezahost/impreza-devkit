@@ -419,7 +419,7 @@ func TestDestructPropagatesCloseError(t *testing.T) {
 }
 
 func TestUsagePoolReuse(t *testing.T) {
-	// Simulate two modules with the same config — they should share a WAF.
+	// Simulate two modules with the same config â€” they should share a WAF.
 	m1 := &corazaModule{
 		Directives: "SecRuleEngine On",
 	}

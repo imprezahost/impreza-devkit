@@ -5,7 +5,7 @@ No request-derived rule messages or matched values enter this manifest.
 """
 import json,pathlib,re,sys
 source=pathlib.Path(sys.argv[1]).resolve()
-assert source.name.endswith('v4.25.0'), 'Only the pinned CRS v4.25.0 source is accepted'
+assert source.name.endswith('v4.25.0'), 'Only the reviewed CRS v4.25.0 source is accepted'
 rules={}
 for file in sorted((source/'rules/@owasp_crs').glob('*.conf')):
  text=file.read_text(encoding='utf-8')

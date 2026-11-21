@@ -13,11 +13,15 @@ import (
 // Context is a single named API credential entry. Multiple contexts
 // can live in one config file; one is marked default via Config.Default.
 type Context struct {
-	Key    string `toml:"key"`              // API key (starts with "imp_")
-	Secret string `toml:"secret"`           // API secret (shown once on key creation)
-	URL    string `toml:"url,omitempty"`    // override the default https://api.imprezahost.com
-	UseTor bool   `toml:"use_tor,omitempty"`
-	Proxy  string `toml:"proxy,omitempty"`  // e.g. "socks5://127.0.0.1:9050"
+	Key    string `toml:"key"`           // API key (starts with "imp_")
+	Secret string `toml:"secret"`        // API secret (shown once on key creation)
+	URL    string `toml:"url,omitempty"` // override the default https://api.imprezahost.com
+	// OriginAuthorized is the only non-official origin this credential may
+	// be sent to. Empty means the official API origin (loopback remains
+	// available for tests). Editing URL alone does not authorize a host.
+	OriginAuthorized string `toml:"origin_authorized,omitempty"`
+	UseTor           bool   `toml:"use_tor,omitempty"`
+	Proxy            string `toml:"proxy,omitempty"` // e.g. "socks5://127.0.0.1:9050"
 }
 
 // Config is the on-disk shape of $CONFIG/impreza/config.toml.
@@ -33,10 +37,10 @@ type Config struct {
 
 // Sentinel errors for callers that need to distinguish.
 var (
-	ErrNoConfig          = errors.New("no config file found — run `impreza context create` to set up your first context")
-	ErrContextNotFound   = errors.New("context not found")
-	ErrNoDefaultContext  = errors.New("no default context set — pass --context NAME or run `impreza context use NAME`")
-	ErrDuplicateContext  = errors.New("a context with that name already exists")
+	ErrNoConfig         = errors.New("no config file found — run `impreza context create` to set up your first context")
+	ErrContextNotFound  = errors.New("context not found")
+	ErrNoDefaultContext = errors.New("no default context set — pass --context NAME or run `impreza context use NAME`")
+	ErrDuplicateContext = errors.New("a context with that name already exists")
 )
 
 // Load reads the config file from the OS-default path (or

@@ -17,6 +17,8 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/libdns/libdns"
+
+	sdkconfig "github.com/imprezahost/impreza-devkit/sdk-go/config"
 )
 
 // Provider is the Caddy/libdns provider for Impreza Platform's
@@ -43,9 +45,13 @@ type Provider struct {
 	// when set on the env-file, falls back to default otherwise.
 	BaseURL string `json:"base_url,omitempty"`
 
-	// HTTPClient is overridable for tests. Production uses
-	// http.DefaultClient with a per-request context timeout.
+	// HTTPClient is overridable for tests. Production uses a client that
+	// refuses redirects so a 3xx cannot carry the agent secret elsewhere.
 	HTTPClient *http.Client `json:"-"`
+
+	// AuthorizedOrigin is the only non-official origin that may receive
+	// the agent secret. The base_url value alone is not that grant.
+	AuthorizedOrigin string `json:"authorized_origin,omitempty"`
 }
 
 // CaddyModule registers us as `dns.providers.impreza`. Caddy resolves
@@ -65,6 +71,7 @@ func (p *Provider) Provision(ctx caddy.Context) error {
 	p.AgentID = repl.ReplaceAll(p.AgentID, "")
 	p.AgentSecret = repl.ReplaceAll(p.AgentSecret, "")
 	p.BaseURL = repl.ReplaceAll(p.BaseURL, "")
+	p.AuthorizedOrigin = repl.ReplaceAll(p.AuthorizedOrigin, "")
 	if p.BaseURL == "" {
 		p.BaseURL = "https://api.imprezahost.com"
 	}
@@ -73,10 +80,17 @@ func (p *Provider) Provision(ctx caddy.Context) error {
 	if p.AgentID == "" || p.AgentSecret == "" {
 		return fmt.Errorf("caddy-dns-impreza: agent_id and agent_secret are required")
 	}
+	if err := sdkconfig.AllowCredentialBase(p.BaseURL, p.AuthorizedOrigin); err != nil {
+		return err
+	}
 	if p.HTTPClient == nil {
-		p.HTTPClient = http.DefaultClient
+		p.HTTPClient = &http.Client{CheckRedirect: refuseDNSRedirect}
 	}
 	return nil
+}
+
+func refuseDNSRedirect(req *http.Request, _ []*http.Request) error {
+	return fmt.Errorf("caddy-dns-impreza: refusing redirect to %s", req.URL.Host)
 }
 
 // AppendRecords is called by Caddy's ACME client to PRESENT the
@@ -149,13 +163,14 @@ func (p *Provider) SetRecords(ctx context.Context, zone string, recs []libdns.Re
 
 // UnmarshalCaddyfile parses the Caddyfile syntax. Two forms accepted:
 //
-//   dns impreza <agent_id> <agent_secret>            // compact, BaseURL default
-//   dns impreza <agent_id> <agent_secret> <base_url> // compact w/ override
-//   dns impreza {                                    // block form
-//       agent_id <agent_id>
-//       agent_secret <agent_secret>
-//       base_url <url>
-//   }
+//	dns impreza <agent_id> <agent_secret>            // compact, BaseURL default
+//	dns impreza <agent_id> <agent_secret> <base_url> // compact w/ override
+//	dns impreza {                                    // block form
+//	    agent_id <agent_id>
+//	    agent_secret <agent_secret>
+//	    base_url <url>
+//	    authorized_origin <origin>
+//	}
 func (p *Provider) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	for d.Next() {
 		// Compact form arguments after `impreza`.
@@ -195,6 +210,11 @@ func (p *Provider) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				p.BaseURL = d.Val()
+			case "authorized_origin":
+				if !d.NextArg() {
+					return d.ArgErr()
+				}
+				p.AuthorizedOrigin = d.Val()
 			default:
 				return d.Errf("unknown impreza subdirective: %s", d.Val())
 			}
@@ -219,6 +239,9 @@ func (p *Provider) call(ctx context.Context, path string, body map[string]string
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
+	if err := sdkconfig.AllowCredentialBase(p.BaseURL, p.AuthorizedOrigin); err != nil {
+		return err
+	}
 	req, err := http.NewRequestWithContext(cctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)

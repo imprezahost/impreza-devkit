@@ -1,4 +1,4 @@
-# Coraza Caddy connector (modified copy)
+# Reviewed Coraza Caddy connector
 
 Upstream: github.com/corazawaf/coraza-caddy/v2 v2.6.1 (Apache-2.0).
 Coraza v3.7.0 / embedded CRS v4.25.0, unchanged versions.

@@ -3,7 +3,7 @@
 // (`shield_pow`, a Go port of the Onion Guard algorithm) and an in-memory
 // rate limiter with temporary bans (`shield_rate_limit`).
 //
-// Privacy contract: these handlers NEVER persist client identity.
+// Privacy contract (F42): these handlers NEVER persist client identity.
 // Client keys are HMAC-SHA256(pepper, source-ip) with a random per-process
 // pepper; challenges are stored hashed; cookies are HMAC-signed tokens with
 // no server-side session. Nothing touches disk. A Caddy restart or config
