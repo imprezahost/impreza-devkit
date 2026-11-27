@@ -19,9 +19,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
-	"github.com/imprezahost/impreza-devkit/sdk-go/tor"
+	"github.com/imprezahost/impreza-devkit/sdk-go/config"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -127,11 +128,11 @@ type BootstrapOptions struct {
 // Unlike the rest of the SDK, Bootstrap does not require a long-lived
 // Client because the credentials it returns are what makes one possible.
 func Bootstrap(ctx context.Context, token string, req BootstrapRequest, opts BootstrapOptions) (*BootstrapResponse, error) {
-	proxyURL := opts.Proxy
-	if proxyURL == "" && opts.UseTor {
-		proxyURL = tor.DefaultSOCKS
+	baseURL := BaseURL(config.Context{URL: opts.BaseURL})
+	if err := config.AllowCredentialBase(baseURL, baseURL); err != nil {
+		return nil, err
 	}
-	base, err := tor.Transport(proxyURL)
+	base, err := buildTransport(config.Context{URL: baseURL, UseTor: opts.UseTor, Proxy: opts.Proxy})
 	if err != nil {
 		return nil, fmt.Errorf("build bootstrap transport: %w", err)
 	}
@@ -143,11 +144,6 @@ func Bootstrap(ctx context.Context, token string, req BootstrapRequest, opts Boo
 	// response carries the permanent agent credentials. Same rule as every other
 	// client here: a redirect must not decide where either of those goes.
 	httpClient := &http.Client{Transport: base, Timeout: timeout, CheckRedirect: refuseRedirects}
-
-	baseURL := opts.BaseURL
-	if baseURL == "" {
-		baseURL = DefaultBaseURL
-	}
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -185,9 +181,9 @@ func Bootstrap(ctx context.Context, token string, req BootstrapRequest, opts Boo
 
 	var env envelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, fmt.Errorf("decode bootstrap envelope: %w (raw=%q)", err, string(raw))
+		return nil, fmt.Errorf("decode bootstrap envelope: %w", err)
 	}
-	if !env.Success || env.Error != nil {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || !env.Success || env.Error != nil {
 		code, msg := "", ""
 		if env.Error != nil {
 			code, msg = env.Error.Code, env.Error.Message
@@ -198,6 +194,15 @@ func Bootstrap(ctx context.Context, token string, req BootstrapRequest, opts Boo
 	var out BootstrapResponse
 	if err := json.Unmarshal(env.Data, &out); err != nil {
 		return nil, fmt.Errorf("decode bootstrap data: %w", err)
+	}
+	if strings.TrimSpace(out.AgentID) == "" || strings.TrimSpace(out.AgentSecret) == "" {
+		return nil, fmt.Errorf("bootstrap response did not confirm agent credentials")
+	}
+	// The token was sent to baseURL. A different control_plane_url in the
+	// body would store the new agent secret for another host. Drop the
+	// response instead of returning it.
+	if out.ControlPlaneURL != "" && !config.SameOrigin(baseURL, out.ControlPlaneURL) {
+		return nil, fmt.Errorf("%w", config.ErrCredentialOrigin)
 	}
 	return &out, nil
 }

@@ -7,7 +7,7 @@ from this module. Resources delegate all network work here. The public
 Responsibilities:
 
 * Inject ``X-API-Key`` and ``X-API-Secret`` on every request.
-* Retry transient failures (5xx and 429) with exponential backoff and jitter.
+* Retry transient read failures (5xx and 429) with exponential backoff and jitter.
 * Honour the ``Retry-After`` header on 429 responses.
 * Unwrap the success envelope (``{"success": true, "data": ..., "meta": ...}``)
   and surface ``meta.request_id`` to callers via exceptions.
@@ -72,7 +72,7 @@ class HttpClient:
             proxy=proxy,
             trust_env=proxy is None,
             # The credentials above are CUSTOM headers set on the client, so httpx
-            # re-sends them on every hop of a redirect — including one that crosses
+            # re-sends them on every hop of a redirect - including one that crosses
             # to another host, where its Authorization-stripping rule does not
             # apply. The API never redirects, so refusing is free. httpx already
             # defaults to False; stating it makes the property ours rather than a
@@ -94,7 +94,7 @@ class HttpClient:
     ) -> None:
         self.close()
 
-    # ── public methods ─────────────────────────────────────────────────
+    # - public methods -
 
     def get(
         self,
@@ -137,7 +137,7 @@ class HttpClient:
     ) -> dict[str, Any]:
         return self._request("DELETE", path, json=json)
 
-    # ── internals ──────────────────────────────────────────────────────
+    # - internals -
 
     def _request(
         self,
@@ -148,17 +148,19 @@ class HttpClient:
         json: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
+        # A failed response cannot tell whether a mutation already took effect.
+        max_retries = self._max_retries if method.upper() in {"GET", "HEAD", "OPTIONS"} else 0
         attempt = 0
         last_network_error: httpx.RequestError | None = None
 
-        while attempt <= self._max_retries:
+        while attempt <= max_retries:
             try:
                 response = self._client.request(
                     method, path, params=params, json=json, headers=headers
                 )
             except httpx.RequestError as exc:
                 last_network_error = exc
-                if attempt >= self._max_retries:
+                if attempt >= max_retries:
                     raise NetworkError(
                         f"Could not reach the Impreza API: {exc}",
                     ) from exc
@@ -166,17 +168,17 @@ class HttpClient:
                 attempt += 1
                 continue
 
-            if response.status_code < 400:
+            if 200 <= response.status_code < 300:
                 return self._unwrap(response)
 
-            if response.status_code == 429 and attempt < self._max_retries:
+            if response.status_code == 429 and attempt < max_retries:
                 retry_after = self._parse_retry_after(response)
                 wait = retry_after if retry_after is not None else self._backoff(attempt)
                 time.sleep(wait)
                 attempt += 1
                 continue
 
-            if 500 <= response.status_code < 600 and attempt < self._max_retries:
+            if 500 <= response.status_code < 600 and attempt < max_retries:
                 self._sleep_backoff(attempt)
                 attempt += 1
                 continue
@@ -184,14 +186,14 @@ class HttpClient:
             raise self._exception_from_response(response)
 
         # Defensive: loop exited without return / raise. Should be unreachable
-        # in normal operation — kept so type checkers see all paths terminated.
+        # in normal operation - kept so type checkers see all paths terminated.
         if last_network_error is not None:
             raise NetworkError(
                 f"Could not reach the Impreza API: {last_network_error}",
             ) from last_network_error
         raise NetworkError("Exhausted retries without reaching the API")
 
-    # ── envelope ───────────────────────────────────────────────────────
+    # - envelope -
 
     def _unwrap(self, response: httpx.Response) -> dict[str, Any]:
         try:
@@ -208,13 +210,12 @@ class HttpClient:
                 status_code=response.status_code,
             )
 
-        # 2xx with success=False shouldn't happen, but if it does, treat as error.
-        if payload.get("success") is False:
+        if payload.get("success") is not True or payload.get("error") is not None:
             raise self._exception_from_payload(payload, response.status_code)
 
         return payload
 
-    # ── retry helpers ──────────────────────────────────────────────────
+    # - retry helpers -
 
     def _parse_retry_after(self, response: httpx.Response) -> int | None:
         raw = response.headers.get("Retry-After")
@@ -233,7 +234,7 @@ class HttpClient:
     def _sleep_backoff(self, attempt: int) -> None:
         time.sleep(self._backoff(attempt))
 
-    # ── exception mapping ──────────────────────────────────────────────
+    # - exception mapping -
 
     def _exception_from_response(self, response: httpx.Response) -> ApiError:
         try:

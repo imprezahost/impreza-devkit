@@ -17,6 +17,9 @@ type DeploymentControlResponse struct {
 
 func (c *Client) AgentCommandControl(ctx context.Context, request DeploymentControl) (*DeploymentControlResponse, error) {
 	var response DeploymentControlResponse
+	// Command-control phases are bound to a command and its token. The control
+	// plane accepts the same phase request again when a response was lost.
+	ctx = context.WithValue(ctx, allowIdempotentReplay{}, true)
 	if err := c.Post(ctx, "/v1/agent/command-control", request, &response); err != nil {
 		return nil, err
 	}

@@ -20,7 +20,7 @@ import (
 //	go build -ldflags "-X main.version=0.1.0" .
 //
 // Falls back to "dev" for source-tree builds.
-var version = "dev"
+var version = "0.3.2"
 
 func main() {
 	cmd.SetVersion(version)

@@ -1294,34 +1294,6 @@ func (d *Docker) forceRemoveProjectContainers(ctx context.Context, deploymentID 
 }
 
 // containerState is one container's state as of a single sample.
-type containerState struct {
-	Name     string
-	Status   string // running | restarting | exited | created | paused | dead
-	Restarts int
-	ExitCode int
-	Health   string // "", starting, healthy, unhealthy
-}
-
-// ok reports whether this container counts as settled.
-//
-// An `exited` container with code 0 is treated as fine on purpose: a
-// stack may include a one-shot init/migration service that does its job
-// and stops, and failing a deploy over that would be wrong.
-//
-// `unhealthy` is NOT ok, but it is also not fatal — it feeds the
-// advisory verdict, because images differ wildly in how long they take
-// to report healthy on a cold first boot.
-func (c containerState) ok() bool {
-	switch c.Status {
-	case "running":
-		return c.Health == "" || c.Health == "healthy"
-	case "exited":
-		return c.ExitCode == 0
-	default:
-		return false
-	}
-}
-
 // inspectProjectContainers samples the live state of every container
 // compose labelled for this deployment. One `docker inspect` for the
 // whole set — this runs in a poll loop, so it stays a single exec per
@@ -1354,27 +1326,7 @@ func (d *Docker) inspectProjectContainers(ctx context.Context, deploymentID stri
 		return nil, fmt.Errorf("docker inspect: %w", err)
 	}
 
-	var states []containerState
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.Split(line, "|")
-		if len(parts) < 5 {
-			continue
-		}
-		restarts, _ := strconv.Atoi(strings.TrimSpace(parts[2]))
-		exitCode, _ := strconv.Atoi(strings.TrimSpace(parts[3]))
-		states = append(states, containerState{
-			Name:     strings.TrimPrefix(parts[0], "/"),
-			Status:   parts[1],
-			Restarts: restarts,
-			ExitCode: exitCode,
-			Health:   parts[4],
-		})
-	}
-	return states, nil
+	return parseContainerInspect(out, len(ids))
 }
 
 // awaitStackSettled watches the stack after `compose up -d` and decides

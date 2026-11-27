@@ -87,7 +87,7 @@ class AsyncHttpClient:
     ) -> None:
         await self.aclose()
 
-    # ── public methods ─────────────────────────────────────────────────
+    # - public methods -
 
     async def get(
         self,
@@ -130,7 +130,7 @@ class AsyncHttpClient:
     ) -> dict[str, Any]:
         return await self._request("DELETE", path, json=json)
 
-    # ── internals ──────────────────────────────────────────────────────
+    # - internals -
 
     async def _request(
         self,
@@ -141,17 +141,19 @@ class AsyncHttpClient:
         json: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
+        # A failed response cannot tell whether a mutation already took effect.
+        max_retries = self._max_retries if method.upper() in {"GET", "HEAD", "OPTIONS"} else 0
         attempt = 0
         last_network_error: httpx.RequestError | None = None
 
-        while attempt <= self._max_retries:
+        while attempt <= max_retries:
             try:
                 response = await self._client.request(
                     method, path, params=params, json=json, headers=headers
                 )
             except httpx.RequestError as exc:
                 last_network_error = exc
-                if attempt >= self._max_retries:
+                if attempt >= max_retries:
                     raise NetworkError(
                         f"Could not reach the Impreza API: {exc}",
                     ) from exc
@@ -159,17 +161,17 @@ class AsyncHttpClient:
                 attempt += 1
                 continue
 
-            if response.status_code < 400:
+            if 200 <= response.status_code < 300:
                 return self._unwrap(response)
 
-            if response.status_code == 429 and attempt < self._max_retries:
+            if response.status_code == 429 and attempt < max_retries:
                 retry_after = self._parse_retry_after(response)
                 wait = retry_after if retry_after is not None else self._backoff(attempt)
                 await asyncio.sleep(wait)
                 attempt += 1
                 continue
 
-            if 500 <= response.status_code < 600 and attempt < self._max_retries:
+            if 500 <= response.status_code < 600 and attempt < max_retries:
                 await self._sleep_backoff(attempt)
                 attempt += 1
                 continue
@@ -182,7 +184,7 @@ class AsyncHttpClient:
             ) from last_network_error
         raise NetworkError("Exhausted retries without reaching the API")
 
-    # ── envelope ───────────────────────────────────────────────────────
+    # - envelope -
 
     def _unwrap(self, response: httpx.Response) -> dict[str, Any]:
         try:
@@ -199,12 +201,12 @@ class AsyncHttpClient:
                 status_code=response.status_code,
             )
 
-        if payload.get("success") is False:
+        if payload.get("success") is not True or payload.get("error") is not None:
             raise self._exception_from_payload(payload, response.status_code)
 
         return payload
 
-    # ── retry helpers ──────────────────────────────────────────────────
+    # - retry helpers -
 
     def _parse_retry_after(self, response: httpx.Response) -> int | None:
         raw = response.headers.get("Retry-After")
@@ -222,7 +224,7 @@ class AsyncHttpClient:
     async def _sleep_backoff(self, attempt: int) -> None:
         await asyncio.sleep(self._backoff(attempt))
 
-    # ── exception mapping ──────────────────────────────────────────────
+    # - exception mapping -
 
     def _exception_from_response(self, response: httpx.Response) -> ApiError:
         try:

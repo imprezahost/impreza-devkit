@@ -87,6 +87,9 @@ def verify_signature(
         ValueError: if the body is not valid JSON, or the JSON object
             does not match the :class:`WebhookEvent` shape.
     """
+    if not isinstance(secret, str) or not secret:
+        raise WebhookSignatureMismatch("signature mismatch")
+
     if not isinstance(signature_header, str) or not signature_header.startswith(
         _SIGNATURE_PREFIX
     ):

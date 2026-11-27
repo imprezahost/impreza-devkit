@@ -10,9 +10,15 @@ import (
 	"time"
 )
 
+// noReplayHostPlan marks a dispatch whose outcome must be reconciled by the caller.
+type noReplayHostPlan struct{}
+
+// allowIdempotentReplay marks a specific exchange whose server contract tolerates duplicate delivery.
+type allowIdempotentReplay struct{}
+
 // retryTransport applies exponential backoff retry on transient failures.
-// Matches the Python SDK policy: 5 attempts total, base delay 1s,
-// doubling each step with ±20% jitter, retry only on:
+// For reads and expressly idempotent exchanges, the default is 5 attempts
+// total, base delay 1s, doubling each step with ±20% jitter, retry only on:
 //
 //   - Network errors (transport-layer EOF, connection reset, etc.)
 //   - HTTP 429 (Rate Limited) — honours `Retry-After` header if set.
@@ -32,6 +38,11 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	maxAttempts := t.maxAttempts
 	if maxAttempts == 0 {
 		maxAttempts = 5
+	}
+	readOnly := req.Method == http.MethodGet || req.Method == http.MethodHead || req.Method == http.MethodOptions
+	if req.Context().Value(noReplayHostPlan{}) == true ||
+		(!readOnly && req.Context().Value(allowIdempotentReplay{}) != true) {
+		maxAttempts = 1
 	}
 	baseDelay := t.baseDelay
 	if baseDelay == 0 {

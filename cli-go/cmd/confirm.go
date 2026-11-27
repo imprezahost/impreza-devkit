@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -30,10 +31,12 @@ func confirmOrExit(in io.Reader, out io.Writer, prompt string, autoYes bool) err
 	if out == nil {
 		out = os.Stderr
 	}
-	fmt.Fprintf(out, "%s [y/N] ", prompt)
+	if _, err := fmt.Fprintf(out, "%s [y/N] ", prompt); err != nil {
+		return fmt.Errorf("write confirmation prompt: %w", err)
+	}
 	r := bufio.NewReader(in)
 	line, err := r.ReadString('\n')
-	if err != nil && line == "" {
+	if err != nil && (!errors.Is(err, io.EOF) || line == "") {
 		return fmt.Errorf("read confirmation: %w", err)
 	}
 	ans := strings.ToLower(strings.TrimSpace(line))

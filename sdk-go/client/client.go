@@ -328,7 +328,7 @@ func (c *Client) PostRaw(ctx context.Context, path, contentType string, body []b
 	if requestID == "" {
 		requestID = requestIDFromHeader(resp)
 	}
-	if !env.Success || env.Error != nil {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || !env.Success || env.Error != nil {
 		code := ""
 		msg := ""
 		if env.Error != nil {
@@ -431,7 +431,7 @@ func (c *Client) doWithHeaders(ctx context.Context, method, path string, query u
 		requestID = requestIDFromHeader(resp)
 	}
 
-	if !env.Success || env.Error != nil {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || !env.Success || env.Error != nil {
 		code := ""
 		msg := ""
 		if env.Error != nil {

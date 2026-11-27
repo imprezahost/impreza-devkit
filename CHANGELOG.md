@@ -12,6 +12,12 @@ Both ship in lock-step — every release tags `sdk-v<version>` and
 
 ## [Unreleased]
 
+## SDK Python 0.7.1 / CLI Go 0.3.2 - 2026-11-27
+
+- Require explicit server confirmation for successful changes and avoid replaying uncertain writes.
+- Validate bootstrap credentials and origin before accepting enrollment.
+- Reject incomplete destructive-action confirmations and recognize completed initialization containers.
+
 - Go SDK: a client for reviewed jurisdiction failover — pair a cold standby, confirm the copied
   backup, prepare/read/apply a failover review, retry target activation, fail back, and run
   standby drills (`PlatformPairColdStandby`, `PlatformPrepareFailover`, `PlatformApplyFailover`,
